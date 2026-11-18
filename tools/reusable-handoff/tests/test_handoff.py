@@ -7,6 +7,7 @@ import os
 import signal
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import time
@@ -101,6 +102,7 @@ class ProtocolTests(unittest.TestCase):
             calls = []
             fail = False
             last_received = 0
+            data_dir = self.root
 
             def call(self, args, timeout=30, deadline=None, on_dispatch=None, **kwargs):
                 if on_dispatch:
@@ -111,14 +113,14 @@ class ProtocolTests(unittest.TestCase):
                 return b'{"accepted":true}'
         return h.Run(self.root, FakeCLI())
 
-    def test_retired_UUID_is_rejected_before_cached_state_or_qualification(self):
+    def test_retired_UUID_is_rejected_before_cached_state_or_cli(self):
         req = self.request()
         root = h.mkdir(self.root / "runs")
         slot = h.mkdir(root / ".start/old")
         h.publish(slot / "evidence/human.json", h.private_read(self.root / "evidence/human.json"))
         h.publish(slot / "request.json", h.canonical(req))
         retired = h.mkdir(root / ".voided" / req["request_id"])
-        with patch.object(h, "qualified") as qualified:
+        with patch.object(h, "path_cli") as path_cli:
             # Even an incomplete archive reserves the retired UUID.
             with self.assertRaisesRegex(h.Stop, "retired"):
                 h.start(root, None, "old", target(), req["request_id"])
@@ -128,7 +130,7 @@ class ProtocolTests(unittest.TestCase):
             h.publish(destination / "state.json", h.canonical({"outcome": "pending"}))
             with self.assertRaisesRegex(h.Stop, "retired"):
                 h.start(root, None, "old", target(), req["request_id"])
-            qualified.assert_not_called()
+            path_cli.assert_not_called()
 
     def test_new_UUID_ignores_hidden_archive_but_not_unresolved_active_run(self):
         req = self.request()
@@ -137,14 +139,14 @@ class ProtocolTests(unittest.TestCase):
         h.publish(slot / "evidence/human.json", h.private_read(self.root / "evidence/human.json"))
         h.publish(slot / "request.json", h.canonical(req))
         h.mkdir(root / ".voided" / str(uuid.uuid4()))
-        with patch.object(h, "qualified", side_effect=h.Stop("qualification reached")):
-            with self.assertRaisesRegex(h.Stop, "qualification reached"):
+        with patch.object(h, "path_cli", side_effect=h.Stop("run CLI reached")):
+            with self.assertRaisesRegex(h.Stop, "run CLI reached"):
                 h.start(root, None, "old", target(), req["request_id"])
         prior = h.mkdir(root / str(uuid.uuid4()))
         h.publish(prior / "state.json", h.canonical({"old_id": "old", "outcome": "pending"}))
-        with patch.object(h, "qualified") as qualified, self.assertRaisesRegex(h.Stop, "unresolved run"):
+        with patch.object(h, "path_cli") as path_cli, self.assertRaisesRegex(h.Stop, "unresolved run"):
             h.start(root, None, "old", target(), req["request_id"])
-        qualified.assert_not_called()
+        path_cli.assert_not_called()
 
     def test_T06_unknown_effect_never_replayed(self):
         run = self.run_fixture()
@@ -400,6 +402,43 @@ class ProtocolTests(unittest.TestCase):
         run.sleep = sleep
         self.assertEqual(h.idle_window(run, "old", "old_idle")["turn_id"], "turn")
         self.assertEqual(run.state["waits"]["old_idle"]["elapsed"], 2)
+
+    def test_P6_bootstrap_owns_only_turns_at_or_after_the_spawn_prompt(self):
+        run = self.run_fixture()
+        prompt = "RH3[" + run.run_id + "] bootstrap"
+        h.publish(run.root / "control/spawn/intent.json", h.canonical(
+            {"argv": ["spawn", "--prompt", prompt], "created_at": "2026-11-18T19:07:38.722372+00:00"}))
+        run.state.update(new_id="new", handoff={"sha256": "h"}, manifest={"sha256": "m"})
+        # The project conversation still holds old's turns, one requested in the intent's own second.
+        turns = [{"id": "old-a", "state": "completed", "requestedAt": "2026-11-18T19:07:30Z", "completedAt": "2026-11-18T19:07:31Z"},
+                 {"id": "old-b", "state": "completed", "requestedAt": "2026-11-18T19:07:38Z", "completedAt": "2026-11-18T19:07:38Z"},
+                 {"id": "boot", "state": "completed", "requestedAt": "2026-11-18T19:07:38Z", "completedAt": "2026-11-18T19:07:50Z"},
+                 {"id": "later", "state": "completed", "requestedAt": "2026-11-18T19:07:51Z", "completedAt": "2026-11-18T19:07:52Z"}]
+        old_write = dict(kind="activity", id="old-cmd", turnId="old-b", sequence=2, activityKind="command", status="completed",
+                         detail={"command": "touch unknown", "exitCode": 0})
+        rows = [dict(kind="message", id="old-msg", role="user", turnId="old-a", sequence=1, text="earlier", origin="human"), old_write,
+                dict(kind="message", id="boot-msg", role="user", turnId="boot", sequence=3, text=prompt, origin="human"),
+                dict(kind="message", id="later-msg", role="assistant", turnId="later", sequence=4, text="ok")]
+        snap = snapshot(turns=turns, entries=rows)
+        snap["session"]["id"] = "new"
+        self.assertEqual(h.bootstrap_origin(run, snap), {"boot", "later"})
+        with self.assertRaisesRegex(h.Stop, "UNVERIFIABLE_WRITE"):
+            h.audit_bootstrap(snap, run.root)
+        with self.assertRaisesRegex(h.Stop, "bootstrap helper activity missing"):
+            h.audit_bootstrap(snap, run.root, {"boot", "later"})
+        receipt = {"schema": "rh-new-receipt/1", "run_id": run.run_id, "old_id": "old", "new_id": "new",
+                   "managed_reply": {"path": str(run.root / "bootstrap/new/reply.json")},
+                   "target": {k: run.target[k] for k in ("harness", "account", "model", "effort", "approval_mode")},
+                   "outcome": "ready", "created_at": "2026-11-18T19:07:50Z", "pending_question_refs": [], "diagnostics": [],
+                   "sources": {"handoff_sha256": "h", "manifest_sha256": "m", "delta_sha256": None}, "evidence_turn_id": "old-b"}
+        h.publish(run.root / "bootstrap/new/receipt.json", h.canonical(receipt))
+        run.cli.session = lambda _: snap
+        with self.assertRaisesRegex(h.Stop, "new receipt borrows an earlier controller's turn"):
+            h.new_receipt(run)
+        mismatch = copy.deepcopy(snap)
+        mismatch["transcript"]["entries"][2]["text"] = "something else"
+        with self.assertRaisesRegex(h.Stop, "initial bootstrap does not match"):
+            h.bootstrap_origin(run, mismatch)
 
     def test_audit_send_new_preserves_normal_incomplete_observation(self):
         run = self.run_fixture()
@@ -1033,19 +1072,39 @@ finally:
         self.assertEqual(len(run.cli.calls), 1)
         self.assertEqual(run.state["waits"]["workers"]["monotonic"], 0)
 
-    def test_T01_workers_deadline_names_the_worker_and_its_open_activity(self):
-        run = self.run_fixture()
-        idle = snapshot(entries=[{"id": "open-terminal", "sequence": 3, "kind": "activity", "activityKind": "command",
-                                  "status": "failed", "turnId": "turn", "detail": {"terminalId": "open-terminal"}}])
-        idle["session"].update(id="worker", kind="worker")
-        run.cli.session = lambda _: idle
-        self.worker_index(run)
-        run.request["workers"] = []
-        elapsed = [0]
-        run.clock = lambda: elapsed[0]
-        run.sleep = lambda _: elapsed.__setitem__(0, elapsed[0] + 600)
-        with self.assertRaisesRegex(h.Stop, "wait deadline reached: workers.*worker.*open-terminal"):
-            run.wait("workers", lambda: run.worker_stop({"id": "worker"}))
+    def test_named_continue_workers_deadline_names_early_returns_after_reload(self):
+        # RH-NAMED-CONTINUE / F2: every early return keeps a reason, also on a Run rebuilt by continue.
+        cases = {"blocked": dict(state="blocked", block_reason="tool still running: activity-9", source_type="worker-self"),
+                 "evidence": dict(state="safe", source_type="worker-self", evidence_turn_id="dispatch"),
+                 "drift": None}
+        expected = {"blocked": "blocked: tool still running: activity-9", "evidence": "evidence turn not completed: dispatch",
+                    "drift": "workspace changed during quiescence check"}
+        for case, stop in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                self.root = Path(temp)
+                self.root.chmod(0o700)
+                run = self.run_fixture()
+                idle = snapshot(turns=[{"id": "dispatch", "state": "running"}] if case == "evidence" else None)
+                idle["session"].update(id="worker", kind="worker")
+                self.worker_index(run)
+                run.request["workers"] = [{"worker_id": "worker", "reserved_stop_d": "D-7"}]
+                if stop:
+                    stop.update(stop_directive={"last_ack_d": "D-7"})
+                    h.publish(run.root / "workers/worker/stop.json", h.canonical(stop))
+                run = h.Run(run.root, run.cli)  # continue rebuilds Run; the reason is not persisted
+                run.cli.session = lambda _: idle
+                run.workspace = lambda _: str(self.root)
+                self.worker_index(run)
+                run.request["workers"] = [{"worker_id": "worker", "reserved_stop_d": "D-7"}]
+                elapsed = [0]
+                run.clock = lambda: elapsed[0]
+                run.sleep = lambda _: elapsed.__setitem__(0, elapsed[0] + 600)
+                shots = iter([{"sha256": "a"}, {"sha256": "b"}] * 4)
+                with patch.object(h, "validate_stop"), patch.object(h, "git_snapshot", side_effect=lambda *a, **k: next(shots)), \
+                        self.assertRaises(h.Stop) as caught:
+                    run.wait("workers", lambda: run.worker_stop({"id": "worker"}))
+                self.assertIn("wait deadline reached: workers", str(caught.exception))
+                self.assertIn(json.dumps({"worker": [expected[case]]}), str(caught.exception))
 
     def test_T05_running_2a_and_bootstrap_receipts_wait_for_completed(self):
         for sid, phase in (("old", "old_2a"), ("new", "bootstrap")):
@@ -1178,11 +1237,13 @@ finally:
                 return {"sharedDir": str(shared)}
             def sessions(self):
                 return []
+            def call(self, args, *rest, **kwargs):
+                assert args == ["version"], args
+                return b"0.42.0\n"
         cli = PreparedCLI()
         cli.execution = h.Journal(self.root, req["request_id"]).register("start", "old")
         self.addCleanup(cli.execution.close)
-        h.publish(root / ".qualified/qualification.json", h.canonical(dict(schema="rh-cli-qualification/2", call_protocol=h.CALL_PROTOCOL)))
-        with patch.object(h, "qualified", return_value=cli), patch.object(h, "validate_sources_live", return_value=snapshot()), \
+        with patch.object(h, "path_cli", return_value=cli), patch.object(h, "validate_sources_live", return_value=snapshot()), \
              patch.object(h, "target_preflight", return_value={}), patch.object(h, "native_identity", return_value="old-native"), \
              patch.object(h, "launch") as launch:
             first = h.start(root, cli, "old", target(), req["request_id"])
@@ -1301,6 +1362,8 @@ finally:
                 entry["status"] = status
                 snap["transcript"]["turns"][-1]["state"] = turn
                 self.assertEqual(h.quiescent(snap, receipts), expected)
+                # A worker's exit-less command is judged by the OS-level process check instead (F15: old/new keep it).
+                self.assertTrue(h.quiescent(snap, receipts, worker=True))
 
     def test_T04_duplicate_keys_bad_hash_and_symlink_are_rejected(self):
         with self.assertRaises(h.Stop):
@@ -1401,12 +1464,8 @@ class FlowFixture:
         self.executable = self.transport.cli
         self.sha256 = h.digest(self.executable.read_bytes())
         self.run_file = self.transport.run_file
-        qualification = dict(schema="rh-cli-qualification/2", call_protocol=h.CALL_PROTOCOL,
-                             cli_sha256=self.sha256, script_sha256=h.digest(Path(h.__file__).read_bytes()))
-        h.publish(directory.parent / ".qualified/qualification.json", h.canonical(qualification))
         journal = h.Journal(self.data_dir, self.run_id)
         self.run.state.update(call_protocol=h.CALL_PROTOCOL, journal=str(journal.root),
-                              qualification_sha256=h.digest(h.canonical(qualification)),
                               schema="rh-state/1", run_id=self.run_id, old_id="old", target=self.target,
                               data_dir=str(root), run_file=str(self.run_file), daemon_base=self.transport.base,
                               cli_path=str(self.executable), cli_sha256=self.sha256, script_sha256=h.digest(Path(h.__file__).read_bytes()))
@@ -1661,7 +1720,7 @@ class SpeedPreparationTests(unittest.TestCase):
         return root, cli, raw
 
     def package(self, root, cli, run_id=None):
-        with patch.object(h, "qualified", return_value=cli), patch.dict(os.environ, {"AO_SESSION_ID": "old"}):
+        with patch.object(h, "path_cli", return_value=cli), patch.dict(os.environ, {"AO_SESSION_ID": "old"}):
             return h.prepare_request(root, None, "old", "human", "control", run_id or str(uuid.uuid4()))
 
     def test_packaging_helper_builds_request_from_original_bytes(self):
@@ -1703,7 +1762,7 @@ class SpeedPreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(h.Stop, "conflicting immutable file"):
             self.package(root, cli, run_id)
         root, cli, _ = self.packaging_fixture()
-        with self.assertRaisesRegex(h.Stop, "must run as old"), patch.object(h, "qualified", return_value=cli), \
+        with self.assertRaisesRegex(h.Stop, "must run as old"), patch.object(h, "path_cli", return_value=cli), \
              patch.dict(os.environ, {"AO_SESSION_ID": "worker"}):
             h.prepare_request(root, None, "old", "human", "control", str(uuid.uuid4()))
 
@@ -1775,6 +1834,256 @@ class SpeedPreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(h.Stop, "wait deadline reached: prepare"):
             h.run_protocol(fake.run)
         self.assertEqual(fake.mutations, [])
+
+
+def proc(ppid, argv, cwd=None, start=100.0, terminal=False):
+    return dict(ppid=ppid, tick=int(start * 100), start=start, cwd=cwd, argv=argv, terminal=terminal)
+
+
+class OSProcessTests(unittest.TestCase):
+    """RH-GATE1 .11: OS-level worker work processes (contract rev3.3 §5.2-§5.3) on synthetic process tables."""
+    request, run_fixture, worker_index = ProtocolTests.request, ProtocolTests.run_fixture, ProtocolTests.worker_index
+
+    def table(self, data="/data", ws="/wt/worker"):
+        return {
+            10: proc(1, ["/usr/bin/ao", "chat-host", "worker", data, ws, "acp", "fp", "--", "node", "index.js"]),  # B1
+            11: proc(10, ["node", "/x/claude-agent-acp/dist/index.js"], start=100.0),  # B2
+            12: proc(11, ["/home/u/.local/bin/claude", "--setting-sources=user,project,local"], start=101.0),  # B3
+            13: proc(12, ["/usr/bin/ao", "mcp"]),  # B4
+            14: proc(12, ["npx", "user-mcp"], start=102.0),  # B10 when started before the baseline
+            15: proc(12, ["/bin/bash", "-c", "npm run dev"], start=300.0),  # a tool: work
+            16: proc(15, ["claude"], start=301.0),  # same name, parent is not the provider: work
+            17: proc(15, ["/usr/bin/ao", "mcp"], start=301.0),  # same argv under a tool: work
+            30: proc(1, ["/usr/bin/ao", "chat-host", "review-1", data, ws], cwd=ws),  # B7
+            31: proc(30, ["git", "status"], cwd=ws),
+            40: proc(1, ["node", "server.js"], cwd=ws + "/app"),  # reparented background server: work
+            50: proc(49, ["bash"], cwd=ws, terminal=True),  # B9 shell
+            51: proc(50, ["vim"], cwd=ws),  # B9 descendant
+            52: proc(1, ["sleep", "999"], cwd=ws, terminal=True),  # B9 even after setsid
+            60: proc(1, ["/usr/bin/ao", "chat-host", "worker", "/stable/data", "/stable/wt"]),  # same id, other data dir
+            61: proc(60, ["node", "elsewhere.js"], cwd="/stable/wt"),
+        }
+
+    def test_proc_table_reads_the_real_running_process(self):
+        row = h.proc_table()[os.getpid()]
+        self.assertEqual((row["ppid"], row["cwd"], row["terminal"]), (os.getppid(), os.getcwd(), False))
+        self.assertLessEqual(row["start"], time.time())
+        self.assertGreater(row["start"], time.time() - 3600)
+
+    def test_proc_table_keeps_a_live_process_whose_comm_splits_utf8_and_stops_on_unknown_stat(self):
+        code = "import time;open('/proc/self/comm','wb').write('worker-測試程式'.encode());print('ready',flush=True);time.sleep(60)"
+        child = subprocess.Popen([sys.executable, "-I", "-c", code], cwd=self.root, stdout=subprocess.PIPE)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.assertEqual(child.stdout.readline(), b"ready\n")
+        stat = Path("/proc", str(child.pid), "stat").read_bytes()
+        with self.assertRaises(UnicodeDecodeError):
+            stat.decode()  # the kernel cut the name inside a multi-byte character
+        row = h.proc_table()[child.pid]
+        self.assertEqual((row["ppid"], row["cwd"]), (os.getpid(), str(self.root)))
+        original = Path.read_bytes
+        def broken(path):
+            return b"1 (x" if path == Path("/proc", str(child.pid), "stat") else original(path)
+        with patch.object(h.Path, "read_bytes", broken), self.assertRaisesRegex(h.Stop, "process table UNKNOWN: " + str(child.pid)):
+            h.proc_table()
+
+    def test_proc_table_keeps_a_process_whose_main_thread_exited_while_others_work(self):
+        code = ("import ctypes,threading,time;threading.Thread(target=time.sleep,args=(60,)).start();"
+                "print('ready',flush=True);ctypes.CDLL(None).pthread_exit(None)")
+        child = subprocess.Popen([sys.executable, "-I", "-c", code], cwd=self.root, stdout=subprocess.PIPE)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.assertEqual(child.stdout.readline(), b"ready\n")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.readlink(Path("/proc", str(child.pid), "cwd"))
+            except FileNotFoundError:
+                break
+            time.sleep(0.05)
+        with self.assertRaises(FileNotFoundError):
+            os.readlink(Path("/proc", str(child.pid), "cwd"))  # the group cwd is gone with the main thread
+        row = h.proc_table()[child.pid]
+        self.assertEqual((row["ppid"], row["cwd"], row["cwd_unknown"]), (os.getpid(), str(self.root), False))
+        # If no live thread exposes a cwd either, the process stays, marked, and counts as work (named, fail-closed).
+        readlink = os.readlink
+        def hidden(path):
+            if str(path).startswith("/proc/" + str(child.pid) + "/"):
+                raise FileNotFoundError(path)
+            return readlink(path)
+        with patch.object(h.os, "readlink", side_effect=hidden):
+            table = h.proc_table()
+        self.assertTrue(table[child.pid]["cwd_unknown"])
+        work = h.os_work_processes({child.pid: dict(table[child.pid], ppid=1)}, "worker", "/data", Path("/wt/worker"), lambda *a: None)
+        self.assertEqual([x["pid"] for x in work], [child.pid])
+
+    def test_unreaped_zombie_is_kept_for_traversal_but_is_not_work(self):
+        # A resident server that has not yet wait()ed an exited child: the zombie cannot be stopped by the worker.
+        code = ("import subprocess,sys,time;c=subprocess.Popen([sys.executable,'-c','pass']);time.sleep(0.5);"
+                "print(c.pid,flush=True);time.sleep(60)")
+        parent = subprocess.Popen([sys.executable, "-I", "-c", code], cwd=self.root, stdout=subprocess.PIPE)
+        self.addCleanup(parent.wait)
+        self.addCleanup(parent.kill)
+        zombie = int(parent.stdout.readline())
+        table = h.proc_table()
+        self.assertEqual((table[zombie]["ppid"], table[zombie]["zombie"]), (parent.pid, True))
+        self.assertFalse(table[parent.pid]["zombie"])
+        # Under a provider (B10 MCP server) the zombie is still walked but never listed as work.
+        tree = {10: proc(1, ["ao", "chat-host", "worker", "/data", "/wt/worker"]), 11: proc(10, ["codex", "app-server"]),
+                parent.pid: dict(table[parent.pid], ppid=11, start=50.0), zombie: dict(table[zombie], start=60.0)}
+        self.assertEqual(h.os_work_processes(tree, "worker", "/data", Path("/wt/worker"), lambda *a: 100.0), [])
+
+    def test_claude_tree_terminal_reviewer_and_reparented_attribution(self):
+        calls = []
+        def base_of(pid, tick, started):
+            calls.append((pid, tick, started))
+            return 200.0
+        work = h.os_work_processes(self.table(), "worker", "/data", Path("/wt/worker"), base_of)
+        self.assertEqual(work, [dict(pid=15, exe="bash"), dict(pid=16, exe="claude"), dict(pid=17, exe="ao"), dict(pid=40, exe="node")])
+        self.assertEqual(calls, [(11, 10000, 100.0)])
+        # Without a baseline the user's MCP server is fail-closed work; RH itself is excluded (B8).
+        work = h.os_work_processes(self.table(), "worker", "/data", Path("/wt/worker"), lambda *a: None, exclude=[40])
+        self.assertEqual([x["pid"] for x in work], [14, 15, 16, 17])
+
+    def test_codex_tree_and_B10_second_boundary(self):
+        table = {20: proc(1, ["ao", "chat-host", "cworker", "/data", "/wt/c", "--", "codex", "app-server"]),
+                 21: proc(20, ["codex", "app-server"]), 22: proc(21, ["/opt/codex/node_repl"]), 23: proc(21, ["node", "./mcp/launch.mjs"]),
+                 24: proc(21, ["/bin/bash", "-lc", "pytest"], start=300.0), 25: proc(21, ["user-mcp"], start=199.9),
+                 26: proc(21, ["exec-session"], start=200.0)}
+        work = h.os_work_processes(table, "cworker", "/data", Path("/wt/c"), lambda *a: 200.0)
+        self.assertEqual([x["pid"] for x in work], [24, 26])
+
+    def test_baseline_pages_back_to_the_provider_start_and_fails_closed(self):
+        pages = {None: dict(conversationId="c", hasMoreBefore=True, next=dict(before=50), turns=[
+                     dict(id="t9", state="completed", startedAt="2026-11-18T00:10:00Z", completedAt="2026-11-18T00:10:05Z")]),
+                 50: dict(conversationId="c", hasMoreBefore=True, next=dict(before=20), turns=[
+                     dict(id="t2", state="completed", startedAt="2026-11-18T00:01:00Z", completedAt="2026-11-18T00:01:10Z")]),
+                 20: dict(conversationId="c", hasMoreBefore=True, next=dict(before=5), turns=[
+                     dict(id="t1", state="completed", startedAt="2026-11-18T00:00:10Z", completedAt="2026-11-18T00:00:20Z")])}
+        started = h.dt.datetime(2026, 11, 18, 0, 0, 30, tzinfo=h.dt.timezone.utc).timestamp()
+        read, seen = [], []
+        def reader(args):
+            cursor = int(args[args.index("--before") + 1]) if "--before" in args else None
+            read.append(cursor)
+            return dict(transcript=pages[cursor])
+        base = h.provider_base(reader, "worker", started, seen.append)
+        # The first turn after the provider started sits on page two; t1 ended before it, so paging stops there.
+        self.assertEqual(base, h.dt.datetime(2026, 11, 18, 0, 1, 0, tzinfo=h.dt.timezone.utc).timestamp())
+        self.assertEqual((read, seen), ([None, 50, 20], [None, 50, 20]))
+        # A turn running when a lazily started provider came up is the baseline; no turn at all means "now".
+        lazy = dict(conversationId="c", hasMoreBefore=False, turns=[
+            dict(id="t0", state="completed", startedAt="2026-11-18T00:00:25Z", completedAt="2026-11-18T00:00:40Z")])
+        self.assertEqual(h.provider_base(lambda a: dict(transcript=lazy), "worker", started, lambda c: None),
+                         h.dt.datetime(2026, 11, 18, 0, 0, 25, tzinfo=h.dt.timezone.utc).timestamp())
+        empty = dict(conversationId="c", hasMoreBefore=False, turns=[])
+        self.assertEqual(h.provider_base(lambda a: dict(transcript=empty), "worker", started, lambda c: None, clock=lambda: 42.0), 42.0)
+        for change in (dict(next=dict(before=50)), dict(conversationId="other")):
+            broken = dict(pages)
+            broken[50] = dict(pages[50], **change)
+            with self.assertRaisesRegex(h.Stop, "B10 baseline paging failed: worker"):
+                h.provider_base(lambda a: dict(transcript=broken[int(a[a.index("--before") + 1]) if "--before" in a else None]),
+                                "worker", started, lambda c: None)
+
+    def stop_run(self, table, reserved="D-7"):
+        run = self.run_fixture()
+        idle = snapshot(entries=[{"id": "exitless", "sequence": 3, "kind": "activity", "activityKind": "command", "status": "failed",
+                                  "turnId": "turn", "detail": {"terminalId": "open-terminal"}},
+                                 {"id": "exec", "sequence": 4, "kind": "activity", "activityKind": "command", "status": "completed", "turnId": "turn",
+                                  "detail": {"toolName": "exec_command", "exitCode": 0, "result": {"session_id": 7, "exit_code": None}}}])
+        idle["session"].update(id="worker", kind="worker")
+        run.cli.session = lambda _: idle
+        self.worker_index(run)
+        run.request["workers"] = [{"worker_id": "worker", "reserved_stop_d": reserved}]
+        run.cli.read = lambda args: dict(transcript=dict(conversationId="c", hasMoreBefore=False, turns=[]))
+        patcher = patch.object(h, "proc_table", side_effect=lambda: table)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return run
+
+    def ws(self):
+        return str(self.root / "worktrees" / h.PROJECT / "worker")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.root.chmod(0o700)
+
+    def worker_table(self, *extra):
+        ws = self.ws()
+        table = {10: proc(1, ["ao", "chat-host", "worker", str(self.root), ws]), 11: proc(10, ["codex", "app-server"])}
+        table.update(extra)
+        return table, ws
+
+    def test_worker_with_processes_gets_the_stop_D_and_is_named_until_stopped(self):
+        table, ws = self.worker_table()
+        table[12] = proc(11, ["/bin/bash", "-lc", "npm run dev"], start=10 ** 10)
+        run = self.stop_run(table)
+        elapsed = [0]
+        run.clock = lambda: elapsed[0]
+        run.sleep = lambda _: elapsed.__setitem__(0, elapsed[0] + 600)
+        with self.assertRaisesRegex(h.Stop, r"wait deadline reached: workers.*work processes: 12 bash"):
+            run.wait("workers", lambda: run.worker_stop({"id": "worker"}))
+        sent = [a for a in run.cli.calls if a[0] == "send"]
+        self.assertEqual(len(sent), 1)
+        instruction = json.loads(sent[0][sent[0].index("--message") + 1])["instruction"]
+        self.assertEqual(instruction["processes"], [dict(pid=12, exe="bash")])
+        self.assertTrue(instruction["completion"].startswith("先停止你啟動的所有工作程序"))
+        self.assertEqual(run.state["workers_infra_cutoff"]["worker"]["b2_pid"], 11)
+        # A safe receipt does not end it while the process still runs.
+        h.publish(run.root / "workers/worker/stop.json", h.canonical(dict(state="safe", source_type="script-quiescent",
+                  settled=dict(in_flight=[]), workspace=dict(path=ws, after_snapshot=dict(sha256="s")))))
+        run.workspace = lambda _: ws
+        with patch.object(h, "validate_stop"), patch.object(h, "git_snapshot", return_value=dict(sha256="s")), \
+                self.assertRaisesRegex(h.Stop, "worker processes still running: worker: 12 bash"):
+            run.worker_stop({"id": "worker"})
+
+    def test_processes_without_reserved_D_or_agent_stop_immediately(self):
+        table, ws = self.worker_table((40, proc(1, ["node", "server.js"], cwd=self.ws())))
+        with self.assertRaisesRegex(h.Stop, "without a reserved stop directive: worker: 40 node"):
+            self.stop_run(table, reserved=None).worker_stop({"id": "worker"})
+        self.root = h.mkdir(self.root / "exited")
+        table, ws = self.worker_table((40, proc(1, ["node", "server.js"], cwd=self.ws())))
+        del table[10], table[11]
+        with self.assertRaisesRegex(h.Stop, "without an agent to stop them: worker: 40 node"):
+            self.stop_run(table).worker_stop({"id": "worker"})
+
+    def test_idle_worker_with_open_terminal_and_exitless_local_handles_is_recorded_without_D(self):
+        # The exit-less terminal command and the running exec session no longer block a worker (q1=b, strict-named removed),
+        # and the user's open terminal tab is theirs (B9): no stop D is sent.
+        table, ws = self.worker_table((50, proc(49, ["bash"], cwd=None, terminal=True)), (51, proc(50, ["vim"], cwd=None)))
+        run = self.stop_run(table)
+        run.workspace = lambda _: str(self.root)
+        with patch.object(h, "git_snapshot", return_value=dict(sha256="s", raw=b"")), patch.object(h, "worker_record", return_value={}), \
+                patch.object(h, "validate_stop"):
+            run.worker_stop({"id": "worker"})
+        self.assertEqual([a for a in run.cli.calls if a[0] == "send"], [])
+        self.assertTrue((run.root / "workers/worker/stop.json").exists())
+        snap = run.cli.session("worker")
+        self.assertFalse(h.quiescent(snap))  # old/new keep every receipt rule (F15)
+        self.assertTrue(h.quiescent(snap, worker=True))
+        job = dict(snap["transcript"]["entries"][1], detail={"toolName": "exec_command", "output": "Job running with ID j-1"})
+        self.assertFalse(h.activity_quiescent(job, worker=True))
+
+    def test_provider_restart_recomputes_the_baseline_and_same_provider_reuses_it(self):
+        table, ws = self.worker_table((13, proc(11, ["user-mcp"], start=150.0)))
+        run = self.stop_run(table)
+        reads = []
+        run.cli.read = lambda args: reads.append(args) or dict(transcript=dict(conversationId="c", hasMoreBefore=False, turns=[
+            dict(id="t", state="completed", startedAt="1970-01-01T00:03:20Z", completedAt="1970-01-01T00:03:30Z")]))
+        self.assertEqual(run.work("worker"), [])  # 150 < baseline 200
+        self.assertEqual(run.work("worker"), [])
+        self.assertEqual(len(reads), 1)
+        # A restarted provider (new pid/starttime) gets a new baseline: its MCP is infrastructure; the old one's orphan in the worktree is work.
+        table.update({11: proc(10, ["codex", "app-server"], start=400.0), 13: proc(11, ["user-mcp"], start=401.0),
+                      14: proc(1, ["old-tool"], cwd=self.ws())})
+        run.cli.read = lambda args: reads.append(args) or dict(transcript=dict(conversationId="c", hasMoreBefore=False, turns=[
+            dict(id="t2", state="completed", startedAt="1970-01-01T00:07:00Z", completedAt="1970-01-01T00:07:10Z")]))
+        self.assertEqual(run.work("worker"), [dict(pid=14, exe="old-tool")])
+        self.assertEqual(run.state["workers_infra_cutoff"]["worker"], dict(b2_pid=11, b2_starttime=40000, base=420.0))
+        del table[10], table[11]
+        self.assertEqual(run.work("worker"), [dict(pid=14, exe="old-tool")])  # no agent left: no baseline, nothing re-persisted
+        self.assertEqual(run.state["workers_infra_cutoff"]["worker"]["base"], 420.0)
 
 
 if __name__ == "__main__":

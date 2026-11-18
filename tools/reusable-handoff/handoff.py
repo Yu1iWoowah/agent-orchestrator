@@ -486,14 +486,14 @@ def operation_handles(entry):
         return [{"reference": "UNKNOWN", "state": "UNKNOWN"}]
     name = detail.get("toolName", "").rsplit(".", 1)[-1]
     if name in ("exec_command", "write_stdin") and isinstance(result, dict) and result.get("session_id") is not None:
-        return [{"reference": str(result["session_id"]), "state": "running" if result.get("exit_code") is None else "completed"}]
+        return [{"reference": str(result["session_id"]), "state": "running" if result.get("exit_code") is None else "completed", "local": True}]
     if isinstance(result, dict) and (result.get("type") in ("async-operation", "job") or "job_id" in result):
         reference = result.get("reference") or result.get("job_id")
         return [{"reference": str(reference or "UNKNOWN"), "state": result.get("state", "UNKNOWN") if reference else "UNKNOWN"}]
     # A transport-level textual continuation is not a normal JSON key or an input quotation.
     text = result if isinstance(result, str) else detail.get("output", "")
-    match = re.match(r"^(?:Script running with (?:cell|session) ID|Process running with session ID|Job running with ID)\s+([A-Za-z0-9._:-]+)", text)
-    return [{"reference": match[1], "state": "UNKNOWN"}] if match else []
+    match = re.match(r"^(Script running with (?:cell|session) ID|Process running with session ID|Job running with ID)\s+([A-Za-z0-9._:-]+)", text)
+    return [{"reference": match[2], "state": "UNKNOWN", "local": not match[1].startswith("Job")}] if match else []
 
 
 def operation_terminal(entry, handle, receipts):
@@ -509,7 +509,7 @@ def operation_terminal(entry, handle, receipts):
     return False
 
 
-def quiescent(snapshot, settled_receipts=(), run=None):
+def quiescent(snapshot, settled_receipts=(), run=None, worker=False):
     session, transcript = snapshot["session"], snapshot["transcript"]
     if session.get("activity", {}).get("state") not in ("idle", "exited"):
         return False
@@ -518,11 +518,11 @@ def quiescent(snapshot, settled_receipts=(), run=None):
     if any(t.get("state") in ("queued", "running") for t in transcript.get("turns", [])):
         return False
     helper = completed_old_helper(run, snapshot) if run else None
-    return all(entry == helper or activity_quiescent(entry, settled_receipts, run, session.get("id"))
+    return all(entry == helper or activity_quiescent(entry, settled_receipts, run, session.get("id"), worker)
                for entry in transcript.get("entries", []))
 
 
-def activity_quiescent(entry, receipts=(), run=None, sid=None):
+def activity_quiescent(entry, receipts=(), run=None, sid=None, worker=False):
     if entry.get("kind") != "activity":
         return True
     if entry.get("status") not in ("completed", "resolved", "cancelled", "failed", "recovered"):
@@ -532,13 +532,144 @@ def activity_quiescent(entry, receipts=(), run=None, sid=None):
         return False
     if run and known_helper(run, sid, entry):
         return True
-    handles = operation_handles(entry)
-    if entry.get("activityKind") == "command" and detail.get("exitCode") is None:
+    # A worker's local processes (exec sessions, running scripts, exit-less commands) are judged by the OS-level
+    # process check instead (q1=b); remote jobs still need receipts, and old/new keep every receipt rule.
+    handles = [x for x in operation_handles(entry) if not (worker and x.get("local"))]
+    if not worker and entry.get("activityKind") == "command" and detail.get("exitCode") is None:
         # A reconnectable process (Codex PTY, ACP terminal) without an exit needs a terminal receipt of that same
         # operation: AO and the ACP driver settle leftovers themselves, so neither status nor turn proves it ended.
         handles += [{"reference": str(detail[key]), "state": "UNKNOWN"} for key in ("processId", "terminalId") if detail.get(key) is not None]
     return all(handle["reference"] != "UNKNOWN" and (handle["state"] in ("completed", "cancelled", "failed") or operation_terminal(entry, handle, receipts))
                for handle in handles)
+
+
+def proc_stat(directory):
+    """(state, ppid, start tick) parsed from bytes after the last b")" (comm may split a UTF-8 character); None when the PID is gone."""
+    try:
+        raw = (directory / "stat").read_bytes()
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    except OSError as exc:
+        raise Stop("process table UNKNOWN: " + directory.name + ": " + str(exc)) from exc
+    try:
+        fields = raw[raw.rindex(b")") + 2:].split()
+        return fields[0], int(fields[1]), int(fields[19])
+    except (ValueError, IndexError) as exc:
+        raise Stop("process table UNKNOWN: " + directory.name + ": unparsable stat") from exc
+
+
+def proc_table():
+    """pid -> ppid/start/cwd/argv and the AO terminal marker; environ is matched in memory only, never kept.
+    Only a PID whose stat is gone (or reused) is dropped; a live process with a missing field is kept and marked."""
+    with open("/proc/stat", "rb") as handle:
+        btime = next(int(line.split()[1]) for line in handle if line.startswith(b"btime "))
+    hz = os.sysconf("SC_CLK_TCK")
+    table = {}
+    for directory in Path("/proc").iterdir():
+        if not directory.name.isdigit():
+            continue
+        stat = proc_stat(directory)
+        if stat is None:
+            continue
+        state, ppid, tick = stat
+        def read(reader, denied):
+            try:
+                return reader(), False
+            except PermissionError:
+                return denied, False  # other uid: no attribution from this field
+            except (FileNotFoundError, ProcessLookupError):
+                return denied, True
+            except OSError as exc:
+                raise Stop("process table UNKNOWN: " + directory.name + ": " + str(exc)) from exc
+        argv, missing_argv = read(lambda: [x.decode(errors="replace") for x in (directory / "cmdline").read_bytes().split(b"\0") if x], [])
+        cwd, missing_cwd = read(lambda: os.readlink(directory / "cwd"), None)
+        # After the main thread exits (pthread_exit) the leader shows Z while other threads work; a real zombie has no
+        # live thread left: it has terminated and only its parent's wait() removes it.
+        live = [task for task in (sorted((directory / "task").glob("*")) if (state == b"Z" or missing_cwd) and (directory / "task").is_dir() else [])
+                if (proc_stat(task) or (b"Z",))[0] != b"Z"]
+        live_thread = state != b"Z" or bool(live)
+        if missing_cwd:
+            # The group's cwd is then only visible through its live threads.
+            for task in live:
+                cwd, _ = read(lambda: os.readlink(task / "cwd"), None)
+                if cwd:
+                    missing_cwd = False
+                    break
+        terminal, _ = read(lambda: b"AO_SHELL_TERMINAL=1" in (directory / "environ").read_bytes().split(b"\0"), False)
+        if (missing_argv or missing_cwd) and (proc_stat(directory) or (None, None, None))[2] != tick:
+            continue  # the PID really went away (or was reused) while reading
+        table[int(directory.name)] = dict(ppid=ppid, tick=tick, start=btime + tick / hz, cwd=cwd, argv=argv, terminal=terminal,
+                                          cwd_unknown=missing_cwd and live_thread, zombie=not live_thread)
+    return table
+
+
+def os_work_processes(table, sid, data_dir, workspace, base_of, exclude=()):
+    """A worker's work processes: its chat-host tree plus reparented processes in its worktree, minus contract §5.2 B1-B10."""
+    children = {}
+    for pid, row in table.items():
+        children.setdefault(row["ppid"], []).append(pid)
+    def tree(roots):
+        found, stack = set(), list(roots)
+        while stack:
+            pid = stack.pop()
+            if pid not in found:
+                found.add(pid)
+                stack.extend(children.get(pid, []))
+        return found
+    name = lambda pid: Path(table[pid]["argv"][0]).name if table[pid]["argv"] else "?"
+    hosts = {pid for pid, row in table.items() if len(row["argv"]) >= 4 and row["argv"][1] == "chat-host"}
+    own = {pid for pid in hosts if table[pid]["argv"][2] == sid and os.path.realpath(table[pid]["argv"][3]) == os.path.realpath(data_dir)}
+    terminal = tree(pid for pid, row in table.items() if row["terminal"])  # B9: the user's AO session terminal, whole tree
+    host_trees = tree(hosts)  # B7: other actors' chat-hosts are never this worker's
+    # A live process whose cwd cannot be read at all may be this worker's reparented work: fail closed and name it.
+    candidates = tree(own) | {pid for pid, row in table.items() if pid not in host_trees and (row.get("cwd_unknown") or
+                              (row["cwd"] and Path(row["cwd"]).is_relative_to(workspace)))}
+    candidates -= terminal | tree(exclude)  # B8: RH itself
+    roots = {pid for pid in candidates if table[pid]["ppid"] in own}  # B2
+    providers = roots | {pid for pid in candidates if table[pid]["ppid"] in roots and name(pid) == "claude"}  # B3
+    base = None
+    if len(roots) == 1:
+        root = next(iter(roots))
+        base = base_of(root, table[root]["tick"], table[root]["start"])
+    infrastructure = own | providers
+    for pid in candidates:
+        argv, parent = table[pid]["argv"], table[pid]["ppid"]
+        if parent in providers and (argv[1:] in (["mcp"], ["usage", "delegation", "mcp"]) or  # B4
+                                    (parent in roots and (name(pid) == "node_repl" or argv[:2] == ["node", "./mcp/launch.mjs"])) or  # B5, B6
+                                    (base is not None and table[pid]["start"] < base)):  # B10
+            infrastructure.add(pid)
+    # A terminated zombie stays in the tree for traversal but is not work: stopping it is its parent's wait(), not the worker's.
+    return [dict(pid=pid, exe=name(pid)) for pid in sorted(candidates - infrastructure) if not table[pid].get("zombie")]
+
+
+def provider_base(read, sid, started, evidence, clock=time.time):
+    """B10 baseline: the earliest startedAt among turns not ended before the provider started; pages back to that point."""
+    floor = int(started)
+    epoch = lambda value: dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    ended_before = lambda turn: bool(turn.get("completedAt")) and epoch(turn["completedAt"]) < floor
+    turns, cursor, conversation = {}, None, None
+    try:
+        while True:
+            page = read(["session", "get", sid, "--transcript", "500", "--cap", "0"] + (["--before", str(cursor)] if cursor is not None else []))
+            transcript = page["transcript"]
+            conversation = conversation or transcript["conversationId"]
+            require(transcript["conversationId"] == conversation, "conversation changed")
+            evidence(cursor)
+            page_turns = transcript.get("turns", [])
+            turns.update((turn["id"], turn) for turn in page_turns)
+            if any(ended_before(turn) for turn in page_turns) or not transcript.get("hasMoreBefore"):
+                break
+            before = transcript["next"]["before"]
+            require(type(before) is int and (cursor is None or before < cursor), "cursor did not advance")
+            cursor = before
+    except (Stop, OSError, KeyError, TypeError, ValueError) as exc:
+        raise Stop("B10 baseline paging failed: " + sid + ": " + str(exc)) from exc
+    starts = [epoch(turn["startedAt"]) for turn in turns.values() if turn.get("startedAt") and not ended_before(turn)]
+    return min(starts) if starts else clock()
+
+
+def processes_text(work):
+    return ", ".join(str(row["pid"]) + " " + row["exe"] for row in work[:10])
 
 
 def cli_environment(old, data_dir, run_file, temp):
@@ -642,9 +773,6 @@ class Journal:
                 require(digest(raw) == binding["start_sha256"], "preflight request changed before binding")
                 request = decode(raw)
                 publish(self.root / "bound/start.json", raw)
-                qualification = private_read(Path(binding["root"]) / ".qualified/qualification.json")
-                require(digest(qualification) == binding["qualification_sha256"], "preflight qualification changed")
-                publish(self.root / "bound/qualification.json", qualification)
                 publish(self.root / "bound/handoff.py", read_regular(Path(__file__)))
                 for source in request["sources"]:
                     original = private_read(confined(source_root, source["raw_relpath"]))
@@ -847,7 +975,7 @@ class Execution:
                         {"--project", "--all", "--include-terminated", "--json"}, "session list scope mismatch")
             elif args[:3] == ["project", "documents", "info"]:
                 require(value("--project") == PROJECT and set(args[3:]) <= {"--project", PROJECT, "--json"}, "documents scope mismatch")
-            elif args == ["spawn", "--help"]:
+            elif args in (["spawn", "--help"], ["version"]):
                 kind, capability = "local-help", "local-cli-usage"
             elif args[:2] == ["account", "ls"]:
                 require("--refresh" in args and set(x for x in args[2:] if x.startswith("--")) <=
@@ -1050,9 +1178,12 @@ class Execution:
 
 
 class CLI:
-    def __init__(self, executable, old, data_dir, run_file, temp):
+    def __init__(self, executable, old, data_dir, run_file, temp, sha256=None):
         self.executable = no_symlinks(executable)
-        self.sha256 = digest(self.executable.read_bytes())
+        # An adapter rebuilt for an actor or a later step inherits the run's fixed hash; it never re-binds to new bytes.
+        self.sha256 = sha256 or digest(self.executable.read_bytes())
+        if sha256:
+            self.unchanged()
         self.env = cli_environment(old, data_dir, run_file, temp)
         self.data_dir, self.run_file = Path(data_dir), Path(run_file)
         raw = self.run_file.read_bytes()
@@ -1065,14 +1196,20 @@ class CLI:
     def transport_binding(self):
         return dict(data_dir=str(self.data_dir), run_file=str(self.run_file), run_file_sha256=self.run_file_sha256, daemon_base=self.base)
 
+    def unchanged(self):
+        """The run's CLI is the PATH executable recorded at start; replaced bytes stop the run, never re-bind."""
+        current = digest(self.executable.read_bytes())
+        require(current == self.sha256, "AO CLI changed since run start: " + str(self.executable) + " " + self.sha256[:8] + " → " + current[:8])
+
     def call(self, args, timeout=30, deadline=None, on_dispatch=None, *, read=False, effect_id=None):
-        require(digest(self.executable.read_bytes()) == self.sha256, "qualified CLI changed")
+        self.unchanged()
         execution = getattr(self, "execution", None)
         require(execution is not None, "durable execution context required")
         descriptor = execution.descriptor(self, "cli", {"argv": args, "timeout": timeout}, read=read, effect_id=effect_id)
         self.last_dispatched, self.last_received = None, None
+        self.last_code, self.last_stderr = None, ""
         raw, stderr, code = execution.dispatch(self, descriptor, deadline, on_dispatch)
-        self.last_raw = raw
+        self.last_raw, self.last_code = raw, code
         self.last_stderr = stderr.decode(errors="replace")
         require(code == 0, "CLI error: " + self.last_stderr)
         return raw
@@ -1098,7 +1235,8 @@ class CLI:
                 self.env["AO_DATA_DIR"] == str(self.data_dir) and self.env["AO_RUN_FILE"] == str(self.run_file) and
                 self.env["AO_PROJECT_ID"] == PROJECT and digest(self.run_file.read_bytes()) == self.run_file_sha256,
                 "transport actor/location drift before I/O")
-        require(digest(self.executable.read_bytes()) == self.sha256 == operation["cli_sha256"], "qualified CLI changed before dispatch")
+        require(self.sha256 == operation["cli_sha256"], "AO CLI binding changed before dispatch")
+        self.unchanged()
         self.last_dispatched = time.monotonic()
         if deadline is not None and self.last_dispatched > deadline:
             self.last_dispatched = None
@@ -1620,10 +1758,10 @@ class Run:
         require(self.clock() - start["monotonic"] < start["limit"], "wait deadline reached: " + phase + named)
 
     def quiescent_worker(self, sid, snap, receipts=()):
-        if quiescent(snap, receipts, self):
+        if quiescent(snap, receipts, self, worker=True):
             self.unsettled.pop(sid, None)
             return True
-        self.unsettled[sid] = [e.get("id") for e in entries(snap) if not activity_quiescent(e, receipts, self, sid)] or ["session/turn"]
+        self.unsettled[sid] = [e.get("id") for e in entries(snap) if not activity_quiescent(e, receipts, self, sid, True)] or ["session/turn"]
         return False
 
     def rearm_wait(self):
@@ -1784,6 +1922,21 @@ class Run:
         self.save()
         return str(path)
 
+    def work(self, sid):
+        """OS-level work processes of a worker (contract §5.2); only the B10 baseline and its B2 identity persist."""
+        def base_of(pid, tick, started):
+            records = self.state.setdefault("workers_infra_cutoff", {})
+            record = records.get(sid)
+            if record and (record["b2_pid"], record["b2_starttime"]) == (pid, tick):
+                return record["base"]
+            def evidence(cursor):
+                publish(self.root / "workers" / sid / ("baseline-page-" + str(cursor if cursor is not None else "latest") + "-" +
+                        uuid.uuid4().hex + ".raw"), getattr(self.cli, "last_raw", b""))
+            records[sid] = dict(b2_pid=pid, b2_starttime=tick, base=provider_base(self.cli.read, sid, started, evidence))
+            self.save()
+            return records[sid]["base"]
+        return os_work_processes(proc_table(), sid, self.cli.data_dir, Path(workspace_entry(self.request, sid)["path"]), base_of, [os.getpid()])
+
     def worker_stop(self, worker):
         sid = identifier(worker["id"])
         require(workspace_entry(self.request, sid).get("kind") == "worker", "worker missing bound workspace")
@@ -1795,11 +1948,13 @@ class Run:
             stop = decode(private_read(path))
             validate_stop(stop, self.run_id, sid, directory)
             if stop["state"] != "safe":
+                self.unsettled[sid] = [stop["state"] + ": " + str(stop.get("block_reason"))]
                 return False
             if stop["source_type"] == "worker-self":
                 require(rules and rules["reserved_stop_d"], "self stop lacks original reserved directive")
                 require(stop["stop_directive"]["last_ack_d"] == rules["reserved_stop_d"], "worker stop D does not match reserved directive")
                 if not completed(snap, stop["evidence_turn_id"]):
+                    self.unsettled[sid] = ["evidence turn not completed: " + stop["evidence_turn_id"]]
                     return False
             if not self.quiescent_worker(sid, snap, stop["settled"]["in_flight"]):
                 return False
@@ -1809,13 +1964,21 @@ class Run:
             if actual["sha256"] != stop["workspace"]["after_snapshot"]["sha256"]:
                 publish(directory / ("verify-" + uuid.uuid4().hex) / "snapshot.json", actual["raw"])
                 raise Stop("worker content drift: " + sid)
+            work = self.work(sid)
+            require(not work, "worker processes still running: " + sid + ": " + processes_text(work))
             return stop
-        if self.quiescent_worker(sid, snap):
+        work = self.work(sid)
+        if not work and self.quiescent_worker(sid, snap):
             workspace = self.workspace(sid)
             before = git_snapshot(workspace, directory / ("before-" + uuid.uuid4().hex))
             self.sleep(2)
             after = git_snapshot(workspace, directory / ("after-" + uuid.uuid4().hex))
-            if before["sha256"] != after["sha256"] or not self.quiescent_worker(sid, self.snapshot(sid)):
+            if before["sha256"] != after["sha256"]:
+                self.unsettled[sid] = ["workspace changed during quiescence check"]
+                return False
+            if not self.quiescent_worker(sid, self.snapshot(sid)):
+                return False
+            if self.work(sid):
                 return False
             publish(directory / "quiescent-observation.raw", getattr(self.cli, "last_raw", canonical(snap)))
             publish(directory / "provenance.json", canonical([]))
@@ -1826,9 +1989,20 @@ class Run:
             validate_stop(stop, self.run_id, sid, directory)
             publish(path, canonical(stop))
             return stop
+        if work:
+            require(rules and rules["reserved_stop_d"], "worker processes running without a reserved stop directive: " + sid + ": " + processes_text(work))
+            require(any(len(row["argv"]) >= 4 and row["argv"][1] == "chat-host" and row["argv"][2] == sid and
+                        os.path.realpath(row["argv"][3]) == os.path.realpath(self.cli.data_dir) for row in proc_table().values()),
+                    "worker processes running without an agent to stop them: " + sid + ": " + processes_text(work))
+            self.unsettled[sid] = ["work processes: " + processes_text(work)]
         if rules and rules["reserved_stop_d"]:
+            # The first observed list is kept so a recovery resend carries the identical payload.
+            listed = self.state.setdefault("worker_stop_processes", {}).get(sid)
+            if listed is None:
+                listed = self.state["worker_stop_processes"][sid] = work[:10]
+                self.save()
             self.send(sid, "worker-stop", dict(directive=rules["reserved_stop_d"], output=str(path),
-                      schema="rh-worker-stop/2", rules=rules, **producer_description(self, "worker-receipt", sid)))
+                      schema="rh-worker-stop/2", rules=rules, processes=listed, **producer_description(self, "worker-receipt", sid)))
         return False
 
     def workers(self):
@@ -2101,7 +2275,7 @@ def worker_receipt(run):
     rules = next((x for x in run.request["workers"] if x["worker_id"] == sid), None)
     require(rules and rules["reserved_stop_d"] and workspace_entry(run.request, sid)["kind"] == "worker", "worker producer not in bound rules")
     directory = mkdir(run.root / "workers" / sid)
-    acting = CLI(run.cli.executable, sid, run.cli.data_dir, run.cli.run_file, directory / "draft")
+    acting = CLI(run.cli.executable, sid, run.cli.data_dir, run.cli.run_file, directory / "draft", run.state["cli_sha256"])
     acting.execution = getattr(run.cli, "execution", None)
     run.cli = acting
     workspace = bound_workspace(run, sid)
@@ -2134,7 +2308,7 @@ def worker_receipt(run):
     if proof["retained"] or proof["truncated_fields"]:
         reasons.append("other incomplete/unknown producer activity")
     for entry in entries(snap):
-        if entry.get("id") != proof["self_activity"]["id"] and not activity_quiescent(entry, operations, run, sid):
+        if entry.get("id") != proof["self_activity"]["id"] and not activity_quiescent(entry, operations, run, sid, True):
             reasons.append("other tool/operation not positively terminal: " + str(entry.get("id")))
     before = after = None
     try:
@@ -2171,7 +2345,7 @@ def producer_description(run, action, sid):
     return {"command": helper_command(run.root, action, sid), "statement": str(directory / "draft/statement.json"), "template": template,
             "permissions": "目錄0700／檔0600／拒symlink；只填語意statement，不自行產snapshot/stop/phase或完成時刻。",
             "evidence_root": str(directory), **rule,
-            "completion": "先完成statement/managed等準備，再另開獨立tool command activity原樣執行command，stdout直接回原tool；不加heredoc、重導、前後hash/ls/echo/exit、pipeline或背景符號。只接受原固定命令或原支援的一層可逆shell wrapper。成功後短回覆並completed/hold，runner在原turn結束後核實際結果；不要輪詢等自身完成。任何STOP不重試或改回條。"}
+            "completion": ("先停止你啟動的所有工作程序（含背景程序；payload.processes列出runner看到的部分；不要停AO基礎程序、MCP伺服器與使用者終端機裡的程序），確認都已停止後才執行command。完成後回報「已停止所有程序」。runner會在回合結束後用OS層再核。" if action == "worker-receipt" else "") + "先完成statement/managed等準備，再另開獨立tool command activity原樣執行command，stdout直接回原tool；不加heredoc、重導、前後hash/ls/echo/exit、pipeline或背景符號。只接受原固定命令或原支援的一層可逆shell wrapper。成功後短回覆並completed/hold，runner在原turn結束後核實際結果；不要輪詢等自身完成。任何STOP不重試或改回條。"}
 
 
 def old_receipt(run):
@@ -2763,13 +2937,9 @@ def bootstrap_origin(run, snapshot):
         "authorization_source": str(run.root / "start.json"), "start_sha256": run.state["start_sha256"]}
     require(type(message.get("sequence")) is int, "initial bootstrap sequence missing")
     run.state["bootstrap_sequence"] = message["sequence"]
-    started = dt.datetime.fromisoformat(intent["created_at"].replace("Z", "+00:00"))
-    owned = set()
-    for turn in snapshot["transcript"].get("turns", []):
-        owner = (turn.get("agentSettings") or {}).get("owner") or {}
-        requested = turn.get("requestedAt")
-        if owner.get("sessionId") == run.state["new_id"] or (requested and dt.datetime.fromisoformat(requested.replace("Z", "+00:00")) >= started):
-            owned.add(turn["id"])
+    # Project conversations carry old's turns; only entries at or after the sole spawn prompt belong to new.
+    owned = {e["turnId"] for e in entries(snapshot)
+             if e.get("turnId") and type(e.get("sequence")) is int and e["sequence"] >= message["sequence"]}
     require(message.get("turnId") in owned, "bootstrap turn not owned by new")
     run.save()
     return owned
@@ -2957,7 +3127,7 @@ def producer(run, action):
                 execution.new_id in (None, sid), "producer execution binding changed")
         execution.bindings.add(sid)
         execution.new_id = sid
-    acting = CLI(run.cli.executable, sid, run.cli.data_dir, run.cli.run_file, draft)
+    acting = CLI(run.cli.executable, sid, run.cli.data_dir, run.cli.run_file, draft, run.state["cli_sha256"])
     acting.execution = getattr(run.cli, "execution", None)
     snap = acting.session(sid)
     running = [t for t in snap["transcript"].get("turns", []) if t["state"] == "running"]
@@ -3038,19 +3208,39 @@ def producer(run, action):
         if not result.exists():
             handle = run.run_id + ":release:" + wid
             known = acting.execution.successful_effect(handle) if getattr(acting, "execution", None) else None
-            require(not intent.exists() or known, "UNKNOWN final notification; recover original handle")
+            refused = None
+            if intent.exists() and not known and getattr(acting, "execution", None):
+                # The journal may already hold the canonical refusal (dispatch persists it before this receipt).
+                ended = [x for x in acting.execution.effect_attempts(handle) if x[1]]
+                last = ended[-1] if ended else None
+                if (last and last[1]["terminal"] == "returned" and last[1]["returncode"] == 1 and
+                        b"(CHAT_CONTROLLER_NOT_READY)" in private_read(last[2] / "stderr.raw")):
+                    refused = last
+            require(not intent.exists() or known or refused, "UNKNOWN final notification; recover original handle")
             if intent.exists():
                 require(decode(private_read(intent)).get("sha256") == digest(text.encode()), "final payload changed")
             else:
                 publish(intent, canonical({"worker_id": wid, "payload": text, "sha256": digest(text.encode()), "at": now()}))
+            receipt = {"accepted": True, "read": "UNKNOWN", "executed": "UNKNOWN"}
             if known:
                 raw, call_id = private_read(known[2] / "stdout.raw"), known[0]["call_id"]
+            elif refused:
+                raw, call_id = b"", refused[0]["call_id"]
+                receipt.update(accepted=False, error_code="CHAT_CONTROLLER_NOT_READY")
             else:
-                raw = acting.call(["send", "--session", wid, "--steer", "--client-message-id", handle, "--message", text], 60)
+                try:
+                    raw = acting.call(["send", "--session", wid, "--steer", "--client-message-id", handle, "--message", text], 60)
+                except Stop:
+                    # Only a dispatched call the daemon refused because the worker's agent is not running.
+                    if not (getattr(acting, "last_code", None) == 1 and "(CHAT_CONTROLLER_NOT_READY)" in getattr(acting, "last_stderr", "")):
+                        raise
+                    raw = b""
+                    receipt.update(accepted=False, error_code="CHAT_CONTROLLER_NOT_READY")
                 call_id = getattr(getattr(acting, "execution", None), "last_call_id", None)
-            publish(result, canonical({"accepted": True, "stdout": raw.decode(), "call_id": call_id, "read": "UNKNOWN", "executed": "UNKNOWN"}))
-        notifications.append({"worker_id": wid, "receipt": str(result), "call_id": decode(private_read(result)).get("call_id"),
-                              "accepted": True, "read": "UNKNOWN", "executed": "UNKNOWN"})
+            publish(result, canonical(dict(receipt, stdout=raw.decode(), call_id=call_id)))
+        recorded = decode(private_read(result))
+        notifications.append({"worker_id": wid, "receipt": str(result), "call_id": recorded.get("call_id"),
+                              "accepted": recorded["accepted"], "read": "UNKNOWN", "executed": "UNKNOWN"})
     final = {"run_id": run.run_id, "new_id": sid, "evidence_turn_id": turn, "notifications": notifications, "created_at": now()}
     publish(run.root / "bootstrap/new/final.json", canonical(final))
     return final
@@ -3091,17 +3281,10 @@ def locate(old=None, create=False, execution=None):
     return root, initial
 
 
-def qualified(root, old, initial, temp):
-    directory = root / ".qualified"
-    qualification = decode(private_read(directory / "qualification.json"))
-    executable = directory / "ao"
-    require(digest(read_regular(executable)) == qualification.get("cli_sha256") and
-            digest(read_regular(Path(__file__).absolute())) == qualification.get("script_sha256") and
-            qualification.get("schema") == "rh-cli-qualification/2" and qualification.get("call_protocol") == CALL_PROTOCOL,
-            "fixed CLI/script qualification mismatch")
-    cli = CLI(executable, old, initial.data_dir, initial.run_file, temp)
+def path_cli(old, initial, temp):
+    """The ao found on PATH at start (initial) is the run's CLI; its path and bytes are recorded in state."""
+    cli = CLI(initial.executable, old, initial.data_dir, initial.run_file, temp, initial.sha256)
     cli.execution = initial.execution
-    cli.script_sha256 = qualification["script_sha256"]
     return cli
 
 
@@ -3166,7 +3349,7 @@ def prepare_request(root, initial, old, human_id, control_id, run_id):
         slot = root / ".start" / identifier(old)
         require(not (slot / "request.json").exists(), "start slot already holds a request")
         mkdir(slot / "evidence")
-        cli = qualified(root, old, initial, slot)
+        cli = path_cli(old, initial, slot)
         cli.execution.bindings = {old}
         pages = transcript_pages(cli, old, {human_id, control_id})
         session = pages[0][1]["session"]
@@ -3250,10 +3433,9 @@ def prepared_turn_ready(run):
 def write_initial_state(root, req, raw, cli):
     state = {"schema": "rh-state/1", "run_id": req["request_id"], "project_id": PROJECT, "old_id": req["old_id"],
              "call_protocol": CALL_PROTOCOL, "journal": str(cli.execution.journal.root),
-             "qualification_sha256": digest(private_read(root.parent / ".qualified/qualification.json")),
              "target": req["target"], "start_sha256": digest(raw), "authority_source_refs": req["authority"]["source_refs"],
              "worker_index_sha256": digest(canonical(req["workers"])), "original_t0": req["authority"],
-             "cli_path": str(cli.executable), "cli_sha256": cli.sha256,
+             "cli_path": str(cli.executable), "cli_sha256": cli.sha256, "cli_version": cli.call(["version"]).decode().strip(),
              "script_sha256": digest(private_read(root / "handoff.py")), "data_dir": str(cli.data_dir), "run_file": str(cli.run_file),
              "daemon_base": getattr(cli, "base", None),
              "location": location_info(cli), "retirement_sources": retirement_guard(root.parent, req["old_id"]),
@@ -3586,14 +3768,23 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
             isinstance(item.get("path"), str) and isinstance(item.get("sha256"), str) and
             re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) for item in materials), "authorized material index UNKNOWN")
     live = [x for x in cli.sessions() if x["projectId"] == PROJECT and not x["isTerminated"]]
-    require({x["id"] for x in live if x["role"] == "worker"} == set(workers) and
-            [x["id"] for x in live if x["role"] == "orchestrator"] == [old], "actor membership/responsibility changed")
+    require([x["id"] for x in live if x["role"] == "orchestrator"] == [old], "actor membership/responsibility changed")
     require(not state.get("new_id"), "new ownership responsibility not proven for retirement")
+    # No worker ever received this run's control: no dispatch, hold or preservation is left to close.
+    if not controls and not any((d / "sent.json").exists() for d in (current / "control").glob("worker-stop-*")):
+        return []
+    require({x["id"] for x in live if x["role"] == "worker"} == set(workers), "actor membership/responsibility changed")
     closed, remaining = [], set(controls)
     for sid, rules in workers.items():
         snap = cli.session(sid)
         require(snap["session"].get("id") == sid and snap["session"].get("kind") == "worker" and
-                snap["session"].get("projectId") == PROJECT and quiescent(snap), "worker not terminal/held")
+                snap["session"].get("projectId") == PROJECT and quiescent(snap, worker=True), "worker not terminal/held")
+        # A worker's local processes are judged by the OS (q1=b); the baseline is reused, never re-persisted here.
+        record = state.get("workers_infra_cutoff", {}).get(sid) or {}
+        base_of = lambda pid, tick, started: (record["base"] if (record.get("b2_pid"), record.get("b2_starttime")) == (pid, tick) else
+                                              provider_base(cli.read, sid, started, lambda cursor: None))
+        work = os_work_processes(proc_table(), sid, state["data_dir"], Path(workspace_entry(request, sid)["path"]), base_of, [os.getpid()])
+        require(not work, "worker processes still running: " + sid + ": " + processes_text(work))
         declared = [item for item in materials if item["worker_id"] == sid]
         verified = []
         if declared:
@@ -3756,19 +3947,15 @@ def retire_run(root, run_id, initial=None):
             verify_partial_snapshots(current)
             require(actual == inputs["run"] and private_manifest(slot_source) == inputs["slot"] and
                     private_read(slot_source / "request.json") == request_raw, "retirement original/slot drift")
-            qualification_raw = private_read(directory / "qualification.original.json")
-            require(digest(qualification_raw) == inputs["qualification_sha256"] == binding["qualification_sha256"], "original qualification changed")
-            executable = no_symlinks(state["cli_path"])
-            require(digest(read_regular(executable)) == state["cli_sha256"], "retirement transport CLI changed")
+            # Retirement is separately authorized maintenance: it binds the ao on PATH now, then checks it before each call.
+            installed = shutil.which("ao")
+            require(installed, "ao CLI missing")
+            executable = no_symlinks(Path(installed).resolve())
             manifest_path = directory / "manifest.json"
             if not manifest_path.exists():
                 native = state.get("call_protocol") == CALL_PROTOCOL
                 if native:
-                    require(state.get("qualification_sha256") == digest(qualification_raw), "native qualification binding changed")
-                    qualification = decode(qualification_raw)
-                    require(qualification.get("schema") == "rh-cli-qualification/2" and qualification.get("call_protocol") == CALL_PROTOCOL and
-                            qualification.get("script_sha256") == state["script_sha256"] and qualification.get("cli_sha256") == state["cli_sha256"] and
-                            state.get("journal") == str(journal.root), "native qualification identity mismatch")
+                    require(state.get("journal") == str(journal.root), "native journal identity mismatch")
                     facts = journal.facts(require_ended=True)
                     require(fence["frozen_executions"], "native execution set missing")
                 else:
@@ -3801,7 +3988,9 @@ def retire_run(root, run_id, initial=None):
                             not state.get("effects"), "prelaunch evidence UNKNOWN")
                 execution = journal.register("retire", operator, maintenance=fence["token"])
                 execution.configure(request, state["start_sha256"])
-                cli = CLI(executable, operator, data, state["run_file"], directory)
+                # Freeze the bytes once: the transport is pinned to them and they are what gets saved.
+                cli_bytes = read_regular(executable)
+                cli = CLI(executable, operator, data, state["run_file"], directory, digest(cli_bytes))
                 require(cli.base == state["daemon_base"], "retirement daemon location changed")
                 cli.execution = execution
                 try:
@@ -3818,8 +4007,7 @@ def retire_run(root, run_id, initial=None):
                 for source in request["sources"]:
                     require(digest(private_read(confined(current, source["raw_relpath"]))) == source["raw_sha256"], "authority source changed")
                 saved = mkdir(directory / "saved")
-                publish(saved / "qualification.json", qualification_raw)
-                publish(saved / "cli.bytes", read_regular(executable))
+                publish(saved / "cli.bytes", cli_bytes)
                 for item in authorization.get("materials", []):
                     sid = identifier(item["worker_id"])
                     require(sid in {w["worker_id"] for w in request["workers"]}, "material worker outside original index")
@@ -3829,6 +4017,7 @@ def retire_run(root, run_id, initial=None):
                 copy_private_tree(journal.root, directory / "journal.original")
                 manifest = dict(run=inputs["run"], slot=inputs["slot"], journal=private_manifest(directory / "journal.original"),
                     journal_root=str(journal.root), saved=private_manifest(saved), closed_effects=closed,
+                    cli=dict(path=str(executable), sha256=cli.sha256),
                     call_facts_sha256=digest(canonical(facts)), native_preconditions=all_facts,
                     authorization_sha256=digest(authorization_raw), fence_token=fence["token"])
                 publish(manifest_path, canonical(manifest))
@@ -3836,10 +4025,14 @@ def retire_run(root, run_id, initial=None):
             # crash before intent. No fresh capture or dispatch on this branch.
             manifest_raw = private_read(manifest_path)
             manifest = decode(manifest_raw)
+            # No compatibility with the pre-RH-GATE1 manifest (no CLI binding): refuse it by name, never guess.
+            require(isinstance(manifest.get("cli"), dict) and isinstance(manifest["cli"].get("sha256"), str),
+                    "pending retirement manifest is the old format without a CLI binding; recovery is not supported")
             require(manifest["run"] == inputs["run"] and manifest["slot"] == inputs["slot"] and
                     manifest["authorization_sha256"] == digest(authorization_raw) and manifest["fence_token"] == fence["token"] and
                     private_manifest(directory / "journal.original") == manifest["journal"] and
-                    private_manifest(directory / "saved") == manifest["saved"], "immutable retirement preparation changed")
+                    private_manifest(directory / "saved") == manifest["saved"] and
+                    digest(private_read(directory / "saved/cli.bytes")) == manifest["cli"]["sha256"], "immutable retirement preparation changed")
             require(private_manifest(journal.root) == manifest["journal"], "frozen journal drift before commit")
             intent = dict(schema="rh-retirement-intent/2", run_id=run_id, old_id=old, authorization_sha256=digest(authorization_raw),
                           manifest_sha256=digest(manifest_raw), fence_token=fence["token"], closed_effects=manifest["closed_effects"])
@@ -3899,8 +4092,7 @@ def start(root, initial, old, target, selector=None):
         if (destination / "start.json").exists():
             require(private_read(destination / "start.json") == raw, "UUID bound to different request")
             state = decode(private_read(destination / "state.json"))
-            require(state.get("call_protocol") == CALL_PROTOCOL and state.get("script_sha256") == digest(Path(__file__).read_bytes()) and
-                    state.get("qualification_sha256") == digest(private_read(root / ".qualified/qualification.json")),
+            require(state.get("call_protocol") == CALL_PROTOCOL and state.get("script_sha256") == digest(Path(__file__).read_bytes()),
                     "cached historical generation cannot execute")
             return state
         for directory in root.iterdir():
@@ -3909,12 +4101,11 @@ def start(root, initial, old, target, selector=None):
             require((directory / "state.json").exists(), "incomplete prior run requires inspection")
             state = decode(private_read(directory / "state.json"))
             require(state["old_id"] != old or state["outcome"] == "complete", "old already has unresolved run")
-        cli = qualified(root, old, initial, slot)
+        cli = path_cli(old, initial, slot)
         prior_journal_guard(cli.execution.journal, old)
         cli.execution.configure(req, digest(raw), load_refresh=False)
         cli.execution.phase = "preflight"
-        cli.execution.journal.bind(dict(root=str(root), old_id=old, start_sha256=digest(raw),
-            qualification_sha256=digest(private_read(root / ".qualified/qualification.json"))), source_root=slot)
+        cli.execution.journal.bind(dict(root=str(root), old_id=old, start_sha256=digest(raw)), source_root=slot)
         old_snap = validate_sources_live(req, cli)
         journal = cli.execution.journal
         # start records the original human refs itself; this is a record, not proof of consent.
@@ -3927,9 +4118,7 @@ def start(root, initial, old, target, selector=None):
         preflight = target_preflight(cli, target)
         mkdir(destination)
         publish(destination / "start.json", raw)
-        script = read_regular(Path(__file__).absolute())
-        require(digest(script) == getattr(cli, "script_sha256", digest(script)), "qualified script changed during preflight")
-        publish(destination / "handoff.py", script)
+        publish(destination / "handoff.py", read_regular(Path(__file__).absolute()))
         for source in req["sources"]:
             publish(destination / source["raw_relpath"], private_read(confined(slot, source["raw_relpath"])))
         write_initial_state(destination, req, raw, cli)
@@ -3956,17 +4145,14 @@ def load_run(root, run_id, initial, execution=None):
     state = decode(private_read(directory / "state.json"))
     retirement_guard(root, state["old_id"], run_id)
     require(state["script_sha256"] == digest(Path(__file__).read_bytes()), "run script changed")
-    require(state.get("call_protocol") == CALL_PROTOCOL and
-            state.get("qualification_sha256") == digest(private_read(root / ".qualified/qualification.json")),
-            "run qualification/protocol mismatch; historical runs cannot execute")
+    require(state.get("call_protocol") == CALL_PROTOCOL, "run protocol mismatch; historical runs cannot execute")
     require(execution is not None and state.get("journal") == str(execution.journal.root), "normal loader requires fixed journal")
     binding = decode(private_read(execution.journal.root / "binding.json"))
     require(binding.get("root") == str(root) and binding.get("old_id") == state["old_id"] and
-            binding.get("start_sha256") == state["start_sha256"] == digest(private_read(directory / "start.json")) and
-            binding.get("qualification_sha256") == state["qualification_sha256"], "run/journal immutable binding mismatch")
-    cli = CLI(state["cli_path"], state["old_id"], state["data_dir"], state["run_file"], directory)
+            binding.get("start_sha256") == state["start_sha256"] == digest(private_read(directory / "start.json")),
+            "run/journal immutable binding mismatch")
+    cli = CLI(state["cli_path"], state["old_id"], state["data_dir"], state["run_file"], directory, state["cli_sha256"])
     cli.execution = execution
-    require(cli.sha256 == state["cli_sha256"], "run CLI changed")
     require(cli.base == state["daemon_base"], "run daemon location changed")
     return Run(directory, cli)
 

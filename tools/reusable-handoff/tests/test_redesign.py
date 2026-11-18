@@ -62,11 +62,6 @@ class RefreshProofStartTests(unittest.TestCase):
         self.cli = h.mkdir(self.home / "bin") / "ao"
         self.cli.write_bytes(b"synthetic CLI bytes")
         self.cli.chmod(0o700)
-        h.publish(self.root / ".qualified/ao", self.cli.read_bytes())
-        (self.root / ".qualified/ao").chmod(0o700)
-        h.publish(self.root / ".qualified/qualification.json", h.canonical(dict(schema="rh-cli-qualification/2",
-            call_protocol=h.CALL_PROTOCOL, cli_sha256=h.digest(self.cli.read_bytes()),
-            script_sha256=h.digest(Path(h.__file__).read_bytes()))))
         self.run_file = self.home / ".ao/running.json"
         h.publish(self.run_file, b'{"port":1}')
         with closing(sqlite3.connect(self.data / "ao.db")) as db, db:
@@ -75,9 +70,11 @@ class RefreshProofStartTests(unittest.TestCase):
         self.refreshes, self.source_reads = 0, 0
 
     def cli_transport(self, argv, **kwargs):
-        if Path(argv[0]) not in (self.cli, self.root / ".qualified/ao"):
+        if Path(argv[0]) != self.cli:
             return self.real_run(argv, **kwargs)
         args = argv[1:]
+        if args == ["version"]:
+            return SimpleNamespace(stdout=b"0.42.0 commit fixture\n", stderr=b"", returncode=0)
         if args[:3] == ["project", "documents", "info"]:
             result = dict(documents=dict(sharedDir=str(self.root.parent / "shared")))
         elif args[:2] == ["session", "get"]:
@@ -138,9 +135,23 @@ class RefreshProofStartTests(unittest.TestCase):
         self.assertEqual(self.refreshes, 1)
         journal = h.Journal(self.data, self.run_id)
         execution = journal.register("_run", "old")
-        cli = h.CLI(self.root / ".qualified/ao", "old", self.data, self.run_file, self.data)
+        cli = h.CLI(self.cli, "old", self.data, self.run_file, self.data)
         run = h.load_run(self.root, self.run_id, cli, execution)
         self.assertEqual(run.cli.execution.refresh_authority, h.file_reference(journal.root / "capabilities.json"))
+        # The run CLI is the PATH executable recorded at start, with its version and the script bytes.
+        self.assertEqual((run.state["cli_path"], run.state["cli_sha256"], run.state["cli_version"], run.state["script_sha256"]),
+                         (str(self.cli), h.digest(self.cli.read_bytes()), "0.42.0 commit fixture", h.digest(Path(h.__file__).read_bytes())))
+        self.assertFalse((self.root / ".qualified").exists())
+        execution.close()
+        # Replacing the CLI bytes mid-run stops every later call and every continue, naming both hashes.
+        before, after = h.digest(self.cli.read_bytes()), h.digest(b"updated CLI bytes")
+        self.cli.write_bytes(b"updated CLI bytes")
+        expected = "AO CLI changed since run start: " + str(self.cli) + " " + before[:8] + " → " + after[:8]
+        with self.assertRaisesRegex(h.Stop, expected):
+            run.cli.call(["spawn", "--help"])
+        execution = journal.register("continue", "old")
+        with self.assertRaisesRegex(h.Stop, expected):
+            h.load_run(self.root, self.run_id, cli, execution)
         execution.close()
         facts = journal.facts()
         self.assertEqual(sum(x["kind"] == "metadata-refresh" for x in facts), 1)
@@ -438,9 +449,7 @@ h.Journal(pathlib.Path(sys.argv[2]),sys.argv[3]).register('start','old')
         request = dict(old_id="old", target={}, authority=dict(source_refs=[]), workers=[], sources=[])
         raw = h.canonical(request)
         h.publish(slot / "request.json", raw)
-        qraw = h.canonical(dict(schema="rh-cli-qualification/2", call_protocol=h.CALL_PROTOCOL))
-        h.publish(root / ".qualified/qualification.json", qraw)
-        cli.execution.journal.bind(dict(root=str(root), old_id="old", start_sha256=h.digest(raw), qualification_sha256=h.digest(qraw)), source_root=slot)
+        cli.execution.journal.bind(dict(root=str(root), old_id="old", start_sha256=h.digest(raw)), source_root=slot)
         cli.execution.configure(request, h.digest(raw))
         with patch.object(h.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b'{}', stderr=b"")):
             cli.session("old")
@@ -464,9 +473,9 @@ h.Journal(pathlib.Path(sys.argv[2]),sys.argv[3]).register('start','old')
                 h.publish(data / "running.json", b'{"port":1}')
                 request = dict(request_id=run_id, old_id="old", workers=[], target={}, authority=dict(source_refs=["human"]))
                 h.publish(root / "start.json", h.canonical(request))
-                state = dict(start_sha256=h.digest(h.canonical(request)), stage="spawn", outcome="running")
-                h.publish(root / "state.json", h.canonical(state))
                 cli = h.CLI(true_cli(data), "old", data, data / "running.json", data)
+                state = dict(start_sha256=h.digest(h.canonical(request)), stage="spawn", outcome="running", cli_sha256=cli.sha256)
+                h.publish(root / "state.json", h.canonical(state))
                 cli.execution = h.Journal(data, run_id).register("bootstrap", "new")
                 run = h.Run(root, cli)
                 self.assertNotIn("new", cli.execution.bindings)
@@ -638,7 +647,7 @@ class HistoricalDatasetTests(unittest.TestCase):
             self.assertEqual(h.effect_closure(historical), {})
             h.publish(c.data / "running.json", b'{"port":1}')
             journal = h.Journal(c.data, c.run_id)
-            journal.bind(dict(root=str(c.root), old_id="old", start_sha256=h.digest(h.canonical(c.request)), qualification_sha256="a" * 64))
+            journal.bind(dict(root=str(c.root), old_id="old", start_sha256=h.digest(h.canonical(c.request))))
             fence = journal.freeze("operator", "D-99", "b" * 64)
             execution = journal.register("retire", "operator", maintenance=fence["token"])
             execution.configure(c.request)
@@ -818,7 +827,7 @@ class ControlledMaterialTests(unittest.TestCase):
                 handle = run_id + ":worker-stop:" + sid
                 rules = dict(worker_id=sid, reserved_stop_d="D-77", hold_state="held", release=dict(mode="keep-held"))
                 request = dict(old_id="old", workers=[rules], workspace_index=[dict(session_id=sid, kind="worker", path=str(workspace))])
-                state = dict(run_id=run_id)
+                state = dict(run_id=run_id, data_dir=str(data))
                 payload = dict(run_id=run_id, recipient=sid, old_id="old", phase="worker-stop", instruction=dict(directive="D-77", rules=rules))
                 raw = h.canonical(payload)
                 control = current / "control" / ("worker-stop-" + sid)
@@ -884,7 +893,9 @@ class RetirementTests(unittest.TestCase):
         workers = [dict(worker_id="arbitrary-worker-" + str(i), reserved_stop_d="D-" + str(77 + i), hold_state="held",
                         release=dict(mode="keep-held")) for i in range(3 if "three_workers" in self._testMethodName else 0)]
         self.request = dict(schema="rh-start-request/1", request_id=self.run_id, project_id=h.PROJECT, old_id="old",
-                            authority=dict(source_refs=["human"]), workers=workers, target={}, sources=[])
+                            authority=dict(source_refs=["human"]), workers=workers, target={}, sources=[],
+                            workspace_index=[dict(session_id=w["worker_id"], kind="worker", path=str(self.data / "worktrees" / h.PROJECT / w["worker_id"]))
+                                             for w in workers])
         raw = h.canonical(self.request)
         for path in (self.run / "start.json", self.slot / "request.json"):
             h.publish(path, raw)
@@ -892,19 +903,18 @@ class RetirementTests(unittest.TestCase):
         h.publish(self.run / "runner.lock", b"")
         h.publish(self.data / "running.json", b'{"port":1}')
         executable = true_cli(self.data)
-        qualification = dict(schema="rh-cli-qualification/2", call_protocol=h.CALL_PROTOCOL,
-                             script_sha256=h.digest(Path(h.__file__).read_bytes()), cli_sha256=h.digest(executable.read_bytes()))
-        qraw = h.canonical(qualification)
-        h.publish(self.directory / "qualification.original.json", qraw)
-        h.publish(self.root / ".qualified/qualification.json", qraw)
+        # Retirement binds the ao on PATH when it starts, not the run's original CLI.
+        self.path_cli = h.mkdir(self.data / "bin") / "ao"
+        self.path_cli.write_bytes(b"#!/bin/sh\nexit 0\n")
+        self.path_cli.chmod(0o700)
         self.state = dict(schema="rh-state/1", run_id=self.run_id, project_id=h.PROJECT, old_id="old", target={},
-                          start_sha256=h.digest(raw), script_sha256=qualification["script_sha256"], cli_sha256=qualification["cli_sha256"],
+                          start_sha256=h.digest(raw), script_sha256=h.digest(Path(h.__file__).read_bytes()), cli_sha256=h.digest(executable.read_bytes()),
                           cli_path=str(executable), data_dir=str(self.data), run_file=str(self.data / "running.json"),
                           daemon_base="http://127.0.0.1:1/api/v1/", journal=str(self.data / "projects" / h.PROJECT / "orchestrator/.handoff-journal" / self.run_id), call_protocol=h.CALL_PROTOCOL,
-                          qualification_sha256=h.digest(qraw), stage="prepared", outcome="stopped", effects={})
+                          stage="prepared", outcome="stopped", effects={})
         h.publish(self.run / "state.json", h.canonical(self.state))
         self.journal = h.Journal(self.data, self.run_id)
-        self.journal.bind(dict(root=str(self.root), old_id="old", start_sha256=h.digest(raw), qualification_sha256=h.digest(qraw)))
+        self.journal.bind(dict(root=str(self.root), old_id="old", start_sha256=h.digest(raw)))
         # Real ended process, not a mocked process probe.
         code = """import importlib.util,pathlib,sys
 s=importlib.util.spec_from_file_location('h',sys.argv[1]);h=importlib.util.module_from_spec(s);s.loader.exec_module(h)
@@ -926,7 +936,7 @@ c.call(['spawn','--help']);e.close()
             path = self.directory / "holds" / (sid + ".json")
             h.publish(path, h.canonical(snap))
             holds[sid] = dict(snapshot=h.file_reference(path), message_id=anchor["id"], held=True)
-        self.inputs = dict(run=h.private_manifest(self.run), slot=h.private_manifest(self.slot), qualification_sha256=h.digest(qraw),
+        self.inputs = dict(run=h.private_manifest(self.run), slot=h.private_manifest(self.slot),
                            prior_retirement=[x for x in h.private_manifest(self.directory) if x["path"].startswith("holds/")])
         h.publish(self.directory / "input-manifest.json", h.canonical(self.inputs))
         self.authorization = dict(schema="rh-retirement-authorization/2", run_id=self.run_id, old_id="old", project_id=h.PROJECT,
@@ -948,7 +958,8 @@ c.call(['spawn','--help']);e.close()
         return SimpleNamespace(returncode=0, stdout=h.canonical(value), stderr=b"")
 
     def retire(self):
-        with patch.dict(os.environ, AO_SESSION_ID="operator"), patch.object(h.subprocess, "run", side_effect=self.transport):
+        with patch.dict(os.environ, AO_SESSION_ID="operator", PATH=str(self.path_cli.parent) + os.pathsep + os.environ["PATH"]), \
+                patch.object(h.subprocess, "run", side_effect=self.transport):
             return h.retire_run(self.root, self.run_id)
 
     def test_arbitrary_uuid_retirement_preserves_original_and_journal_and_guards(self):
@@ -966,6 +977,26 @@ c.call(['spawn','--help']);e.close()
             h.retirement_guard(self.root, run_id=self.run_id)
         self.assertTrue(list((self.directory / "journal.original/executions").glob("*/calls/*/stdout.raw")))
 
+    def test_retirement_after_ao_update_binds_its_own_path_cli(self):
+        # The run's original CLI was replaced by an AO update; retirement still runs with the ao on PATH now.
+        Path(self.state["cli_path"]).write_bytes(b"#!/bin/sh\n# updated\nexit 0\n")
+        self.retire()
+        manifest = h.decode(h.private_read(self.directory / "manifest.json"))
+        self.assertEqual(manifest["cli"], dict(path=str(self.path_cli), sha256=h.digest(self.path_cli.read_bytes())))
+
+    def test_retirement_saves_the_cli_bytes_its_transport_used_even_if_ao_updates_afterwards(self):
+        used = self.path_cli.read_bytes()
+        original = h.retirement_preconditions
+        def then_update(*args, **kwargs):
+            closed = original(*args, **kwargs)
+            self.path_cli.write_bytes(b"#!/bin/sh\n# updated after the last call\nexit 0\n")
+            return closed
+        with patch.object(h, "retirement_preconditions", side_effect=then_update):
+            self.retire()
+        manifest = h.decode(h.private_read(self.directory / "manifest.json"))
+        saved = h.private_read(self.directory / "saved/cli.bytes")
+        self.assertEqual((saved, h.digest(saved)), (used, manifest["cli"]["sha256"]))
+
     def test_crash_after_manifest_before_intent_recovers_without_another_io(self):
         publish = h.publish
         def crash(path, raw):
@@ -979,10 +1010,32 @@ c.call(['spawn','--help']);e.close()
         with self.assertRaises(h.Stop):
             h.retirement_guard(self.root, "old")
         h.publish(self.directory / "recovery-authorization.json", h.canonical(dict(operator_session_id="operator", directive_ref="D-92", fence_token=self.journal.state()["token"])))
-        with patch.dict(os.environ, AO_SESSION_ID="operator"), patch.object(h.subprocess, "run") as transport:
+        with patch.dict(os.environ, AO_SESSION_ID="operator", PATH=str(self.path_cli.parent) + os.pathsep + os.environ["PATH"]), \
+                patch.object(h.subprocess, "run") as transport:
             h.retire_run(self.root, self.run_id)
             transport.assert_not_called()
         self.assertEqual(before, h.private_manifest(self.directory / "journal.original"))
+
+    def test_old_format_pending_manifest_is_refused_by_name_not_recovered(self):
+        # A manifest published by the pre-RH-GATE1 retire_run has no CLI binding; principle 3: refuse, no compatibility path.
+        publish = h.publish
+        def crash(path, raw):
+            if Path(path) == self.directory / "intent.json":
+                raise OSError("synthetic crash")
+            return publish(path, raw)
+        with patch.object(h, "publish", side_effect=crash), self.assertRaisesRegex(OSError, "synthetic crash"):
+            self.retire()
+        manifest = h.decode(h.private_read(self.directory / "manifest.json"))
+        del manifest["cli"]
+        h.replace_private(self.directory / "manifest.json", manifest)
+        h.publish(self.directory / "recovery-authorization.json", h.canonical(dict(operator_session_id="operator", directive_ref="D-92", fence_token=self.journal.state()["token"])))
+        with patch.dict(os.environ, AO_SESSION_ID="operator", PATH=str(self.path_cli.parent) + os.pathsep + os.environ["PATH"]), \
+                patch.object(h.subprocess, "run") as transport, \
+                self.assertRaisesRegex(h.Stop, "old format without a CLI binding; recovery is not supported"):
+            h.retire_run(self.root, self.run_id)
+        transport.assert_not_called()
+        self.assertFalse((self.directory / "intent.json").exists())
+        self.assertFalse((self.directory / "receipt.json").exists())
 
     def test_slot_drift_fences_without_receipt_and_cannot_reopen(self):
         (self.slot / "request.json").write_bytes(b"changed")
@@ -993,13 +1046,93 @@ c.call(['spawn','--help']);e.close()
         self.assertFalse((self.root / ".retired" / self.run_id).exists())
 
     def test_three_workers_with_other_reserved_directives_keep_their_holds(self):
-        receipt = self.retire()
+        # Once any worker received control, the uncontrolled workers' original holds are closed too.
+        self.dispatch_control(0)
+        # q1=b: a worker's leftover exec-session handle is judged by the OS check, not by a receipt.
+        self.snaps[self.request["workers"][2]["worker_id"]]["transcript"]["entries"].append(dict(
+            id="exec", kind="activity", activityKind="command", status="completed", sequence=2, turnId="turn",
+            detail=dict(toolName="exec_command", exitCode=0, result=dict(session_id=7, exit_code=None))))
+        with patch.object(h, "proc_table", return_value={}):
+            receipt = self.retire()
         self.assertEqual(len(receipt["closed_effects"]), 3)
         self.assertTrue(all(x["held"] for x in receipt["closed_effects"]))
         self.assertEqual([w["reserved_stop_d"] for w in self.request["workers"]], ["D-77", "D-78", "D-79"])
 
+    def rebind_inputs(self, holds=None):
+        self.inputs["run"] = h.private_manifest(self.run)
+        h.replace_private(self.directory / "input-manifest.json", self.inputs)
+        self.authorization.update(input_manifest_sha256=h.digest(h.canonical(self.inputs)))
+        if holds is not None:
+            self.authorization["hold_evidence"] = holds
+        h.replace_private(self.directory / "authorization.json", self.authorization)
+
+    def dispatch_control(self, index):
+        """One worker really received this run's stop control, so the run is no longer zero-control."""
+        rules = self.request["workers"][index]
+        sid = rules["worker_id"]
+        handle = self.run_id + ":worker-stop:" + sid
+        raw = h.canonical(dict(run_id=self.run_id, recipient=sid, old_id="old", phase="worker-stop",
+                               instruction=dict(directive=rules["reserved_stop_d"], rules=rules))).decode()
+        argv = ["send", "--session", sid, "--steer", "--client-message-id", handle, "--message", raw]
+        control = self.run / "control" / ("worker-stop-" + sid)
+        h.publish(control / "payload.json", raw.encode())
+        h.publish(control / "intent.json", h.canonical(dict(argv=argv)))
+        h.publish(control / "sent.json", b"{}")
+        code = """import importlib.util,json,pathlib,sys
+s=importlib.util.spec_from_file_location('h',sys.argv[1]);h=importlib.util.module_from_spec(s);s.loader.exec_module(h)
+d=pathlib.Path(sys.argv[2]);j=h.Journal(d,sys.argv[3]);e=j.register('_run','old');e.configure(json.loads(sys.argv[5]),sys.argv[6])
+c=h.CLI(pathlib.Path(sys.argv[4]),'old',d,d/'running.json',d);c.execution=e
+c.call(json.loads(sys.argv[7]));e.close()
+"""
+        subprocess.run([sys.executable, "-I", "-B", "-c", code, h.__file__, str(self.data), self.run_id, self.state["cli_path"],
+                        json.dumps(self.request), self.state["start_sha256"], json.dumps(argv)], check=True, capture_output=True)
+        snap = self.snaps[sid]
+        snap["transcript"]["turns"].append(dict(id="dispatch", state="completed", completedAt="2026-11-18T00:00:01Z"))
+        snap["transcript"]["entries"].append(dict(id="directive", kind="message", role="user", sequence=2, turnId="dispatch",
+                                                  clientMessageId=handle, origin="automation", senderSessionId="old",
+                                                  senderProjectId=h.PROJECT, text="[from old] " + raw))
+        h.publish(self.run / "workers" / sid / "stop.json", h.canonical(dict(
+            schema="rh-worker-stop/1", run_id=self.run_id, worker_id=sid, project_id=h.PROJECT, state="blocked", resume_state="held",
+            evidence_turn_id="dispatch", preservation=[], stop_directive=dict(last_ack_d="D-1", next_d=rules["reserved_stop_d"]))))
+        self.authorization["expected_effect_ids"] = [handle]
+        self.rebind_inputs()
+
+    def test_three_workers_zero_control_run_retires_after_membership_and_hold_change(self):
+        # P-4: nothing was ever dispatched, so a changed worker set and unknown holds no longer block retirement.
+        workers = [w["worker_id"] for w in self.request["workers"]]
+        del self.snaps[workers[0]]
+        self.rebind_inputs(holds={})
+        receipt = self.retire()
+        self.assertEqual(receipt["closed_effects"], [])
+
+    def test_three_workers_intent_without_sent_still_retires_as_zero_control(self):
+        # F11: an intent written but never dispatched (no sent.json, no fact) is not a control.
+        sid = self.request["workers"][0]["worker_id"]
+        control = self.run / "control" / ("worker-stop-" + sid)
+        payload = h.canonical(dict(run_id=self.run_id, recipient=sid, old_id="old", phase="worker-stop"))
+        h.publish(control / "payload.json", payload)
+        h.publish(control / "intent.json", h.canonical(dict(argv=["send", "--session", sid, "--steer", "--client-message-id",
+                                                                    self.run_id + ":worker-stop:" + sid, "--message", payload.decode()])))
+        del self.snaps[self.request["workers"][1]["worker_id"]]
+        self.rebind_inputs(holds={})
+        self.assertEqual(self.retire()["closed_effects"], [])
+
+    def test_three_workers_dispatched_or_controlled_run_still_closes_every_worker(self):
+        sid = self.request["workers"][0]["worker_id"]
+        cli = SimpleNamespace(session=lambda actor: self.snaps[actor], documents=lambda: dict(lease=dict(sessionId="old", frozen=False)),
+                              sessions=lambda: [dict(id=k, role=v["session"]["kind"], projectId=h.PROJECT, isTerminated=False)
+                                                for k, v in self.snaps.items() if k != sid])
+        state = dict(run_id=self.run_id)
+        fact = dict(kind="worker-control", effect_id="worker-stop-" + sid, target=dict(session_id=sid), terminal="returned", result=dict(returncode=0))
+        with self.assertRaisesRegex(h.Stop, "actor membership"):
+            h.retirement_preconditions(cli, state, self.request, {"worker-stop-" + sid: [fact]}, self.authorization, self.run)
+        h.publish(self.run / "control" / ("worker-stop-" + sid) / "sent.json", b"{}")
+        with self.assertRaisesRegex(h.Stop, "actor membership"):
+            h.retirement_preconditions(cli, state, self.request, {}, self.authorization, self.run)
+
     def test_three_workers_later_durable_steer_blocks_even_after_completed(self):
         from producer_transport import directive
+        self.dispatch_control(1)
         sid = self.request["workers"][0]["worker_id"]
         snap = self.snaps[sid]
         snap["session"]["activity"]["state"] = "active"
