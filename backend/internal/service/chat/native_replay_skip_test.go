@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -236,4 +237,81 @@ func TestResumeStillImportsNewReplayContent(t *testing.T) {
 			tc.check(t, before, after)
 		})
 	}
+}
+
+// Cross-turn lists keep their order on the first resume after live work: the
+// replay re-projects an older turn that gained an item, so the later turn's
+// unchanged copy must be written again after it and stay current (review P2).
+func TestResumeKeepsTheLatestCrossTurnListCurrent(t *testing.T) {
+	h := newReplayImportHarness(t, nil)
+	ctrl, _ := h.resume(t)
+	plan := func(step string) *domain.ConversationPlan {
+		return &domain.ConversationPlan{SpansTurns: true, Steps: []domain.ConversationPlanStep{{Text: step, Status: domain.PlanStepInProgress}}}
+	}
+	// Live work: turn A writes list A, then turn B writes the newer list B.
+	var providerTurns []string
+	for i, step := range []string{"list A", "list B"} {
+		turn, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{Text: "live " + step, ClientMessageID: fmt.Sprintf("live-%d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		providerTurns = append(providerTurns, turn.ProviderTurnID)
+		h.conv.fakeConversation.events <- ports.ChatEvent{Kind: ports.ChatEventPlanUpdated, ProviderEventID: "acp-host:plan-" + step, ProviderTurnID: turn.ProviderTurnID, Plan: plan(step)}
+		h.conv.fakeConversation.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderEventID: "acp-host:done-" + step, ProviderTurnID: turn.ProviderTurnID, TurnState: domain.TurnStateCompleted}
+		waitForProviderTurnState(t, h.st, ctrl.ConversationID(), turn.ProviderTurnID, domain.TurnStateCompleted)
+	}
+	planRow := func(snapshot store.ConversationSnapshot, providerTurn string) string {
+		for _, activity := range snapshot.Activities {
+			if activity.ProviderItemID == "ao-plan-"+providerTurn {
+				return string(activity.Detail)
+			}
+		}
+		t.Fatalf("no plan row for %s", providerTurn)
+		return ""
+	}
+	live, err := h.st.LoadConversationSnapshot(context.Background(), ctrl.ConversationID())
+	if err != nil || strings.Contains(planRow(live, providerTurns[1]), `"superseded"`) {
+		t.Fatalf("live list B is not current: %v", err)
+	}
+	h.stop(t)
+
+	// The history replay uses its own ids; turn A gained a tool item.
+	a, b := providerTurns[0], providerTurns[1]
+	h.conv.events = []ports.ChatEvent{
+		{Kind: ports.ChatEventTurnStarted, ProviderEventID: "acp-history:start-a", ProviderTurnID: a},
+		{Kind: ports.ChatEventActivityCompleted, ProviderEventID: "acp-history:tool-a", ProviderTurnID: a, ProviderItemID: "acp-history:tool-a",
+			ActivityKind: domain.ActivityKindCommand, ActivityStatus: domain.ActivityStatusCompleted, Summary: "git status", Detail: json.RawMessage(`{"command":"git status"}`)},
+		{Kind: ports.ChatEventPlanUpdated, ProviderEventID: "acp-history:plan-a", ProviderTurnID: a, Plan: plan("list A")},
+		{Kind: ports.ChatEventTurnCompleted, ProviderEventID: "acp-history:done-a", ProviderTurnID: a, TurnState: domain.TurnStateCompleted},
+		{Kind: ports.ChatEventTurnStarted, ProviderEventID: "acp-history:start-b", ProviderTurnID: b},
+		{Kind: ports.ChatEventPlanUpdated, ProviderEventID: "acp-history:plan-b", ProviderTurnID: b, Plan: plan("list B")},
+		{Kind: ports.ChatEventTurnCompleted, ProviderEventID: "acp-history:done-b", ProviderTurnID: b, TurnState: domain.TurnStateCompleted},
+	}
+	ctrl, _ = h.resume(t)
+	after, err := h.st.LoadConversationSnapshot(context.Background(), ctrl.ConversationID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail := planRow(after, b); strings.Contains(detail, `"superseded"`) {
+		t.Fatalf("resume made the older list current; list B = %s", detail)
+	}
+	if detail := planRow(after, a); !strings.Contains(detail, `"superseded":true`) {
+		t.Fatalf("older list A not superseded after resume: %s", detail)
+	}
+}
+
+func waitForProviderTurnState(t *testing.T, st *store.Store, conversationID, providerTurn string, state domain.TurnState) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		snapshot, err := st.LoadConversationSnapshot(context.Background(), conversationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, turn := range snapshot.Turns {
+			if turn.ProviderTurnID == providerTurn && turn.State == state {
+				return
+			}
+		}
+	}
+	t.Fatalf("turn %s never reached %s", providerTurn, state)
 }

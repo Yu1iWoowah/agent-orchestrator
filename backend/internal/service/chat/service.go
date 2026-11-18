@@ -2464,9 +2464,21 @@ func skipSettledReplay(events []ports.ChatEvent, turns []domain.ConversationTurn
 	if len(skip) == 0 {
 		return events, 0, 0
 	}
+	// A cross-turn list's current copy is the one written last. Once an earlier
+	// copy is re-projected (its turn changed), every later copy must be written
+	// again after it, as an unfiltered replay would, or the older list would
+	// become current.
+	spanningFrom := len(events)
+	for i, event := range events {
+		if event.Kind == ports.ChatEventPlanUpdated && event.Plan != nil && event.Plan.SpansTurns && !skip[event.ProviderTurnID] {
+			spanningFrom = i
+			break
+		}
+	}
 	kept := make([]ports.ChatEvent, 0, len(events))
-	for _, event := range events {
-		if skip[event.ProviderTurnID] && (event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted || event.Kind == ports.ChatEventPlanUpdated) {
+	for i, event := range events {
+		laterSpanningCopy := event.Kind == ports.ChatEventPlanUpdated && event.Plan != nil && event.Plan.SpansTurns && i > spanningFrom
+		if skip[event.ProviderTurnID] && !laterSpanningCopy && (event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted || event.Kind == ports.ChatEventPlanUpdated) {
 			continue
 		}
 		kept = append(kept, event)
