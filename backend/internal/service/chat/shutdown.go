@@ -39,7 +39,7 @@ func (c *Controller) PreflightShutdown(ctx context.Context) error {
 	for !c.sendMu.TryLock() {
 		select {
 		case <-checkCtx.Done():
-			return ports.ErrChatShutdownNotSettled
+			return c.blocked("controller_busy", nil)
 		case <-time.After(time.Millisecond):
 		}
 	}
@@ -47,7 +47,7 @@ func (c *Controller) PreflightShutdown(ctx context.Context) error {
 	for !c.deliveryCheckMu.TryLock() {
 		select {
 		case <-checkCtx.Done():
-			return ports.ErrChatShutdownNotSettled
+			return c.blocked("controller_busy", nil)
 		case <-time.After(time.Millisecond):
 		}
 	}
@@ -66,22 +66,22 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 	nativeInFlight := c.pendingTurnID != "" || c.state == ports.ChatControllerBusy
 	c.mu.Unlock()
 	if uncovered {
-		return ports.ErrChatShutdownNotSettled
+		return c.blocked("provider_work_pending", nil)
 	}
 	if compacting {
 		if !notify {
-			return ports.ErrChatShutdownNotSettled
+			return c.blocked("compaction_pending", nil)
 		}
 		if err := c.outboundAttention(ctx, false); err != nil {
-			return errors.Join(ports.ErrChatShutdownNotSettled, err)
+			return c.blocked("compaction_pending", err)
 		}
 		reconciler, ok := c.conv.(ports.ChatOutboundReconciler)
 		if !ok {
-			return ports.ErrChatShutdownNotSettled
+			return c.blocked("compaction_pending", nil)
 		}
 		err := reconciler.ReconcileOutbound(ctx)
 		if err != nil {
-			return errors.Join(ports.ErrChatShutdownNotSettled, err)
+			return c.blocked("compaction_pending", err)
 		}
 		c.clearOutboundAttention(ctx)
 		c.mu.Lock()
@@ -92,24 +92,25 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 	journal, managed := c.store.(chatDeliveryJournal)
 	if !managed || !supported {
 		if nativeInFlight {
-			return ports.ErrChatShutdownNotSettled
+			return c.blocked("turn_in_flight", nil)
 		}
 		return nil
 	}
 	if c.reviewID != "" {
 		if nativeInFlight {
-			return ports.ErrChatShutdownNotSettled
+			return c.blocked("turn_in_flight", nil)
 		}
 		_, err := c.flushOutbound(ctx, observer, nil, notify)
 		if err != nil {
 			c.warnFlushNotSettled(err, nil)
-			return errors.Join(ports.ErrChatShutdownNotSettled, err)
+			reason, _ := flushReason(err)
+			return c.blocked(reason, err)
 		}
 		return nil
 	}
 	pending, err := journal.PendingChatDeliveries(ctx, c.sessionID)
 	if err != nil {
-		return errors.Join(ports.ErrChatShutdownNotSettled, err)
+		return c.blocked("delivery_journal_unavailable", err)
 	}
 	// An attempt from a host that no longer exists can never be answered by
 	// the attached one: settle it first instead of failing the flush on it.
@@ -117,7 +118,7 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 	for _, a := range pending {
 		settled, err := c.settleGoneHostDelivery(ctx, a)
 		if err != nil {
-			return errors.Join(ports.ErrChatShutdownNotSettled, err)
+			return c.blocked("delivery_journal_unavailable", err)
 		}
 		if !settled {
 			attempts = append(attempts, a)
@@ -131,28 +132,37 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 	if err != nil {
 		c.warnFlushNotSettled(err, keys)
 	}
-	if err != nil || len(receipts) != len(keys) {
-		return errors.Join(ports.ErrChatShutdownNotSettled, err)
+	if err != nil {
+		reason, _ := flushReason(err)
+		return c.blocked(reason, err)
+	}
+	if len(receipts) != len(keys) {
+		return c.blocked("delivery_receipt_missing", nil)
 	}
 	preserver, preserves := c.conv.(ports.ChatProviderPreserver)
 	preserves = preserves && preserver.PreservesProviderOnClose()
 	for i, r := range receipts {
 		if r.AttemptID != attempts[i].ID {
-			return ports.ErrChatShutdownNotSettled
+			return c.blocked("delivery_receipt_missing", nil)
 		}
 		saved, err := c.recordDeliveryReceipt(ctx, r)
 		if err != nil {
-			return errors.Join(ports.ErrChatShutdownNotSettled, err)
+			return c.blocked("delivery_journal_unavailable", err)
 		}
 		settled := saved.ExecutionSettled || saved.Disposition == "known_not_sent" || saved.Disposition == "accepted" && r.CustodyFlushed && preserves
 		if !settled {
-			return ports.ErrChatShutdownNotSettled
+			return c.blocked("delivery_not_settled", nil)
 		}
 	}
 	if nativeInFlight && len(attempts) == 0 {
-		return ports.ErrChatShutdownNotSettled
+		return c.blocked("turn_in_flight", nil)
 	}
 	return nil
+}
+
+// blocked names this session and a fixed reason for a refused settlement.
+func (c *Controller) blocked(reason string, cause error) error {
+	return &ports.ChatShutdownBlockedError{SessionID: string(c.sessionID), Reason: reason, Cause: cause}
 }
 
 // Record an already-observed custody failure before a native read can consume
@@ -315,14 +325,14 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 			}
 		}
 		if uncovered {
-			return ports.ErrChatShutdownNotSettled
+			return &ports.ChatShutdownBlockedError{Reason: "side_chat_pending"}
 		}
 		s.mu.Lock()
 		s.shutdownPreservedSides = sortedPreservedSides(preserved)
 		s.mu.Unlock()
 	}
 	if starting > 0 {
-		return ports.ErrChatShutdownNotSettled
+		return &ports.ChatShutdownBlockedError{Reason: "controller_starting"}
 	}
 	for _, c := range controllers {
 		if err := c.PreflightShutdown(ctx); err != nil {

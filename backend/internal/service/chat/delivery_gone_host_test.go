@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -173,6 +174,9 @@ func TestShutdownRouteAcceptsTakeoverAfterGoneHost(t *testing.T) {
 			}
 			if response.Code != want {
 				t.Fatalf("POST /shutdown = %d %s, want %d", response.Code, response.Body.String(), want)
+			}
+			if inFlight && (!strings.Contains(response.Body.String(), `"blockedSession":"`+string(testSession)+`"`) || !strings.Contains(response.Body.String(), `"blockedReason":"delivery_not_settled"`)) {
+				t.Fatalf("409 does not name the blocking turn: %s", response.Body.String())
 			}
 			// The accepted handler requests shutdown just after its response.
 			for deadline := time.Now().Add(2 * time.Second); !inFlight && !requested.Load() && time.Now().Before(deadline); {

@@ -177,6 +177,14 @@ func mountControl(r chi.Router, deps ControlDeps) {
 				if errors.As(err, &side) {
 					body["protectedSide"], body["entry"] = side, "protected_side_chats"
 				}
+				// Name what blocked shutdown (session and fixed reason code only).
+				var blocked *ports.ChatShutdownBlockedError
+				if errors.As(err, &blocked) {
+					if blocked.SessionID != "" {
+						body["blockedSession"] = blocked.SessionID
+					}
+					body["blockedReason"] = blocked.Reason
+				}
 				envelope.WriteJSON(w, http.StatusConflict, body)
 				return
 			}

@@ -166,3 +166,16 @@ func TestShutdownWaitsForPreflightAndReportsNotSettled(t *testing.T) {
 		t.Fatal("shutdown changed shared probe client timeout")
 	}
 }
+
+func TestShutdownNotSettledNamesBlockingSession(t *testing.T) {
+	server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"status":"shutdown_not_settled","blockedSession":"atm-544","blockedReason":"journal_gap"}`))
+	}))
+	defer server.Close()
+	c := newTestCommandContext(t, Deps{HTTPClient: server.Client()}.withDefaults())
+	err := c.requestShutdown(t.Context(), server.Listener.Addr().(*net.TCPAddr).Port)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 409: shutdown_not_settled (blocked by journal_gap in session atm-544)") {
+		t.Fatalf("blocking session lost: %v", err)
+	}
+}

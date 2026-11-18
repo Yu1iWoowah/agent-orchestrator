@@ -162,6 +162,7 @@ import {
 	keepAliveForReplacement,
 	portHolderPidToReplace,
 	shouldReplaceDaemonForStartup,
+	shutdownRefusalMessage,
 } from "./shared/daemon-takeover";
 import {
 	buildDaemonEnv,
@@ -2336,7 +2337,7 @@ async function inspectExistingDaemon(
 async function gracefullyReplaceDaemonForBrowser(status: DaemonStatus): Promise<void> {
 	if (!status.port) throw new Error("the running daemon did not report a port");
 	const response = await fetch(`http://127.0.0.1:${status.port}/shutdown`, { method: "POST" });
-	if (!response.ok) throw new Error(`daemon shutdown returned HTTP ${response.status}`);
+	if (!response.ok) throw new Error(shutdownRefusalMessage(response.status, await response.json().catch(() => null)));
 
 	const deadline = Date.now() + 8_000;
 	while (Date.now() < deadline) {

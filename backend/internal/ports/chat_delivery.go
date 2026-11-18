@@ -32,6 +32,30 @@ func (e *ChatShutdownSideError) Error() string {
 
 func (*ChatShutdownSideError) Unwrap() error { return ErrChatShutdownNotSettled }
 
+// ChatShutdownBlockedError names what kept shutdown from settling: the session
+// (empty for a service-wide condition) and a fixed reason code. It carries no
+// provider text; the cause stays available to logs through Unwrap.
+type ChatShutdownBlockedError struct {
+	SessionID string
+	Reason    string
+	Cause     error
+}
+
+func (e *ChatShutdownBlockedError) Error() string {
+	text := "shutdown_not_settled: " + e.Reason
+	if e.SessionID != "" {
+		text += " (session " + e.SessionID + ")"
+	}
+	if e.Cause != nil {
+		text += ": " + e.Cause.Error()
+	}
+	return text
+}
+
+func (e *ChatShutdownBlockedError) Unwrap() []error {
+	return []error{ErrChatShutdownNotSettled, e.Cause}
+}
+
 // ChatDeliveryGapError is a host flush refusal that names the native methods
 // still lacking settlement evidence. It carries method names only.
 type ChatDeliveryGapError struct {

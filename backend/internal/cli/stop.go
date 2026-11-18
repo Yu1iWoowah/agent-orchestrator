@@ -97,10 +97,20 @@ func (c *commandContext) requestShutdown(ctx context.Context, port int) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var body struct {
-			Status string `json:"status"`
+			Status         string `json:"status"`
+			BlockedSession string `json:"blockedSession"`
+			BlockedReason  string `json:"blockedReason"`
 		}
 		if resp.StatusCode == http.StatusConflict && json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&body) == nil && body.Status == "shutdown_not_settled" {
-			return fmt.Errorf("HTTP 409: shutdown_not_settled: provider execution or delivery evidence is not settled; keep the daemon running and retry after reconciliation")
+			blocked := ""
+			if body.BlockedReason != "" {
+				blocked = " (blocked by " + body.BlockedReason
+				if body.BlockedSession != "" {
+					blocked += " in session " + body.BlockedSession
+				}
+				blocked += ")"
+			}
+			return fmt.Errorf("HTTP 409: shutdown_not_settled%s: provider execution or delivery evidence is not settled; keep the daemon running and retry after reconciliation", blocked)
 		}
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
