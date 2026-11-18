@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -455,7 +456,7 @@ func (j *deliveryJournal) query(lookups []ports.ChatDeliveryLookup, flush bool) 
 	defer j.mu.Unlock()
 	if flush {
 		if len(j.uncovered) > 0 || len(j.unsettled) > 0 || len(j.executions) > 0 {
-			return nil, ports.ErrChatShutdownNotSettled
+			return nil, &ports.ChatDeliveryGapError{Methods: j.gapMethods()}
 		}
 		// Rewrite the latest memory snapshot, including progress and retired records.
 		if err := j.compact(); err != nil {
@@ -486,6 +487,40 @@ func (j *deliveryJournal) query(lookups []ports.ChatDeliveryLookup, flush bool) 
 		out = append(out, receipt)
 	}
 	return out, nil
+}
+
+// deliveryGapPrefix marks a flush refusal that names unsettled methods. A
+// missing record keeps the empty error text legacy settlement depends on.
+const deliveryGapPrefix = "not_settled:"
+
+const maxGapMethods = 8
+
+// gapMethods names what keeps a flush open: sorted method names (bounded, no
+// parameters or content), and native-execution for turns without a request.
+func (j *deliveryJournal) gapMethods() []string {
+	seen := map[string]bool{}
+	for _, method := range j.uncovered {
+		seen[method] = true
+	}
+	for _, gap := range j.unsettled {
+		seen[gap.Method] = true
+	}
+	if len(j.executions) > 0 {
+		seen["native-execution"] = true
+	}
+	methods := make([]string, 0, len(seen))
+	for method := range seen {
+		if len(method) > 64 {
+			method = method[:64]
+		}
+		methods = append(methods, method)
+	}
+	slices.Sort(methods)
+	methods = slices.Compact(methods)
+	if len(methods) > maxGapMethods {
+		methods = methods[:maxGapMethods]
+	}
+	return methods
 }
 
 // DeliveryClient uses the existing authenticated host control endpoint.
@@ -531,6 +566,9 @@ func (c *DeliveryClient) call(ctx context.Context, keys []ports.ChatDeliveryLook
 		return nil, err
 	}
 	if !response.OK {
+		if methods, ok := strings.CutPrefix(response.Error, deliveryGapPrefix); ok {
+			return nil, &ports.ChatDeliveryGapError{Methods: strings.Split(methods, ",")}
+		}
 		switch response.Error {
 		case "":
 			return nil, ports.ErrChatDeliveryDenied

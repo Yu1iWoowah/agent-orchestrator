@@ -102,6 +102,7 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 		}
 		_, err := c.flushOutbound(ctx, observer, nil, notify)
 		if err != nil {
+			c.warnFlushNotSettled(err, nil)
 			return errors.Join(ports.ErrChatShutdownNotSettled, err)
 		}
 		return nil
@@ -115,6 +116,9 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 		keys = append(keys, deliveryLookup(a))
 	}
 	receipts, err := c.flushOutbound(ctx, observer, keys, notify)
+	if err != nil {
+		c.warnFlushNotSettled(err, keys)
+	}
 	if err != nil || len(receipts) != len(keys) {
 		return errors.Join(ports.ErrChatShutdownNotSettled, err)
 	}
@@ -166,6 +170,49 @@ func (c *Controller) flushOutbound(ctx context.Context, observer ports.ChatDeliv
 		}
 	}
 	return receipts, err
+}
+
+// flushReason classifies a refused delivery flush without provider text: the
+// host's named journal gap, its empty refusal (no record, journal checkpoint),
+// or a host that did not answer.
+func flushReason(err error) (string, []string) {
+	var gap *ports.ChatDeliveryGapError
+	switch {
+	case errors.As(err, &gap):
+		return "journal_gap", gap.Methods
+	case errors.Is(err, ports.ErrChatDeliveryDenied):
+		return "host_answered_without_record", nil
+	case errors.Is(err, ports.ErrChatDeliveryUnverified):
+		return "delivery_unverified", nil
+	case errors.Is(err, context.DeadlineExceeded):
+		return "flush_timeout", nil
+	default:
+		return "host_unreachable", nil
+	}
+}
+
+// warnFlushNotSettled records why a flush was refused and the shape of the
+// keys it carried (counts only), so a stale epoch is told apart from a gap.
+func (c *Controller) warnFlushNotSettled(err error, keys []ports.ChatDeliveryLookup) {
+	reason, methods := flushReason(err)
+	current := ""
+	if reporter, ok := c.conv.(ports.ChatDeliveryEpochReporter); ok {
+		current = reporter.OutboundProviderEpoch()
+	}
+	withEpoch, currentEpoch, withoutRequest := 0, 0, 0
+	for _, key := range keys {
+		if key.ProviderEpoch != "" {
+			withEpoch++
+			if key.ProviderEpoch == current {
+				currentEpoch++
+			}
+		}
+		if key.ProviderRequestID == "" {
+			withoutRequest++
+		}
+	}
+	c.log.Warn("chat delivery flush not settled", "session", c.sessionID, "reason", reason, "methods", methods,
+		"keys", len(keys), "keys_with_epoch", withEpoch, "keys_current_epoch", currentEpoch, "keys_without_request", withoutRequest)
 }
 
 // PreflightShutdown fences every controller before checking any participant.

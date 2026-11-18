@@ -1,8 +1,11 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,5 +130,31 @@ func TestReviewerShutdownFlushesOwnHostWithoutWorkerLedger(t *testing.T) {
 	}
 	if !conv.flushed {
 		t.Fatal("reviewer skipped its native host flush")
+	}
+}
+
+type epochConversation struct {
+	ports.ChatConversation
+	epoch string
+}
+
+func (c epochConversation) OutboundProviderEpoch() string { return c.epoch }
+
+// A refused flush names its reason and the shape of its keys, never content.
+func TestRefusedFlushLogsReasonAndKeySummary(t *testing.T) {
+	var out bytes.Buffer
+	c := &Controller{log: slog.New(slog.NewTextHandler(&out, nil)), conv: epochConversation{epoch: "host-2"}, sessionID: "s"}
+	c.warnFlushNotSettled(&ports.ChatDeliveryGapError{Methods: []string{"_session/steering"}}, []ports.ChatDeliveryLookup{
+		{AttemptID: "a", ProviderEpoch: "host-1"},
+		{AttemptID: "b", ProviderEpoch: "host-2", ProviderRequestID: "7"},
+		{AttemptID: "c"},
+	})
+	for _, want := range []string{"reason=journal_gap", "methods=[_session/steering]", "keys=3", "keys_with_epoch=2", "keys_current_epoch=1", "keys_without_request=2"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("log %q lacks %q", out.String(), want)
+		}
+	}
+	if reason, _ := flushReason(ports.ErrChatDeliveryDenied); reason != "host_answered_without_record" {
+		t.Fatalf("empty host refusal reason = %q", reason)
 	}
 }

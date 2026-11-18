@@ -1234,6 +1234,9 @@ func (h *host) handle(conn net.Conn) {
 				receipts, err := h.delivery.query(request.Deliveries, request.Action == "delivery-flush")
 				response.OK = err == nil
 				response.Deliveries = receipts
+				if gap := (*ports.ChatDeliveryGapError)(nil); errors.As(err, &gap) {
+					response.Error = deliveryGapPrefix + strings.Join(gap.Methods, ",")
+				}
 			}
 		}
 		_ = json.NewEncoder(conn).Encode(response)

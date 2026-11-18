@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,6 +85,10 @@ func TestPersistentACPProviderHelper(t *testing.T) {
 				_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true},"authMethods":[]}}`+"\n", request.ID)
 				continue
 			}
+			if os.Getenv("AO_TEST_PERSISTENT_ACP_STEER") != "" {
+				_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[],"_meta":{"steering":{"supported":true}}}}`+"\n", request.ID)
+				continue
+			}
 			if os.Getenv("AO_TEST_PERSISTENT_ACP_NO_RESUME") == "1" {
 				_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[]}}`+"\n", request.ID)
 				continue
@@ -110,6 +115,11 @@ func TestPersistentACPProviderHelper(t *testing.T) {
 				continue
 			}
 			_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"persistent-provider-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"provider-pid=%d survived"}}}}`+"\n", os.Getpid())
+			if os.Getenv("AO_TEST_PERSISTENT_ACP_STEER") != "" {
+				// Park the turn until the steering request answers, then end it.
+				parkedPromptID = append(json.RawMessage(nil), request.ID...)
+				continue
+			}
 			if os.Getenv("AO_TEST_PERSISTENT_ACP_PERMISSION") == "1" {
 				parkedPromptID = append(json.RawMessage(nil), request.ID...)
 				recordPersistentACPCall("session/request_permission")
@@ -126,6 +136,12 @@ func TestPersistentACPProviderHelper(t *testing.T) {
 				_, _ = fmt.Fprintln(os.Stdout, `{"method":"_claude/sdkMessage","params":{"sessionId":"persistent-provider-session","message":{"type":"system","subtype":"session_state_changed","state":"idle"}}}`)
 				_, _ = fmt.Fprintln(os.Stdout, `{"method":"session/update","params":{"sessionId":"persistent-provider-session","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}`)
 			}
+		case "_session/steering":
+			_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"outcome":%q}}`+"\n", request.ID, os.Getenv("AO_TEST_PERSISTENT_ACP_STEER"))
+			if len(parkedPromptID) > 0 {
+				_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`+"\n", parkedPromptID)
+				parkedPromptID = nil
+			}
 		default:
 			if len(request.ID) > 0 {
 				_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{}}`+"\n", request.ID)
@@ -133,6 +149,61 @@ func TestPersistentACPProviderHelper(t *testing.T) {
 		}
 	}
 	os.Exit(0)
+}
+
+// A steered Claude-style turn on the real detached host must leave the host
+// journal flushable once the turn ends (SDR-PR1 AC1); a detached-turn answer
+// stays refused and names the steering method.
+func TestPersistentACPSteeredTurnSettlesHostCustody(t *testing.T) {
+	for _, tc := range []struct {
+		outcome string
+		settled bool
+	}{{"injected", true}, {"startedNewTurn", false}} {
+		t.Run(tc.outcome, func(t *testing.T) {
+			dataDir, workdir := t.TempDir(), t.TempDir()
+			cfg := Config{
+				Harness:      domain.HarnessClaudeCode,
+				Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+				Launch: func(context.Context, LaunchConfig) (Launch, error) {
+					return Launch{Command: os.Args[0], Args: []string{"-test.run=TestPersistentACPProviderHelper"},
+						Env: map[string]string{"AO_TEST_PERSISTENT_ACP_PROVIDER": "1", "AO_TEST_PERSISTENT_ACP_STEER": tc.outcome}}, nil
+				},
+			}
+			conv, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))).Start(context.Background(), ports.ChatStartConfig{
+				SessionID: "persistent-acp-steer", DataDir: dataDir, WorkspacePath: workdir, ProviderScopeID: "scope",
+			})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			defer func() { _ = conv.(ports.ChatProviderTerminator).Terminate() }()
+			_ = nextEvent(t, conv.Events()) // controller.ready
+			ref, err := conv.SendTurn(context.Background(), ports.ChatUserMessage{Text: "work"})
+			if err != nil {
+				t.Fatalf("SendTurn: %v", err)
+			}
+			if err := conv.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
+				t.Fatalf("StartDeferredTurn: %v", err)
+			}
+			for event := nextEvent(t, conv.Events()); event.Kind != ports.ChatEventMessageDelta; event = nextEvent(t, conv.Events()) {
+			}
+			_, steerErr := conv.(ports.ChatSteerer).Steer(context.Background(), ref.ProviderTurnID, ports.ChatUserMessage{Text: "also this"})
+			if tc.settled && steerErr != nil {
+				t.Fatalf("Steer: %v", steerErr)
+			}
+			for event := nextEvent(t, conv.Events()); event.Kind != ports.ChatEventTurnCompleted; event = nextEvent(t, conv.Events()) {
+			}
+			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err = conv.(ports.ChatDeliveryObserver).FenceAndFlushOutbound(flushCtx, nil)
+			if tc.settled && err != nil {
+				t.Fatalf("flush after a settled steer: %v", err)
+			}
+			var gap *ports.ChatDeliveryGapError
+			if !tc.settled && (!errors.As(err, &gap) || !slices.Contains(gap.Methods, "_session/steering")) {
+				t.Fatalf("flush after a detached-turn steer = %v, want a gap naming _session/steering", err)
+			}
+		})
+	}
 }
 
 func recordPersistentACPCall(method string) {
