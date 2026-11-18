@@ -193,12 +193,12 @@ func TestSettingsRecoveryFailureDoesNotLeakGrantToHTTPLog(t *testing.T) {
 	}
 	previousClient := sentry.CurrentHub().Client()
 	capture := &settingsCaptureTransport{events: make(chan *sentry.Event, 8)}
-	if err := sentryobs.Init(sentryobs.Config{DSN: "https://fake@example.invalid/1", Transport: capture}); err != nil {
+	if err := sentryobs.Init(sentryobs.Config{DSN: "https://fake@example.invalid/1", InstallID: "ins_sampled_5", Transport: capture}); err != nil {
 		t.Fatal(err)
 	}
-	sentryobs.SetPolicyEnabled(true)
+	sentryobs.SetPolicyCheck(func(context.Context) bool { return true })
 	t.Cleanup(func() {
-		sentryobs.SetPolicyEnabled(false)
+		sentryobs.SetPolicyCheck(nil)
 		_ = sentryobs.Init(sentryobs.Config{})
 		sentry.CurrentHub().BindClient(previousClient)
 	})
@@ -259,8 +259,8 @@ func TestSettingsRecoveryFailureDoesNotLeakGrantToHTTPLog(t *testing.T) {
 		if err != nil || strings.Contains(string(captured), token) {
 			t.Fatal("settings grant escaped through HTTP exception capture", err)
 		}
-	default:
-		t.Fatal("HTTP 500 did not exercise the capture transport")
+	case <-time.After(5 * time.Second):
+		t.Fatalf("HTTP %d did not exercise the asynchronous capture transport", w.Code)
 	}
 	t.Logf("status=%d response_leak=%t durable_leak=%t telemetry_payload_leak=%t access_log_leak=%t", w.Code, strings.Contains(w.Body.String(), token), strings.Contains(string(durable), token), strings.Contains(string(telemetry), token), strings.Contains(logs.String(), token))
 	if strings.Contains(logs.String(), token) || strings.Contains(w.Body.String(), token) || strings.Contains(string(durable), token) || strings.Contains(string(telemetry), token) {

@@ -27,6 +27,11 @@ func (s *replacementTUIStore) LoadTranscriptSourceSnapshot(ctx context.Context, 
 	return domain.TranscriptSourceSnapshot{Session: rec, Fingerprint: "fixture-snapshot", NativeSessions: []domain.TranscriptNativeSession{{Harness: rec.Harness, NativeID: rec.Metadata.AgentSessionID, ConfigDir: s.configDir}}}, err
 }
 
+func (s *replacementTUIStore) SemanticDeliveryAccepted(_ context.Context, id domain.SessionID, launchID, deliveryID string) (bool, error) {
+	record := s.sessions[id]
+	return record.Metadata.RuntimeLaunchID == launchID && semanticMessageAccepted(record, deliveryID), nil
+}
+
 type replacementTUIRuntime struct {
 	*fakeRuntime
 	commands    int

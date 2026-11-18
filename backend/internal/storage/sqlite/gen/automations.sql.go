@@ -175,34 +175,14 @@ func (q *Queries) FailAutomationRun(ctx context.Context, arg FailAutomationRunPa
 
 const getAutomation = `-- name: GetAutomation :one
 SELECT id, project_id, display_name, prompt, kind, harness, rrule_text,
-    timezone, enabled, next_run_at, last_run_at, created_at, updated_at, model, mode, effort, agent_account_id
+    timezone, enabled, next_run_at, last_run_at, created_at, updated_at, model, mode, effort, agent_account_id, template_id, use_case
 FROM automations
 WHERE id = ?
 `
 
-type GetAutomationRow struct {
-	ID             domain.AutomationID
-	ProjectID      domain.ProjectID
-	DisplayName    string
-	Prompt         string
-	Kind           domain.SessionKind
-	Harness        domain.AgentHarness
-	RruleText      string
-	Timezone       string
-	Enabled        bool
-	NextRunAt      time.Time
-	LastRunAt      sql.NullTime
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	Model          string
-	Mode           string
-	Effort         string
-	AgentAccountID string
-}
-
-func (q *Queries) GetAutomation(ctx context.Context, id domain.AutomationID) (GetAutomationRow, error) {
+func (q *Queries) GetAutomation(ctx context.Context, id domain.AutomationID) (Automation, error) {
 	row := q.db.QueryRowContext(ctx, getAutomation, id)
-	var i GetAutomationRow
+	var i Automation
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
@@ -221,6 +201,8 @@ func (q *Queries) GetAutomation(ctx context.Context, id domain.AutomationID) (Ge
 		&i.Mode,
 		&i.Effort,
 		&i.AgentAccountID,
+		&i.TemplateID,
+		&i.UseCase,
 	)
 	return i, err
 }
@@ -329,8 +311,8 @@ func (q *Queries) GetNextClaimableAutomationRun(ctx context.Context) (Automation
 const insertAutomation = `-- name: InsertAutomation :exec
 INSERT INTO automations (
     id, project_id, display_name, prompt, kind, harness, rrule_text,
-    timezone, enabled, next_run_at, last_run_at, created_at, updated_at, model, mode, effort, agent_account_id
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    timezone, enabled, next_run_at, last_run_at, created_at, updated_at, model, mode, effort, agent_account_id, template_id, use_case
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertAutomationParams struct {
@@ -351,6 +333,8 @@ type InsertAutomationParams struct {
 	Mode           string
 	Effort         string
 	AgentAccountID string
+	TemplateID     string
+	UseCase        string
 }
 
 func (q *Queries) InsertAutomation(ctx context.Context, arg InsertAutomationParams) error {
@@ -372,6 +356,8 @@ func (q *Queries) InsertAutomation(ctx context.Context, arg InsertAutomationPara
 		arg.Mode,
 		arg.Effort,
 		arg.AgentAccountID,
+		arg.TemplateID,
+		arg.UseCase,
 	)
 	return err
 }
@@ -531,7 +517,7 @@ func (q *Queries) ListAutomationRuns(ctx context.Context, arg ListAutomationRuns
 
 const listAutomations = `-- name: ListAutomations :many
 SELECT id, project_id, display_name, prompt, kind, harness, rrule_text,
-    timezone, enabled, next_run_at, last_run_at, created_at, updated_at, model, mode, effort, agent_account_id
+    timezone, enabled, next_run_at, last_run_at, created_at, updated_at, model, mode, effort, agent_account_id, template_id, use_case
 FROM automations
 WHERE (?1 = '' OR project_id = ?1)
   AND (?2 < 0 OR enabled = ?2)
@@ -546,27 +532,7 @@ type ListAutomationsParams struct {
 	PageLimit     int64
 }
 
-type ListAutomationsRow struct {
-	ID             domain.AutomationID
-	ProjectID      domain.ProjectID
-	DisplayName    string
-	Prompt         string
-	Kind           domain.SessionKind
-	Harness        domain.AgentHarness
-	RruleText      string
-	Timezone       string
-	Enabled        bool
-	NextRunAt      time.Time
-	LastRunAt      sql.NullTime
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	Model          string
-	Mode           string
-	Effort         string
-	AgentAccountID string
-}
-
-func (q *Queries) ListAutomations(ctx context.Context, arg ListAutomationsParams) ([]ListAutomationsRow, error) {
+func (q *Queries) ListAutomations(ctx context.Context, arg ListAutomationsParams) ([]Automation, error) {
 	rows, err := q.db.QueryContext(ctx, listAutomations,
 		arg.ProjectID,
 		arg.EnabledFilter,
@@ -577,9 +543,9 @@ func (q *Queries) ListAutomations(ctx context.Context, arg ListAutomationsParams
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListAutomationsRow{}
+	items := []Automation{}
 	for rows.Next() {
-		var i ListAutomationsRow
+		var i Automation
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
@@ -598,6 +564,8 @@ func (q *Queries) ListAutomations(ctx context.Context, arg ListAutomationsParams
 			&i.Mode,
 			&i.Effort,
 			&i.AgentAccountID,
+			&i.TemplateID,
+			&i.UseCase,
 		); err != nil {
 			return nil, err
 		}
@@ -614,7 +582,7 @@ func (q *Queries) ListAutomations(ctx context.Context, arg ListAutomationsParams
 
 const listDueAutomations = `-- name: ListDueAutomations :many
 SELECT id, project_id, display_name, prompt, kind, harness, rrule_text,
-    timezone, enabled, next_run_at, last_run_at, created_at, updated_at, model, mode, effort, agent_account_id
+    timezone, enabled, next_run_at, last_run_at, created_at, updated_at, model, mode, effort, agent_account_id, template_id, use_case
 FROM automations
 WHERE enabled = 1 AND next_run_at <= ?
 ORDER BY next_run_at, id
@@ -626,35 +594,15 @@ type ListDueAutomationsParams struct {
 	Limit     int64
 }
 
-type ListDueAutomationsRow struct {
-	ID             domain.AutomationID
-	ProjectID      domain.ProjectID
-	DisplayName    string
-	Prompt         string
-	Kind           domain.SessionKind
-	Harness        domain.AgentHarness
-	RruleText      string
-	Timezone       string
-	Enabled        bool
-	NextRunAt      time.Time
-	LastRunAt      sql.NullTime
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	Model          string
-	Mode           string
-	Effort         string
-	AgentAccountID string
-}
-
-func (q *Queries) ListDueAutomations(ctx context.Context, arg ListDueAutomationsParams) ([]ListDueAutomationsRow, error) {
+func (q *Queries) ListDueAutomations(ctx context.Context, arg ListDueAutomationsParams) ([]Automation, error) {
 	rows, err := q.db.QueryContext(ctx, listDueAutomations, arg.NextRunAt, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListDueAutomationsRow{}
+	items := []Automation{}
 	for rows.Next() {
-		var i ListDueAutomationsRow
+		var i Automation
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
@@ -673,6 +621,8 @@ func (q *Queries) ListDueAutomations(ctx context.Context, arg ListDueAutomations
 			&i.Mode,
 			&i.Effort,
 			&i.AgentAccountID,
+			&i.TemplateID,
+			&i.UseCase,
 		); err != nil {
 			return nil, err
 		}
@@ -801,7 +751,7 @@ func (q *Queries) ReleaseAutomationRun(ctx context.Context, arg ReleaseAutomatio
 const updateAutomation = `-- name: UpdateAutomation :execrows
 UPDATE automations
 SET display_name = ?, prompt = ?, kind = ?, harness = ?, model = ?, mode = ?, effort = ?, agent_account_id = ?, rrule_text = ?,
-    timezone = ?, enabled = ?, next_run_at = ?, last_run_at = ?, updated_at = ?
+    timezone = ?, enabled = ?, next_run_at = ?, last_run_at = ?, updated_at = ?, use_case = ?
 WHERE id = ?
 `
 
@@ -820,6 +770,7 @@ type UpdateAutomationParams struct {
 	NextRunAt      time.Time
 	LastRunAt      sql.NullTime
 	UpdatedAt      time.Time
+	UseCase        string
 	ID             domain.AutomationID
 }
 
@@ -839,6 +790,7 @@ func (q *Queries) UpdateAutomation(ctx context.Context, arg UpdateAutomationPara
 		arg.NextRunAt,
 		arg.LastRunAt,
 		arg.UpdatedAt,
+		arg.UseCase,
 		arg.ID,
 	)
 	if err != nil {

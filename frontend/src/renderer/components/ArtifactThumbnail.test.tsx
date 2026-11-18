@@ -1,128 +1,323 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { ArtifactThumbnail } from "./ArtifactThumbnail";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArtifactRow } from "../lib/artifacts";
+import { ArtifactThumbnail } from "./ArtifactThumbnail";
+
+const mocks = vi.hoisted(() => ({
+	access: vi.fn(),
+	fetch: vi.fn(),
+	ready: true,
+}));
+
+vi.mock("../hooks/useCloudCp", () => ({
+	useCloudCp: () => ({
+		client: { createSessionArtifactAccess: mocks.access },
+		ready: mocks.ready,
+		baseUrl: "https://cp.test",
+	}),
+}));
+vi.mock("../lib/cloud-cp/renderer-client", () => ({ cloudCpFetch: mocks.fetch }));
 vi.mock("./PdfPreview", () => ({
-	PdfPreview: ({ src, firstPageOnly }: { src: string; firstPageOnly?: boolean }) => (
-		<div data-testid="pdf" data-src={src} data-first={firstPageOnly} />
-	),
+	PdfPreview: ({ cloud, onError, src }: { cloud?: boolean; onError: () => void; src: string }) => <button data-cloud={String(cloud)} data-src={src} data-testid="pdf-thumbnail" onClick={onError} type="button" />,
 }));
-vi.mock("./chat/MermaidBlock", () => ({
-	MermaidBlock: ({ code }: { code: string }) => <pre data-testid="mermaid">{code}</pre>,
-}));
-beforeEach(() => {
-	vi.stubGlobal(
-		"IntersectionObserver",
-		class {
-			constructor(private callback: (entries: { isIntersecting: boolean }[]) => void) {}
-			observe() {
-				this.callback([{ isIntersecting: true }]);
-			}
-			disconnect() {}
-		},
-	);
-	vi.stubGlobal(
-		"ResizeObserver",
-		class {
-			observe() {}
-			disconnect() {}
-		},
-	);
-});
-afterEach(() => vi.unstubAllGlobals());
-function setup(path: string, kind: ArtifactRow["kind"] = "file", previewLive = true) {
-	const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-	const row: ArtifactRow = {
+
+const ROOT = "https://cp.test/api/cloud/v1/artifact-files/token/";
+const VERSION = "2026-10-28T10:00:00Z";
+
+function artifact(path: string, kind: ArtifactRow["kind"] = "file"): ArtifactRow {
+	return {
 		path,
 		name: path,
-		sessionId: "s",
-		sessionTitle: "Inspector",
-		projectId: "p",
 		kind,
-		generating: false,
-		updatedAt: "2026-10-11T10:00:00Z",
-		rawUrl: `http://127.0.0.1:3002/${path}`,
-		inlineUrl: `http://ao-inline-artifact.s.localhost:3002/${path}`,
+		updatedAt: VERSION,
+		sessionId: "session-1",
+		sessionTitle: "Cloud output",
+		cloud: { orgId: "org-1" },
 	};
-	const view = render(
-		<QueryClientProvider client={cache}>
-			<ArtifactThumbnail row={row} previewLive={previewLive} />
-		</QueryClientProvider>,
-	);
-	return { ...view, cache, row };
 }
-it("keeps Inspector HTML confined to its dedicated origin and probes availability", async () => {
-	const fetch = vi.fn().mockResolvedValue(new Response("<h1>Inspector</h1>"));
-	vi.stubGlobal("fetch", fetch);
-	const view = setup("page.html", "html");
-	await waitFor(() => expect(view.container.querySelector("iframe")).toHaveAttribute("src", view.row.inlineUrl));
-	expect(view.container.querySelector("iframe")).toHaveAttribute("sandbox", "allow-scripts allow-same-origin");
-	expect(fetch).toHaveBeenCalledTimes(1);
-	view.unmount();
-	view.cache.clear();
-});
-it.each(["missing", "network"])("keeps Inspector unavailable HTML as a placeholder: %s", async (failure) => {
-	const fetch = vi.fn();
-	failure === "missing"
-		? fetch.mockResolvedValue(new Response("missing", { status: 404 }))
-		: fetch.mockRejectedValue(new TypeError("offline"));
-	vi.stubGlobal("fetch", fetch);
-	const view = setup("page.html", "html");
-	await screen.findByTitle("No preview available");
-	expect(view.container.querySelector("iframe")).toBeNull();
-	view.unmount();
-	view.cache.clear();
-});
-it("honors the Inspector live-preview limit without reading inactive HTML", () => {
-	const fetch = vi.fn();
-	vi.stubGlobal("fetch", fetch);
-	const view = setup("page.html", "html", false);
-	expect(view.container.querySelector("iframe")).toBeNull();
-	expect(fetch).not.toHaveBeenCalled();
-	view.unmount();
-	view.cache.clear();
-});
-it.each([
-	["metrics.csv", "Name,Value\nAlpha,42", "Alpha", "table"],
-	["metrics.tsv", "Name\tValue\nAlpha\t42", "Alpha", "table"],
-	["flow.mmd", "flowchart LR\n A --> B", "A --> B", "pre"],
-	["architecture.md", "```mermaid\nflowchart LR\n A --> B\n```", "A --> B", "pre"],
-])("keeps Inspector %s previews in the shared renderer", async (path, content, text, selector) => {
-	vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(content)));
-	const view = setup(path, path.endsWith(".md") ? "markdown" : "file");
-	await waitFor(() => expect(view.container.textContent).toContain(text));
-	expect(view.container.querySelector(selector)).not.toBeNull();
-	expect(view.container.querySelector("[inert]")).not.toBeNull();
-	view.unmount();
-	view.cache.clear();
-});
-it("keeps Inspector Markdown inert without active links or embedded HTML", async () => {
-	vi.stubGlobal(
-		"fetch",
-		vi.fn().mockResolvedValue(new Response("# Findings\n\n[Read](https://example.com)\n\n<script>alert(1)</script>")),
+
+function renderThumbnails(rows: ArtifactRow[]) {
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	const wrap = (current: ArtifactRow[]) => (
+		<QueryClientProvider client={client}>
+			{current.map((row) => <ArtifactThumbnail key={row.path} row={row} />)}
+		</QueryClientProvider>
 	);
-	const view = setup("research.md", "markdown");
-	await screen.findByText("Findings");
-	expect(view.container.querySelector("a, script")).toBeNull();
-	view.unmount();
-	view.cache.clear();
+	const view = render(wrap(rows));
+	return { ...view, client, rerender: (current: ArtifactRow[]) => view.rerender(wrap(current)) };
+}
+
+describe("cloud artifact thumbnails", () => {
+	beforeEach(() => {
+		mocks.ready = true;
+		mocks.access.mockReset().mockResolvedValue({ filesPrefix: "/api/cloud/v1/artifact-files/token/", expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() });
+		mocks.fetch.mockReset().mockImplementation(async () => new Response("# Cloud preview\n\nA generated report."));
+		vi.stubGlobal("IntersectionObserver", class {
+			constructor(private callback: (entries: { isIntersecting: boolean }[]) => void) {}
+			observe() { this.callback([{ isIntersecting: true }]); }
+			disconnect() {}
+		});
+		vi.stubGlobal("ResizeObserver", class {
+			observe() {}
+			unobserve() {}
+			disconnect() {}
+		});
+	});
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("renders metadata-only Markdown and images with one shared session access request", async () => {
+		const { container, client } = renderThumbnails([artifact("notes.md", "markdown"), artifact("logo.svg"), artifact("cover.png")]);
+
+		await screen.findByText("Cloud preview");
+		await waitFor(() => expect(container.querySelectorAll("img")).toHaveLength(2));
+		await waitFor(() => expect(client.isFetching()).toBe(0));
+		expect(mocks.access).toHaveBeenCalledTimes(1);
+		expect(mocks.access).toHaveBeenCalledWith("org-1", "session-1", expect.objectContaining({ signal: expect.any(AbortSignal) }));
+		expect(mocks.fetch).toHaveBeenCalledWith(`${ROOT}notes.md?v=${encodeURIComponent(VERSION)}`, { method: "GET" });
+		expect(mocks.fetch).toHaveBeenCalledWith(`${ROOT}cover.png?v=${encodeURIComponent(VERSION)}`, { method: "HEAD" });
+		expect(mocks.fetch).toHaveBeenCalledWith(`${ROOT}logo.svg?v=${encodeURIComponent(VERSION)}`, { method: "HEAD" });
+		expect(mocks.fetch).not.toHaveBeenCalledWith(`${ROOT}logo.svg?v=${encodeURIComponent(VERSION)}`, { method: "GET" });
+		expect(container.querySelector('img[src*="logo.svg"]')).not.toBeNull();
+		expect(container.querySelector('img[src*="cover.png"]')).not.toBeNull();
+		expect(screen.queryByTitle("No preview available")).not.toBeInTheDocument();
+	});
+
+	it("resolves Markdown images under the signed session root", async () => {
+		mocks.fetch.mockResolvedValue(new Response("# Report\n\n![Chart](assets/chart.png)"));
+		const { container } = renderThumbnails([artifact("reports/notes.md", "markdown")]);
+
+		await screen.findByText("Report");
+		expect(container.querySelector("img")).toHaveAttribute("src", `${ROOT}reports/assets/chart.png`);
+	});
+
+	it("renders the plain-text files a local card previews", async () => {
+		mocks.fetch.mockImplementation(async (url: string) => new Response(`text of ${new URL(url).pathname.split("/").pop()}`));
+		renderThumbnails(["events.jsonl", "setup.ini", "nginx.conf", "fix.diff", "fix.patch"].map((path) => artifact(path)));
+
+		for (const name of ["events.jsonl", "setup.ini", "nginx.conf", "fix.diff", "fix.patch"]) expect(await screen.findByText(`text of ${name}`)).toBeInTheDocument();
+		expect(screen.queryByTitle("No preview available")).not.toBeInTheDocument();
+	});
+
+	it("frames cloud HTML with the cloud sandbox and verifies availability through the bridge", async () => {
+		renderThumbnails([artifact("index.html", "html")]);
+
+		const frame = await screen.findByTitle("index.html");
+		expect(frame).toHaveAttribute("src", `${ROOT}index.html?v=${encodeURIComponent(VERSION)}`);
+		expect(frame).toHaveAttribute("sandbox", "allow-scripts allow-forms");
+		expect(frame).toHaveAttribute("referrerpolicy", "no-referrer");
+		expect(mocks.fetch).toHaveBeenCalledWith(`${ROOT}index.html?v=${encodeURIComponent(VERSION)}`, { method: "HEAD" });
+	});
+
+	it("refreshes a refused cloud link and renders the replacement", async () => {
+		mocks.access.mockResolvedValueOnce({ filesPrefix: "/api/cloud/v1/artifact-files/expired/", expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() });
+		mocks.fetch.mockImplementation(async (url: string) => url.includes("/expired/") ? new Response(null, { status: 403 }) : new Response("# Renewed preview"));
+		renderThumbnails([artifact("notes.md", "markdown")]);
+
+		await screen.findByText("Renewed preview");
+		expect(mocks.access).toHaveBeenCalledTimes(2);
+		expect(mocks.fetch).toHaveBeenLastCalledWith(`${ROOT}notes.md?v=${encodeURIComponent(VERSION)}`, { method: "GET" });
+	});
+
+	it("keeps missing cloud files unavailable without retrying access", async () => {
+		mocks.fetch.mockResolvedValue(new Response(null, { status: 404 }));
+		const { client } = renderThumbnails([artifact("notes.md", "markdown")]);
+
+		await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(client.isFetching()).toBe(0));
+		expect(screen.getByTitle("No preview available")).toBeInTheDocument();
+		expect(mocks.access).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([{ failure: "404", status: 404 }, { failure: "500", status: 500 }, { failure: "bridge failure", status: undefined }])("shows a normal-size gallery placeholder for HTML $failure", async ({ status }) => {
+		mocks.fetch.mockImplementation(async () => {
+			if (status === undefined) throw new Error("Bridge unavailable");
+			return new Response(null, { status });
+		});
+		const { container, client } = renderThumbnails([artifact("index.html", "html")]);
+
+		await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(client.isFetching()).toBe(0));
+		const placeholder = screen.getByTitle("No preview available");
+		expect(placeholder).toHaveClass("absolute", "inset-0");
+		expect(placeholder.parentElement).not.toHaveAttribute("style");
+		expect(container.querySelector("iframe")).toBeNull();
+		expect(container.querySelector("button")).toBeNull();
+	});
+
+	it("keeps a card-size placeholder while HTML availability is loading", async () => {
+		let finish: ((response: Response) => void) | undefined;
+		mocks.fetch.mockImplementation(() => new Promise<Response>((resolve) => { finish = resolve; }));
+		const { container } = renderThumbnails([artifact("index.html", "html")]);
+
+		await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+		expect(screen.getByTitle("No preview available").parentElement).not.toHaveAttribute("style");
+		expect(container.querySelector("iframe")).toBeNull();
+		expect(container.querySelector("button")).toBeNull();
+		await act(async () => { finish?.(new Response(null, { status: 200 })); });
+		expect(await screen.findByTitle("index.html")).toBeInTheDocument();
+	});
+
+	it("shares one in-flight access refresh across simultaneously refused cards", async () => {
+		let finish: ((access: { filesPrefix: string; expiresAt: string }) => void) | undefined;
+		mocks.access.mockResolvedValueOnce({ filesPrefix: "/api/cloud/v1/artifact-files/expired/", expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() });
+		mocks.access.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+		mocks.fetch.mockImplementation(async (url: string) => url.includes("/expired/") ? new Response(null, { status: 403 }) : new Response("# Renewed preview"));
+		const { client } = renderThumbnails([artifact("one.md", "markdown"), artifact("two.md", "markdown")]);
+
+		await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(mocks.access).toHaveBeenCalledTimes(2));
+		await act(async () => { finish?.({ filesPrefix: "/api/cloud/v1/artifact-files/token/", expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() }); });
+		await waitFor(() => expect(screen.getAllByText("Renewed preview")).toHaveLength(2));
+		await waitFor(() => expect(client.isFetching()).toBe(0));
+		expect(mocks.access).toHaveBeenCalledTimes(2);
+	});
+
+	it.each([{ path: "notes.md", kind: "markdown" }, { path: "index.html", kind: "html" }, { path: "logo.svg", kind: "file" }] satisfies { path: string; kind: ArtifactRow["kind"] }[])("bounds persistent refusals for $path even when refreshes mint different URLs", async ({ path, kind }) => {
+		let minted = 0;
+		mocks.access.mockImplementation(async () => ({ filesPrefix: `/api/cloud/v1/artifact-files/token-${++minted}/`, expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() }));
+		mocks.fetch.mockImplementation(async () => new Response(null, { status: 403 }));
+		const { client, rerender } = renderThumbnails([artifact(path, kind)]);
+
+		await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(client.isFetching()).toBe(0));
+		expect(mocks.access).toHaveBeenCalledTimes(2);
+		expect(mocks.fetch.mock.calls[0][0]).not.toBe(mocks.fetch.mock.calls[1][0]);
+		expect(screen.getByTitle("No preview available")).toBeInTheDocument();
+		rerender([{ ...artifact(path, kind), updatedAt: "2026-10-29T10:00:00Z" }]);
+		await waitFor(() => expect(mocks.access).toHaveBeenCalledTimes(3));
+		await waitFor(() => expect(client.isFetching()).toBe(0));
+		expect(mocks.access).toHaveBeenCalledTimes(3);
+	});
+
+	it("allows a new refusal episode after a successful read", async () => {
+		let minted = 0;
+		let refuseCurrent = true;
+		mocks.access.mockImplementation(async () => ({ filesPrefix: `/api/cloud/v1/artifact-files/token-${++minted}/`, expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() }));
+		mocks.fetch.mockImplementation(async () => {
+			if (refuseCurrent) {
+				refuseCurrent = false;
+				return new Response(null, { status: 403 });
+			}
+			return new Response("# Recovered preview");
+		});
+		const { client } = renderThumbnails([artifact("notes.md", "markdown")]);
+
+		await screen.findByText("Recovered preview");
+		await waitFor(() => expect(client.isFetching()).toBe(0));
+		refuseCurrent = true;
+		await act(async () => { await client.invalidateQueries({ queryKey: ["session-artifact-file"] }); });
+		await waitFor(() => expect(mocks.access).toHaveBeenCalledTimes(3));
+		await waitFor(() => expect(client.isFetching()).toBe(0));
+		expect(screen.getByText("Recovered preview")).toBeInTheDocument();
+	});
+
+	it.each(["not ready", "missing organization"])("shows an unavailable placeholder without fetching access when %s", async (reason) => {
+		mocks.ready = reason !== "not ready";
+		const row = artifact("notes.md", "markdown");
+		if (reason === "missing organization") row.cloud = { orgId: "" };
+		const { client } = renderThumbnails([row]);
+
+		await act(async () => {});
+		expect(screen.getByTitle("No preview available")).toBeInTheDocument();
+		expect(client.isFetching()).toBe(0);
+		expect(mocks.access).not.toHaveBeenCalled();
+		expect(mocks.fetch).not.toHaveBeenCalled();
+	});
+
+	it("does not request access for unsupported cloud file types", async () => {
+		const { client } = renderThumbnails([artifact("archive.zip"), artifact("data.bin")]);
+
+		await act(async () => {});
+		expect(screen.getAllByTitle("No preview available")).toHaveLength(2);
+		expect(client.isFetching()).toBe(0);
+		expect(mocks.access).not.toHaveBeenCalled();
+		expect(mocks.fetch).not.toHaveBeenCalled();
+	});
+
+	it("renders a cloud PDF's first page from its signed link through the main process", async () => {
+		renderThumbnails([artifact("report.pdf")]);
+
+		const preview = await screen.findByTestId("pdf-thumbnail");
+		expect(preview).toHaveAttribute("data-src", `${ROOT}report.pdf?v=${encodeURIComponent(VERSION)}`);
+		expect(preview).toHaveAttribute("data-cloud", "true");
+		expect(mocks.access).toHaveBeenCalledTimes(1);
+		expect(mocks.fetch).not.toHaveBeenCalled();
+	});
+
+	it("keeps a cloud PDF card's link when the access prefix is renewed", async () => {
+		const { client } = renderThumbnails([artifact("report.pdf")]);
+		await screen.findByTestId("pdf-thumbnail");
+		mocks.access.mockResolvedValue({ filesPrefix: "/api/cloud/v1/artifact-files/renewed/", expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() });
+
+		await act(async () => { await client.refetchQueries({ queryKey: ["cloud-artifact-access"] }); });
+		expect(mocks.access).toHaveBeenCalledTimes(2);
+		expect(screen.getByTestId("pdf-thumbnail")).toHaveAttribute("data-src", `${ROOT}report.pdf?v=${encodeURIComponent(VERSION)}`);
+	});
+
+	it("takes one fresh link for a failed cloud PDF card, then shows the placeholder", async () => {
+		renderThumbnails([artifact("report.pdf")]);
+		const fresh = "https://cp.test/api/cloud/v1/artifact-files/fresh/";
+		mocks.access.mockResolvedValue({ filesPrefix: "/api/cloud/v1/artifact-files/fresh/", expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() });
+
+		fireEvent.click(await screen.findByTestId("pdf-thumbnail"));
+		await waitFor(() => expect(screen.getByTestId("pdf-thumbnail")).toHaveAttribute("data-src", `${fresh}report.pdf?v=${encodeURIComponent(VERSION)}`));
+		expect(mocks.access).toHaveBeenCalledTimes(2);
+
+		fireEvent.click(screen.getByTestId("pdf-thumbnail"));
+		expect(await screen.findByTitle("No preview available")).toBeInTheDocument();
+		expect(mocks.access).toHaveBeenCalledTimes(2);
+	});
+
 });
-it("keeps Inspector first-page PDF preview and file version", () => {
-	const view = setup("report.pdf");
-	expect(screen.getByTestId("pdf")).toHaveAttribute("data-first", "true");
-	expect(screen.getByTestId("pdf")).toHaveAttribute("data-src", view.row.rawUrl + "?v=2026-10-11T10%3A00%3A00Z");
-	view.unmount();
-	view.cache.clear();
-});
-it("keeps Inspector image failure fallback", () => {
-	const view = setup("cover.png");
-	const image = view.container.querySelector("img");
-	if (!image) throw new Error("Missing image");
-	expect(image).toHaveAttribute("src", view.row.rawUrl);
-	fireEvent.error(image);
-	expect(view.container.querySelector("img")).toBeNull();
-	expect(screen.getByTitle("No preview available")).toBeInTheDocument();
-	view.unmount();
-	view.cache.clear();
+
+describe("local video artifact thumbnails", () => {
+	const RAW = "http://127.0.0.1:3001/api/v1/sessions/session-1/preview/files/renders/clip.mp4?source=artifact&raw=true";
+	const local = (path: string, rawUrl: string): ArtifactRow => ({ path, name: path, kind: "file", updatedAt: VERSION, sessionId: "session-1", sessionTitle: "Local output", rawUrl });
+
+	beforeEach(() => {
+		mocks.fetch.mockReset();
+		vi.stubGlobal("IntersectionObserver", class {
+			constructor(private callback: (entries: { isIntersecting: boolean }[]) => void) {}
+			observe() { this.callback([{ isIntersecting: true }]); }
+			disconnect() {}
+		});
+		vi.stubGlobal("ResizeObserver", class {
+			observe() {}
+			unobserve() {}
+			disconnect() {}
+		});
+	});
+	afterEach(() => vi.unstubAllGlobals());
+
+	it.each(["renders/clip.mp4", "take.webm", "screen.mov"])("streams a poster frame for %s with a metadata-only preload", async (path) => {
+		const { container } = renderThumbnails([local(path, RAW)]);
+
+		const video = await waitFor(() => {
+			const element = container.querySelector("video");
+			expect(element).not.toBeNull();
+			return element as HTMLVideoElement;
+		});
+		expect(video).toHaveAttribute("src", RAW);
+		expect(video).toHaveAttribute("preload", "metadata");
+		expect(video).toHaveAttribute("crossorigin", "anonymous");
+		expect(video.muted).toBe(true);
+		expect(video).not.toHaveAttribute("controls");
+		expect(video).not.toHaveAttribute("autoplay");
+		expect(screen.queryByTitle("No preview available")).not.toBeInTheDocument();
+		expect(mocks.fetch).not.toHaveBeenCalled();
+	});
+
+	it("falls back to the placeholder when the video cannot be decoded", async () => {
+		const { container } = renderThumbnails([local("renders/clip.mp4", RAW)]);
+
+		const video = await waitFor(() => {
+			const element = container.querySelector("video");
+			expect(element).not.toBeNull();
+			return element as HTMLVideoElement;
+		});
+		fireEvent.error(video);
+		expect(await screen.findByTitle("No preview available")).toBeInTheDocument();
+		expect(container.querySelector("video")).toBeNull();
+	});
 });

@@ -2,6 +2,7 @@ package chat_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -177,6 +178,27 @@ func TestReplacementLiveResumeLookupRejectsCapabilityOnlyRotation(t *testing.T) 
 	got, err := f.service.LookupReplacementChatResume(ctx, rec.ID, p.ResumeGeneration, p.BeforeNativeID)
 	if err == nil || got.HistoryVerified {
 		t.Fatal("unpublished capability gained positive resume proof", got, err)
+	}
+}
+
+// An account move arms the source's handoff before its target preflight runs,
+// so a replacement that verifies resume in that window must wait for the move.
+func TestReplacementResumeLookupWaitsForAnArmedAccountMove(t *testing.T) {
+	f, _, _, ready, err := startReplacementNativeReplay(t, "same native complete replay")
+	if err != nil || ready != 1 {
+		t.Fatal(ready, err)
+	}
+	ctx := context.Background()
+	p := f.op.ResumeEvidence
+	if _, err := f.service.LookupReplacementChatResume(ctx, f.target.ID, p.ResumeGeneration, p.BeforeNativeID); err != nil {
+		t.Fatal("idle source refused before the move", err)
+	}
+	if err := f.service.ArmChatHandoff(ctx, f.target.ID, domain.SessionInterfaceTransitionDrain); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.service.LookupReplacementChatResume(ctx, f.target.ID, p.ResumeGeneration, p.BeforeNativeID)
+	if !errors.Is(err, domain.ErrReplacementSourceBusy) || got.HistoryVerified {
+		t.Fatal("replacement took resume proof during an armed account move", got, err)
 	}
 }
 

@@ -62,7 +62,7 @@ test("@P0 browser address stays centered and fills its host with zero browser ta
 
 	await expectAddressCentered(page);
 	await expectAddressClearOfTabs(page);
-	await expect(page.getByRole("tablist", { name: "Browser tabs", exact: true })).toHaveCount(0);
+	await expect(page.getByRole("tablist", { name: "Browser tabs", exact: true })).toHaveCount(1);
 	await expect(page.getByTestId("browser-tab-row").getByRole("tab")).toHaveCount(0);
 	await expectAddressWidth(page, 240);
 	await page.setViewportSize({ width: 1100, height: 720 });

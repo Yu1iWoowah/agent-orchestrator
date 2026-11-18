@@ -50,6 +50,14 @@ type memorySideStore struct {
 	hostCleanup      map[string]domain.SideConversation
 	hostStopped      map[string]bool
 	cleanup          map[string]domain.SideProviderCleanup
+	createKeys       map[sideCreateIdentity]string
+	cleanupEpoch     map[string]uint64
+	completedForks   map[string]string
+}
+
+type sideCreateIdentity struct {
+	session domain.SessionID
+	key     string
 }
 
 // SideRecoveryRecord travels only between the daemon and Electron main process.
@@ -157,6 +165,9 @@ func (m *memorySideStore) recover(runID string, records []SideRecoveryRecord, no
 		}
 		seenIDs[side.ID] = true
 		if m.closed[side.ID] {
+			if pending, exists := m.hostCleanup[side.ID]; exists && record.CleanupOnly && pending.ProviderForkID != "" && record.ProviderForkID != "" && pending.ProviderForkID != record.ProviderForkID {
+				return nil, ErrSideUnavailable
+			}
 			continue
 		}
 		for _, existing := range m.sides {
@@ -175,11 +186,21 @@ func (m *memorySideStore) recover(runID string, records []SideRecoveryRecord, no
 			if alreadyRestored[side.ID] {
 				return nil, ErrSideUnavailable
 			}
+			previous, pending := m.hostCleanup[side.ID]
+			if m.closed[side.ID] && !pending {
+				continue // Cleanup already drained in this daemon; an old replay cannot recreate it.
+			}
 			side.AppRunID = runID
 			side.Harness = record.Harness
 			side.ProviderHostID, side.ProviderForkID = record.ProviderHostID, record.ProviderForkID
+			if pending && previous.ProviderForkID != "" && side.ProviderForkID == "" {
+				side.ProviderForkID = previous.ProviderForkID
+			}
+			if !pending || previous.ProviderForkID != side.ProviderForkID {
+				m.cleanupEpoch[side.ID]++
+			}
 			m.hostCleanup[side.ID] = side
-			m.hostStopped[side.ID] = record.HostStopped
+			m.hostStopped[side.ID] = m.hostStopped[side.ID] || record.HostStopped
 			m.closed[side.ID] = true
 			if side.ProviderForkID != "" {
 				m.cleanup[side.ProviderForkID] = domain.SideProviderCleanup{ForkID: side.ProviderForkID, SessionID: side.SessionID, Harness: side.Harness}
@@ -277,7 +298,7 @@ func (m *memorySideStore) recover(runID string, records []SideRecoveryRecord, no
 }
 
 func newMemorySideStore() *memorySideStore {
-	return &memorySideStore{log: slog.Default(), hostCleanup: map[string]domain.SideConversation{}, hostStopped: map[string]bool{}, closed: map[string]bool{}, sides: map[string]domain.SideConversation{}, turns: map[string][]domain.SideTurn{}, messages: map[string][]domain.SideMessage{}, activities: map[string][]domain.SideActivity{}, drafts: map[string]string{}, cleanup: map[string]domain.SideProviderCleanup{}}
+	return &memorySideStore{log: slog.Default(), hostCleanup: map[string]domain.SideConversation{}, hostStopped: map[string]bool{}, closed: map[string]bool{}, sides: map[string]domain.SideConversation{}, createKeys: map[sideCreateIdentity]string{}, turns: map[string][]domain.SideTurn{}, messages: map[string][]domain.SideMessage{}, activities: map[string][]domain.SideActivity{}, drafts: map[string]string{}, cleanup: map[string]domain.SideProviderCleanup{}, cleanupEpoch: map[string]uint64{}, completedForks: map[string]string{}}
 }
 
 func (m *memorySideStore) ClaimSideLaunch(_ context.Context, runID string, _ time.Time) ([]domain.SideConversation, error) {
@@ -302,6 +323,12 @@ func (m *memorySideStore) ClaimSideLaunch(_ context.Context, runID string, _ tim
 		delete(m.drafts, id)
 	}
 	m.runID = runID
+	// Closed IDs include durable compaction tombstones; a launch claim cannot revive them.
+	for key, id := range m.createKeys {
+		if !m.protected[id] {
+			delete(m.createKeys, key)
+		}
+	}
 	return retired, nil
 }
 func (m *memorySideStore) RecoverInterruptedSideTurns(_ context.Context, runID string, now time.Time) error {
@@ -331,8 +358,18 @@ func (m *memorySideStore) CreateSideConversation(_ context.Context, side domain.
 	if side.AppRunID == "" || side.AppRunID != m.runID {
 		return domain.SideConversation{}, false, ErrSideLaunchUnclaimed
 	}
+	if id, ok := m.createKeys[sideCreateIdentity{side.SessionID, side.CreateKey}]; ok {
+		current, exists := m.sides[id]
+		if !exists || current.ClosedAt != nil {
+			return domain.SideConversation{}, false, ErrSideClosed
+		}
+		return current, false, nil
+	}
 	for _, current := range m.sides {
 		if current.MainConversationID == side.MainConversationID && current.ClosedAt == nil && ((side.CreateKey != "" && current.CreateKey == side.CreateKey) || (!side.ForceNew && current.AnchorTurnID == side.AnchorTurnID)) {
+			if side.CreateKey != "" && side.CreateKey != current.CreateKey {
+				m.createKeys[sideCreateIdentity{side.SessionID, side.CreateKey}] = current.ID
+			}
 			return current, false, nil
 		}
 	}
@@ -352,6 +389,30 @@ func (m *memorySideStore) CreateSideConversation(_ context.Context, side domain.
 	}
 	m.sides[side.ID] = side
 	return side, true, nil
+}
+
+// Remember request aliases when anchor reuse returns a side created by another
+// request. A retry must find that same destination even after the main advances.
+func (m *memorySideStore) SideConversationByCreateKey(_ context.Context, session domain.SessionID, runID, key string) (domain.SideConversation, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if runID != m.runID {
+		return domain.SideConversation{}, false, ErrSideLaunchUnclaimed
+	}
+	if id, ok := m.createKeys[sideCreateIdentity{session, key}]; ok {
+		side, exists := m.sides[id]
+		if !exists || side.ClosedAt != nil {
+			return domain.SideConversation{}, false, ErrSideClosed
+		}
+		return side, true, nil
+	}
+	// Primary keys are restored by the existing desktop recovery contract.
+	for _, side := range m.sides {
+		if side.SessionID == session && side.AppRunID == runID && side.ClosedAt == nil && side.CreateKey == key {
+			return side, true, nil
+		}
+	}
+	return domain.SideConversation{}, false, nil
 }
 
 func sideChatNumber(label string) int {
@@ -418,6 +479,10 @@ func (m *memorySideStore) SetSideRecovering(_ context.Context, id, generation st
 	defer m.mu.Unlock()
 	defer m.finishWrite(id)(&writeErr)
 	return m.updateSide(id, generation, func(side *domain.SideConversation) {
+		// This attempt may start a new host. Neither an earlier shutdown nor
+		// its still-running cleanup can prove that the new host has stopped.
+		delete(m.hostStopped, id)
+		m.cleanupEpoch[id]++
 		side.State = "recovering"
 		side.ErrorMessage = ""
 		side.RecreateRequired = false
@@ -472,7 +537,13 @@ func (m *memorySideStore) SetSideFailed(_ context.Context, id, generation, messa
 		}
 	})
 }
-func (m *memorySideStore) CloseSideConversation(_ context.Context, id string, now time.Time) (domain.SideConversation, error) {
+func (m *memorySideStore) CloseSideConversation(ctx context.Context, id string, now time.Time) (domain.SideConversation, error) {
+	return m.closeSideConversation(ctx, id, now, nil)
+}
+
+// closeSideConversation serializes journal retirement with compaction protection.
+// beforeClose must not reacquire m.mu.
+func (m *memorySideStore) closeSideConversation(ctx context.Context, id string, now time.Time, beforeClose func(domain.SideConversation) error) (domain.SideConversation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	side, ok := m.sides[id]
@@ -482,8 +553,17 @@ func (m *memorySideStore) CloseSideConversation(_ context.Context, id string, no
 	if !ok || side.ClosedAt != nil {
 		return side, ErrSideClosed
 	}
+	if err := ctx.Err(); err != nil {
+		return side, err
+	}
+	if beforeClose != nil {
+		if err := beforeClose(side); err != nil {
+			return side, err
+		}
+	}
 	m.closed[id] = true
 	m.hostCleanup[id] = side
+	m.cleanupEpoch[id]++
 	side.ClosedAt = &now
 	side.Generation = ""
 	delete(m.sides, id)
@@ -518,6 +598,7 @@ func (m *memorySideStore) CompleteSideProviderCleanup(_ context.Context, id stri
 	defer m.mu.Unlock()
 	for sideID, side := range m.hostCleanup {
 		if side.ProviderForkID == id {
+			m.completedForks[sideID] = id
 			delete(m.hostCleanup, sideID)
 			delete(m.hostStopped, sideID)
 		}
@@ -572,6 +653,12 @@ func (m *memorySideStore) ReserveSideTurn(_ context.Context, turn domain.SideTur
 	}
 	if side.State != "ready" && side.State != "opening" {
 		return domain.SideTurn{}, false, ErrSideNotReady
+	}
+	if len(m.turns[side.ID]) == 0 && !side.ManualLabel {
+		if label := NormalizeTitle(strings.TrimSpace(turn.Text)); label != "" {
+			side.Label = label
+			side.UpdatedAt = turn.CreatedAt
+		}
 	}
 	side.ReferencePending = false
 	m.sides[side.ID] = side

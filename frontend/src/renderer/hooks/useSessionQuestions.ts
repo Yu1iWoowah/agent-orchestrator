@@ -1,7 +1,7 @@
+import { apiErrorException } from "../lib/api-error-exception";
 import { queryOptions, useInfiniteQuery } from "@tanstack/react-query";
 import type { paths } from "../../api/schema";
 import { clientForSessionHost } from "../lib/host-clients";
-import { apiErrorMessage } from "../lib/api-client";
 import { parseSessionQuestion, parseSessionQuestionPage } from "../lib/session-questions";
 import { sessionAttentionQueryKey } from "./useSessionAttention";
 
@@ -21,7 +21,7 @@ export function questionSourceQueryOptions({ sessionId, hostId, questionId }: { 
 		queryFn: async ({ signal }) => {
 			const { data, error, response } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/questions/{questionId}", { params: { path: { sessionId, questionId } }, signal });
 			questionError(response.status, error?.code);
-			if (error || !data) throw new Error(apiErrorMessage(error, "Could not load this question."));
+			if (error || !data) throw apiErrorException(error, "Could not load this question.");
 			const question = parseSessionQuestion(data, sessionId);
 			if (question.id !== questionId) throw new QuestionNotFound();
 			return question;
@@ -41,7 +41,7 @@ export function useSessionQuestions(sessionId: string, hostId: string | undefine
 			const query = { state, beforeSequence: pageParam || undefined, limit: 20 } satisfies paths["/api/v1/sessions/{sessionId}/questions"]["get"]["parameters"]["query"];
 			const { data, error, response } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/questions", { params: { path: { sessionId }, query }, signal });
 			questionError(response.status, error?.code);
-			if (error || !data) throw new Error(apiErrorMessage(error, "Could not load questions."));
+			if (error || !data) throw apiErrorException(error, "Could not load questions.");
 			return parseSessionQuestionPage(data, sessionId);
 		},
 		getNextPageParam: (page) => page.hasMoreBefore ? page.nextBeforeSequence : undefined,

@@ -359,7 +359,7 @@ func TestSettingsPendingValidationFailureHasDurableSafeAttemptCode(t *testing.T)
 
 func TestSettingsSchedulerBusyDefersSettersAndPrecedesQueuedRelay(t *testing.T) {
 	h, conv, _, commands := journalHarness(t)
-	first, err := h.ctrl.Send(t.Context(), ports.ChatUserMessage{Text: "current turn"})
+	first, err := h.ctrl.Send(t.Context(), ports.ChatUserMessage{Origin: domain.MessageOriginAutomation, Text: "current turn"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestSettingsSchedulerBusyDefersSettersAndPrecedesQueuedRelay(t *testing.T) 
 	if _, err := h.svc.SetConfigOption(t.Context(), testSession, "model", ports.ChatConfigOptionValue{Select: "bypass"}); !errors.Is(err, ports.ErrAgentSettingsConflict) || conv.legacySetters.Load() != 0 {
 		t.Fatalf("legacy native setter bypassed journal: %v", err)
 	}
-	second, err := h.ctrl.Send(t.Context(), ports.ChatUserMessage{Text: "queued unchanged"})
+	second, err := h.ctrl.Send(t.Context(), ports.ChatUserMessage{Origin: domain.MessageOriginAutomation, Text: "queued unchanged"})
 	if err != nil || second.State != domain.TurnStateQueued {
 		t.Fatalf("queue: %+v %v", second, err)
 	}

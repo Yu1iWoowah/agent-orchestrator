@@ -1,6 +1,6 @@
+import { apiErrorException } from "../lib/api-error-exception";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import type { components, paths } from "../../api/schema";
-import { apiErrorMessage } from "../lib/api-client";
 import { clientForSessionHost } from "../lib/host-clients";
 
 export type ProjectAttentionItem =
@@ -96,9 +96,7 @@ export function useProjectAttention(
 			if (hostId && response.status === 404)
 				return { items: [], open: 0, unread: 0, unsupported: true } satisfies Page;
 			if (error || !data)
-				throw new Error(
-					apiErrorMessage(error, "Could not load project attention."),
-				);
+				throw apiErrorException(error, "Could not load project attention.");
 			return parsePage(data);
 		},
 		getNextPageParam: (page) => page.nextCursor || undefined,

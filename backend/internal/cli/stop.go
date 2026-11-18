@@ -25,7 +25,7 @@ func newStopCommand(ctx *commandContext) *cobra.Command {
 	opts := stopOptions{timeout: defaultStopTimeout}
 	cmd := &cobra.Command{
 		Use:   "stop",
-		Short: "Stop the AO daemon",
+		Short: "Stop the Orchestrator daemon",
 		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st, err := ctx.stopDaemon(cmd.Context(), opts)
@@ -36,7 +36,7 @@ func newStopCommand(ctx *commandContext) *cobra.Command {
 				return writeJSON(cmd.OutOrStdout(), st)
 			}
 			if st.State == stateStopped {
-				_, err = fmt.Fprintln(cmd.OutOrStdout(), "AO daemon stopped")
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), "Orchestrator daemon stopped")
 				return err
 			}
 			return writeStatus(cmd, st)

@@ -51,7 +51,7 @@ func (c *AutomationsController) create(w http.ResponseWriter, r *http.Request) {
 	}
 	rec, err := c.Svc.Create(r.Context(), automationsvc.CreateInput{
 		AgentAccountID: req.AgentAccountID,
-		ProjectID:      domain.ProjectID(req.ProjectID), DisplayName: req.DisplayName, Prompt: req.Prompt,
+		ProjectID:      domain.ProjectID(req.ProjectID), DisplayName: req.DisplayName, Prompt: req.Prompt, TemplateID: req.TemplateID, UseCase: req.UseCase,
 		Kind: domain.SessionKind(req.Kind), Harness: domain.AgentHarness(req.Harness), RRule: req.RRule,
 		Cron: req.Cron, Timezone: req.Timezone, Enabled: req.Enabled,
 		Model: req.Model, Mode: req.Mode, Effort: req.Effort,
@@ -126,7 +126,7 @@ func (c *AutomationsController) update(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	input := automationsvc.UpdateInput{AgentAccountID: req.AgentAccountID, Model: req.Model, Mode: req.Mode, Effort: req.Effort, DisplayName: req.DisplayName, Prompt: req.Prompt, RRule: req.RRule, Cron: req.Cron, Timezone: req.Timezone, Enabled: req.Enabled}
+	input := automationsvc.UpdateInput{AgentAccountID: req.AgentAccountID, UseCase: req.UseCase, Model: req.Model, Mode: req.Mode, Effort: req.Effort, DisplayName: req.DisplayName, Prompt: req.Prompt, RRule: req.RRule, Cron: req.Cron, Timezone: req.Timezone, Enabled: req.Enabled}
 	if req.Kind != nil {
 		value := domain.SessionKind(*req.Kind)
 		input.Kind = &value
@@ -187,7 +187,7 @@ func automationResponse(rec domain.Automation) AutomationResponse {
 		response := automationRunSummaryResponse(*rec.LatestRun)
 		latest = &response
 	}
-	return AutomationResponse{AgentAccountID: rec.AgentAccountID, ID: string(rec.ID), ProjectID: string(rec.ProjectID), DisplayName: rec.DisplayName, Prompt: rec.Prompt, Kind: string(rec.Kind), Harness: string(rec.Harness), Model: rec.Model, Mode: rec.Mode, Effort: rec.Effort, RRule: rec.RRuleText, Timezone: rec.Timezone, Enabled: rec.Enabled, NextRunAt: rec.NextRunAt, LastRunAt: rec.LastRunAt, CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt, LatestRun: latest}
+	return AutomationResponse{AgentAccountID: rec.AgentAccountID, ID: string(rec.ID), ProjectID: string(rec.ProjectID), DisplayName: rec.DisplayName, Prompt: rec.Prompt, TemplateID: rec.TemplateID, UseCase: rec.UseCase, Kind: string(rec.Kind), Harness: string(rec.Harness), Model: rec.Model, Mode: rec.Mode, Effort: rec.Effort, RRule: rec.RRuleText, Timezone: rec.Timezone, Enabled: rec.Enabled, NextRunAt: rec.NextRunAt, LastRunAt: rec.LastRunAt, CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt, LatestRun: latest}
 }
 func automationRunSummaryResponse(run domain.AutomationRun) AutomationRunSummaryResponse {
 	response := AutomationRunSummaryResponse{ID: string(run.ID), Status: string(run.Status), ScheduledFor: run.ScheduledFor, ErrorMessage: run.ErrorMessage, StartedAt: run.StartedAt, FinishedAt: run.FinishedAt}

@@ -119,8 +119,7 @@ var _ ports.ChatDriver = (*Driver)(nil)
 // Harness reports which agent this driver serves.
 func (d *Driver) Harness() domain.AgentHarness { return domain.HarnessCodex }
 
-// capabilities is what a Codex app-server of a supported version provides. Each
-// entry here was exercised against a live app-server rather than read off a doc.
+// capabilities is what a Codex app-server of a supported version provides.
 func capabilities() ports.ChatCapabilities {
 	return ports.ChatCapabilities{
 		ports.ChatCapabilityStreaming:   true,
@@ -134,6 +133,7 @@ func capabilities() ports.ChatCapabilities {
 		ports.ChatCapabilityPlans:       true,
 		ports.ChatCapabilityPlanMode:    true,
 		ports.ChatCapabilityInteractive: true,
+		ports.ChatCapabilityElicitation: true,
 		ports.ChatCapabilityModels:      true,
 		// The account's quota position is both pushed (account/rateLimits/updated)
 		// and readable on demand (account/rateLimits/read), verified against a live
@@ -188,12 +188,12 @@ func (d *Driver) Probe(ctx context.Context) (ports.ChatCapabilities, error) {
 	}
 	installed, ok := parseCodexVersion(versionOutput)
 	if !ok {
-		return nil, fmt.Errorf("%w: unrecognized Codex version %q (AO requires %s or newer)",
+		return nil, fmt.Errorf("%w: unrecognized Codex version %q (Orchestrator requires %s or newer)",
 			ports.ErrChatDriverIncompatible, strings.TrimSpace(versionOutput), minimumCodexVersion)
 	}
 	minimum, _ := parseCodexVersion(minimumCodexVersion)
 	if installed.less(minimum) {
-		return nil, fmt.Errorf("%w: Codex %s is older than AO's tested minimum %s",
+		return nil, fmt.Errorf("%w: Codex %s is older than Orchestrator's tested minimum %s",
 			ports.ErrChatDriverIncompatible, installed, minimumCodexVersion)
 	}
 
@@ -487,6 +487,10 @@ func codexThreadMissing(err error) bool {
 		(strings.Contains(message, "rollout") && strings.Contains(message, "is empty"))
 }
 
+// aoToolTimeoutSec is past the daemon's two-minute computer-use call budget,
+// so the daemon's own answer reaches the agent first.
+const aoToolTimeoutSec = 150
+
 // threadConfig is the config override sent with thread/start and
 // thread/resume. Codex layers it above config.toml for this thread only.
 //
@@ -513,6 +517,9 @@ func (c *conversation) threadConfig(ctx context.Context, effort string, servers 
 	return config, nil
 }
 
+// Codex gives an MCP tool call 60 s by default, under a computer-use
+// run_steps batch, which may run the driver's full 60 s before its report and
+// closing read; the daemon allows that call two minutes.
 func threadConfig(effort string, servers []ports.ChatMCPServerConfig) map[string]any {
 	config := map[string]any{}
 	if effort != "" {
@@ -526,6 +533,7 @@ func threadConfig(effort string, servers []ports.ChatMCPServerConfig) map[string
 		entry := map[string]any{}
 		if server.Name == "ao" {
 			entry["default_tools_approval_mode"] = "approve"
+			entry["tool_timeout_sec"] = aoToolTimeoutSec
 		}
 		if server.Type == "http" {
 			entry["url"] = server.URL
@@ -868,7 +876,7 @@ func codexProcessEnv(ctx context.Context, bin string, env map[string]string) []s
 	if _, ok := overlay["PATH"]; !ok {
 		overlay["PATH"] = os.Getenv("PATH")
 	}
-	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, overlay, []string{bin}, exec.LookPath, agentlaunch.PinnedDir(os.Executable, overlay["AO_DATA_DIR"]))
+	agentlaunch.AugmentRuntimePATHForLaunchBinary(ctx, overlay, []string{bin}, exec.LookPath, agentlaunch.PinnedDir(agentlaunch.Executable, overlay["AO_DATA_DIR"]))
 	return envSlice(overlay)
 }
 

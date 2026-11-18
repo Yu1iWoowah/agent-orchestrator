@@ -77,7 +77,7 @@ func TestCanceledSendSettlesPiggybackReports(t *testing.T) {
 			})
 			copies := 0
 			for _, m := range conv.sentMessages() {
-				if strings.HasPrefix(m.Text, "AO pending messages in enqueue order.") {
+				if strings.HasPrefix(m.Text, "Orchestrator pending messages in enqueue order.") {
 					for _, item := range parseDeliveredBatch(t, m.Text) {
 						copies += strings.Count(item.Text, "<ao-worker-reports>")
 					}
@@ -93,6 +93,7 @@ func TestCanceledSendSettlesPiggybackReports(t *testing.T) {
 }
 
 func TestStaleExcerptDuringBindRecoveryReleasesReports(t *testing.T) {
+	// Daemon inputs exercise batched piggyback recovery; human inputs dispatch one per turn.
 	for _, mode := range []string{"direct", "queuedAhead"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
@@ -111,7 +112,7 @@ func TestStaleExcerptDuringBindRecoveryReleasesReports(t *testing.T) {
 					return false
 				})
 			}
-			seed, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "seed", ClientMessageID: "preview-seed"})
+			seed, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Origin: domain.MessageOriginDaemon, Text: "seed", ClientMessageID: "preview-seed"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -124,7 +125,7 @@ func TestStaleExcerptDuringBindRecoveryReleasesReports(t *testing.T) {
 			if mode == "queuedAhead" {
 				conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "preview-previous", ProviderInitiated: true})
 				fence("preview-started")
-				older, err = h.ctrl.Send(ctx, ports.ChatUserMessage{Text: "older queued text", ClientMessageID: "preview-older"})
+				older, err = h.ctrl.Send(ctx, ports.ChatUserMessage{Origin: domain.MessageOriginDaemon, Text: "older queued text", ClientMessageID: "preview-older"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -141,7 +142,7 @@ func TestStaleExcerptDuringBindRecoveryReleasesReports(t *testing.T) {
 			h.svc.SetReportCoordinator(reportsvc.NewCoordinator(reportsvc.CoordinatorDeps{Store: h.st, Now: h.now, NewToken: func() string { return "preview-token" }}))
 			fault.onFault = func() { changed.changed.Store(true) }
 			fault.armed.Store(true)
-			receipt, firstErr := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "refer to this source", ClientMessageID: "preview-stale", Origin: domain.MessageOriginHuman, Excerpts: []ports.ChatExcerptReference{{ConversationID: h.ctrl.ConversationID(), MessageID: source.ID, Revision: source.Revision, Text: "Selected source"}}})
+			receipt, firstErr := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "refer to this source", ClientMessageID: "preview-stale", Origin: domain.MessageOriginDaemon, Excerpts: []ports.ChatExcerptReference{{ConversationID: h.ctrl.ConversationID(), MessageID: source.ID, Revision: source.Revision, Text: "Selected source"}}})
 			saved, err := h.st.TurnByID(ctx, receipt.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -150,7 +151,7 @@ func TestStaleExcerptDuringBindRecoveryReleasesReports(t *testing.T) {
 			if err != nil || !found {
 				t.Fatalf("report: found=%v err=%v", found, err)
 			}
-			if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "next valid input", ClientMessageID: "preview-next", Origin: domain.MessageOriginHuman}); err != nil {
+			if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "next valid input", ClientMessageID: "preview-next", Origin: domain.MessageOriginDaemon}); err != nil {
 				t.Fatal(err)
 			}
 			if mode == "queuedAhead" {
@@ -163,7 +164,7 @@ func TestStaleExcerptDuringBindRecoveryReleasesReports(t *testing.T) {
 			fence("preview-delivered")
 			copies := 0
 			for _, m := range conv.sentMessages() {
-				if strings.HasPrefix(m.Text, "AO pending messages in enqueue order.") {
+				if strings.HasPrefix(m.Text, "Orchestrator pending messages in enqueue order.") {
 					for _, item := range parseDeliveredBatch(t, m.Text) {
 						copies += strings.Count(item.Text, "<ao-worker-reports>")
 					}

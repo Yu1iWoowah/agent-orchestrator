@@ -729,6 +729,7 @@ func (s *Service) wakeHibernated(ctx context.Context, id domain.SessionID) error
 		if resultErr != nil {
 			s.log.Warn("chat wake failed", "session", id,
 				"took", time.Since(run.started).Round(time.Millisecond), "err", resultErr)
+			captureChatFault(ctx, resultErr, "", "chat_wake", "wake")
 		} else {
 			s.log.Info("chat wake finished", "session", id,
 				"took", time.Since(run.started).Round(time.Millisecond))
@@ -810,6 +811,7 @@ func (s *Service) startBackgroundWake(id domain.SessionID) {
 		if err := s.DrainQueued(ctx, id); err != nil {
 			_ = s.saveWakeAttempt(ctx, attempt, "blocked", "CHAT_DRAIN_UNAVAILABLE")
 			s.log.Warn("chat session woke but queued inputs remain fenced", "session", id, "code", "CHAT_DRAIN_UNAVAILABLE")
+			captureChatFault(ctx, err, "", "chat_wake", "drain")
 			return
 		}
 		_ = s.saveWakeAttempt(ctx, attempt, "ready", "")

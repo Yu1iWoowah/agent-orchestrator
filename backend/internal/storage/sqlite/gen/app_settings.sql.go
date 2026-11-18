@@ -38,6 +38,17 @@ func (q *Queries) GetAppSettings(ctx context.Context) (AppSetting, error) {
 	return i, err
 }
 
+const getLimitHistory = `-- name: GetLimitHistory :one
+SELECT limit_history FROM app_settings WHERE id = 1
+`
+
+func (q *Queries) GetLimitHistory(ctx context.Context) (bool, error) {
+	row := q.db.QueryRowContext(ctx, getLimitHistory)
+	var limit_history bool
+	err := row.Scan(&limit_history)
+	return limit_history, err
+}
+
 const resetHarnessDefault = `-- name: ResetHarnessDefault :exec
 UPDATE app_settings
 SET harness_defaults = json_remove(harness_defaults, ?1),
@@ -55,17 +66,31 @@ func (q *Queries) ResetHarnessDefault(ctx context.Context, arg ResetHarnessDefau
 	return err
 }
 
-const setCloudOffering = `-- name: SetCloudOffering :exec
-UPDATE app_settings SET cloud_offering = ?, updated_at = ? WHERE id = 1
+const setAccountHandoff = `-- name: SetAccountHandoff :exec
+UPDATE app_settings SET account_handoff = ?, updated_at = ? WHERE id = 1
 `
 
-type SetCloudOfferingParams struct {
-	CloudOffering bool
-	UpdatedAt     time.Time
+type SetAccountHandoffParams struct {
+	AccountHandoff bool
+	UpdatedAt      time.Time
 }
 
-func (q *Queries) SetCloudOffering(ctx context.Context, arg SetCloudOfferingParams) error {
-	_, err := q.db.ExecContext(ctx, setCloudOffering, arg.CloudOffering, arg.UpdatedAt)
+func (q *Queries) SetAccountHandoff(ctx context.Context, arg SetAccountHandoffParams) error {
+	_, err := q.db.ExecContext(ctx, setAccountHandoff, arg.AccountHandoff, arg.UpdatedAt)
+	return err
+}
+
+const setComputerUse = `-- name: SetComputerUse :exec
+UPDATE app_settings SET computer_use = ?, updated_at = ? WHERE id = 1
+`
+
+type SetComputerUseParams struct {
+	ComputerUse bool
+	UpdatedAt   time.Time
+}
+
+func (q *Queries) SetComputerUse(ctx context.Context, arg SetComputerUseParams) error {
+	_, err := q.db.ExecContext(ctx, setComputerUse, arg.ComputerUse, arg.UpdatedAt)
 	return err
 }
 
@@ -101,6 +126,20 @@ func (q *Queries) SetHarnessDefault(ctx context.Context, arg SetHarnessDefaultPa
 	return err
 }
 
+const setLimitHistory = `-- name: SetLimitHistory :exec
+UPDATE app_settings SET limit_history = ?, updated_at = ? WHERE id = 1
+`
+
+type SetLimitHistoryParams struct {
+	LimitHistory bool
+	UpdatedAt    time.Time
+}
+
+func (q *Queries) SetLimitHistory(ctx context.Context, arg SetLimitHistoryParams) error {
+	_, err := q.db.ExecContext(ctx, setLimitHistory, arg.LimitHistory, arg.UpdatedAt)
+	return err
+}
+
 const setReplyLanguage = `-- name: SetReplyLanguage :exec
 UPDATE app_settings SET reply_language = ?, updated_at = ? WHERE id = 1
 `
@@ -112,6 +151,20 @@ type SetReplyLanguageParams struct {
 
 func (q *Queries) SetReplyLanguage(ctx context.Context, arg SetReplyLanguageParams) error {
 	_, err := q.db.ExecContext(ctx, setReplyLanguage, arg.ReplyLanguage, arg.UpdatedAt)
+	return err
+}
+
+const setSessionRetentionDays = `-- name: SetSessionRetentionDays :exec
+UPDATE app_settings SET session_retention_days = ?, updated_at = ? WHERE id = 1
+`
+
+type SetSessionRetentionDaysParams struct {
+	SessionRetentionDays int64
+	UpdatedAt            time.Time
+}
+
+func (q *Queries) SetSessionRetentionDays(ctx context.Context, arg SetSessionRetentionDaysParams) error {
+	_, err := q.db.ExecContext(ctx, setSessionRetentionDays, arg.SessionRetentionDays, arg.UpdatedAt)
 	return err
 }
 

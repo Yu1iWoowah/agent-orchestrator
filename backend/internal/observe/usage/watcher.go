@@ -58,6 +58,31 @@ func NewTranscriptWatcher(ctx context.Context, roots []string, cfg TranscriptWat
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	normalized, err := resolveWatchRoots(ctx, roots, cfg)
+	if err != nil {
+		return nil, err
+	}
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, fmt.Errorf("create transcript watcher: %w", err)
+	}
+	result := &TranscriptWatcher{
+		watcher:      watcher,
+		roots:        normalized,
+		validateRoot: cfg.ValidateRoot,
+		logger:       cfg.Logger,
+		watched:      make(map[string]struct{}),
+		events:       make(chan TranscriptEvent, transcriptEventBuffer),
+		errors:       make(chan error, watcherErrorBuffer),
+		done:         make(chan struct{}),
+	}
+	return result, nil
+}
+
+func resolveWatchRoots(ctx context.Context, roots []string, cfg TranscriptWatcherConfig) ([]string, error) {
 	normalized, err := normalizeTranscriptRoots(roots)
 	if err != nil {
 		return nil, err
@@ -90,21 +115,22 @@ func NewTranscriptWatcher(ctx context.Context, roots []string, cfg TranscriptWat
 		}
 		accepted = append(accepted, root)
 	}
-	watcher, err := fsnotify.NewWatcher()
+	return accepted, nil
+}
+
+// SetRoots refreshes the allowed provider directories before Rebuild updates exact-file watches.
+func (w *TranscriptWatcher) SetRoots(ctx context.Context, roots []string) error {
+	resolved, err := resolveWatchRoots(ctx, roots, TranscriptWatcherConfig{ValidateRoot: w.validateRoot, Logger: w.logger})
 	if err != nil {
-		return nil, fmt.Errorf("create transcript watcher: %w", err)
+		return err
 	}
-	result := &TranscriptWatcher{
-		watcher:      watcher,
-		roots:        accepted,
-		validateRoot: cfg.ValidateRoot,
-		logger:       logger,
-		watched:      make(map[string]struct{}),
-		events:       make(chan TranscriptEvent, transcriptEventBuffer),
-		errors:       make(chan error, watcherErrorBuffer),
-		done:         make(chan struct{}),
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return errors.New("transcript watcher is closed")
 	}
-	return result, nil
+	w.roots = resolved
+	return nil
 }
 
 // Events returns filesystem-triggered transcript changes.
@@ -208,11 +234,16 @@ func (w *TranscriptWatcher) handleEvent(ctx context.Context, event fsnotify.Even
 	path := canonicalTranscriptPath(event.Name)
 	emit := ""
 	discovery := false
-	if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename|fsnotify.Remove) != 0 &&
-		filepath.Ext(path) == ".jsonl" &&
-		w.withinDesiredRoot(ctx, path) {
+	w.mu.Lock()
+	withinRoot := w.withinDesiredRoot(ctx, path)
+	w.mu.Unlock()
+	if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename|fsnotify.Remove) != 0 && withinRoot {
 		emit = path
-		discovery = event.Op&(fsnotify.Create|fsnotify.Rename) != 0
+		if database := sqliteDatabaseForPath(path); database != "" {
+			emit = database
+		} else {
+			discovery = event.Op&(fsnotify.Create|fsnotify.Rename) != 0
+		}
 	}
 
 	w.mu.Lock()
@@ -278,19 +309,40 @@ func (w *TranscriptWatcher) desiredWatchSetLocked(ctx context.Context) (map[stri
 		if !w.withinDesiredRoot(ctx, path) {
 			continue
 		}
-		info, err := os.Stat(path)
-		switch {
-		case err == nil && info.Mode().IsRegular():
-			result[path] = struct{}{}
-		case err == nil:
-			continue
-		case errors.Is(err, os.ErrNotExist):
-			continue
-		default:
-			return nil, fmt.Errorf("inspect transcript source: %w", redactFilesystemError(err))
+		candidates := []string{path}
+		if filepath.Ext(path) == ".db" {
+			candidates = append(candidates, path+sqliteWALSuffix)
+		}
+		for _, candidate := range candidates {
+			if !w.withinDesiredRoot(ctx, canonicalTranscriptPath(candidate)) {
+				continue
+			}
+			info, err := os.Stat(candidate)
+			switch {
+			case err == nil && info.Mode().IsRegular():
+				result[candidate] = struct{}{}
+			case err == nil:
+				continue
+			case errors.Is(err, os.ErrNotExist):
+				continue
+			default:
+				return nil, fmt.Errorf("inspect transcript source: %w", redactFilesystemError(err))
+			}
 		}
 	}
 	return result, nil
+}
+
+const sqliteWALSuffix = "-wal"
+
+func sqliteDatabaseForPath(path string) string {
+	if strings.HasSuffix(path, ".db"+sqliteWALSuffix) {
+		return strings.TrimSuffix(path, sqliteWALSuffix)
+	}
+	if filepath.Ext(path) == ".db" {
+		return path
+	}
+	return ""
 }
 
 func (w *TranscriptWatcher) withinDesiredRoot(ctx context.Context, path string) bool {

@@ -41,8 +41,8 @@ func (q *Queries) DeleteShellTerminalsFromPreviousAppRuns(ctx context.Context, a
 
 const insertShellTerminal = `-- name: InsertShellTerminal :one
 INSERT INTO shell_terminals (
-    handle_id, project_id, session_id, working_dir, title, app_run_id, created_at, transient, preview_capability_verifier
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    handle_id, project_id, session_id, working_dir, title, app_run_id, created_at, transient, preview_capability_verifier, command_owner, title_explicit
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING handle_id, project_id, working_dir, title, app_run_id, created_at, session_id, transient, preview_capability_verifier, command_owner, title_explicit, app_title
 `
 
@@ -56,6 +56,8 @@ type InsertShellTerminalParams struct {
 	CreatedAt                 time.Time
 	Transient                 bool
 	PreviewCapabilityVerifier string
+	CommandOwner              string
+	TitleExplicit             bool
 }
 
 func (q *Queries) InsertShellTerminal(ctx context.Context, arg InsertShellTerminalParams) (ShellTerminal, error) {
@@ -69,6 +71,8 @@ func (q *Queries) InsertShellTerminal(ctx context.Context, arg InsertShellTermin
 		arg.CreatedAt,
 		arg.Transient,
 		arg.PreviewCapabilityVerifier,
+		arg.CommandOwner,
+		arg.TitleExplicit,
 	)
 	var i ShellTerminal
 	err := row.Scan(
@@ -285,9 +289,28 @@ func (q *Queries) SelectShellTerminalsFromPreviousAppRuns(ctx context.Context, a
 	return items, nil
 }
 
+const updateShellTerminalAppTitle = `-- name: UpdateShellTerminalAppTitle :execrows
+UPDATE shell_terminals
+SET app_title = ?1
+WHERE handle_id = ?2 AND app_title <> ?1
+`
+
+type UpdateShellTerminalAppTitleParams struct {
+	AppTitle string
+	HandleID string
+}
+
+func (q *Queries) UpdateShellTerminalAppTitle(ctx context.Context, arg UpdateShellTerminalAppTitleParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateShellTerminalAppTitle, arg.AppTitle, arg.HandleID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateShellTerminalTitle = `-- name: UpdateShellTerminalTitle :one
 UPDATE shell_terminals
-SET title = ?
+SET title = ?, title_explicit = 1
 WHERE handle_id = ?
 RETURNING handle_id, project_id, working_dir, title, app_run_id, created_at, session_id, transient, preview_capability_verifier, command_owner, title_explicit, app_title
 `

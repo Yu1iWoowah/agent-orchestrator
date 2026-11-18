@@ -240,6 +240,71 @@ func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.Cha
 	return saved, err
 }
 
+// deliveryHoldUnverified stands in for an attempt ID while the journal could not
+// say whether a stalled prompt left its delivery unsettled. The delivery monitor
+// resolves it on its next successful read.
+const deliveryHoldUnverified = "\x00unverified"
+
+// holdForUnsettledDelivery keeps queued work behind a prompt whose execution
+// the journal has not settled, as if it were the original of the next send.
+// Settlement releases it through releasePendingDelivery. An unreadable journal
+// holds too: unknown execution is never evidence that sending again is safe.
+func (c *Controller) holdForUnsettledDelivery(ctx context.Context) bool {
+	journal, ok := c.store.(chatDeliveryJournal)
+	if _, supported := c.conv.(ports.ChatDeliveryObserver); !ok || !supported || c.reviewID != "" {
+		return false
+	}
+	held, _ := c.installDeliveryHold(ctx, journal)
+	if held {
+		c.startDeliveryMonitor()
+	}
+	return held
+}
+
+// installDeliveryHold reads the unsettled attempts and installs the hold under
+// deliveryReceiptMu, which every settlement holds while it releases the pending
+// ID: a settlement either lands before the read and drops out of it, or after
+// the install and finds the ID it must release. A failed read still holds, and
+// is returned so the caller can schedule another read.
+func (c *Controller) installDeliveryHold(ctx context.Context, journal chatDeliveryJournal) (bool, error) {
+	c.deliveryReceiptMu.Lock()
+	defer c.deliveryReceiptMu.Unlock()
+	attempts, err := journal.PendingChatDeliveries(ctx, c.sessionID)
+	if err == nil && len(attempts) == 0 {
+		return false, nil
+	}
+	id := deliveryHoldUnverified
+	if err == nil {
+		id = attempts[0].ID
+	}
+	c.mu.Lock()
+	if c.pendingDeliveryID == "" || c.pendingDeliveryID == deliveryHoldUnverified {
+		c.pendingDeliveryID = id
+	}
+	c.mu.Unlock()
+	return true, err
+}
+
+// resolveUnverifiedDeliveryHold replaces the placeholder once the journal reads
+// again: with the unsettled attempt to wait for, or by releasing the queue. It
+// reports a failed read, which leaves the placeholder for the next sweep.
+func (c *Controller) resolveUnverifiedDeliveryHold(ctx context.Context, journal chatDeliveryJournal) bool {
+	c.mu.Lock()
+	unverified := c.pendingDeliveryID == deliveryHoldUnverified
+	c.mu.Unlock()
+	if !unverified {
+		return true
+	}
+	held, err := c.installDeliveryHold(ctx, journal)
+	if err != nil {
+		return false
+	}
+	if !held {
+		c.releasePendingDelivery(deliveryHoldUnverified)
+	}
+	return true
+}
+
 // releasePendingDelivery resumes queued work held behind a now-settled original.
 func (c *Controller) releasePendingDelivery(id string) {
 	c.mu.Lock()
@@ -532,6 +597,12 @@ func (c *Controller) monitorDeliveries() {
 			if err != nil {
 				earliest = c.now().Add(30 * time.Second)
 			} else {
+				resolveCtx, resolveCancel := c.deadlineContext(context.Background(), 10*time.Second)
+				if !c.resolveUnverifiedDeliveryHold(resolveCtx, journal) {
+					// Nothing else may be due to wake the monitor; retry the read.
+					earliest = c.now().Add(30 * time.Second)
+				}
+				resolveCancel()
 				for _, a := range attempts {
 					if a.BlockedSince != nil && !force && !firstSweep && a.AttentionID != "" {
 						continue

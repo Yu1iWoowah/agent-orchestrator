@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -211,20 +210,11 @@ func TestStartingControllerAnswersAtOnceAndDeliversQueuedInputInOrder(t *testing
 		t.Fatalf("resume: %v", err)
 	}
 	awaitSent(t, held.conv, []string{"first"})
-	// The rest goes as the controller's usual batch, still in enqueue order.
+	// Human prompts each receive a provider turn, in enqueue order.
 	finishProviderTurn(held.conv, "provider-turn-1")
-	deadline := time.Now().Add(5 * time.Second)
-	for len(held.conv.sentTexts()) < 2 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	sent := held.conv.sentTexts()
-	if len(sent) != 2 {
-		t.Fatalf("sent = %q, want the first message then one batch", sent)
-	}
-	second, third := strings.Index(sent[1], `"text":"second"`), strings.Index(sent[1], `"text":"third"`)
-	if second < 0 || third < second || strings.Contains(sent[1], `"text":"first"`) {
-		t.Fatalf("batch after the first turn = %q, want second then third, once each", sent[1])
-	}
+	awaitSent(t, held.conv, []string{"first", "second"})
+	finishProviderTurn(held.conv, "provider-turn-2")
+	awaitSent(t, held.conv, []string{"first", "second", "third"})
 }
 
 func TestFailedStartKeepsQueuedInputForTheNextStart(t *testing.T) {

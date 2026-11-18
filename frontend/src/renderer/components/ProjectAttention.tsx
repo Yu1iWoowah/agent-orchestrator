@@ -27,7 +27,6 @@ import {
 } from "./ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Button } from "./ui/button";
-import { TopbarButton } from "./TopbarButton";
 
 /** The sidebar count is read-only and never interrupts the current editor or Browser. */
 export function ProjectAttentionCount({
@@ -194,8 +193,9 @@ export function ProjectAttention({
 			{!selected ? (
 				<Dialog open={open} onOpenChange={setOpen}>
 					<DialogTrigger asChild>
-						<TopbarButton
-							variant="secondary"
+						<Button
+							variant="quiet"
+							size="sm"
 							aria-label={t("projectAttention.open")}
 							data-project-attention-entry
 						>
@@ -203,7 +203,7 @@ export function ProjectAttention({
 							<span>
 								{t("attention.title")} {count}
 							</span>
-						</TopbarButton>
+						</Button>
 					</DialogTrigger>
 					<DialogContent
 						ref={listContent}

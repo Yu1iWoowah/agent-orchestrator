@@ -21,7 +21,7 @@ func recoverTelemetry(log *slog.Logger, sink ports.EventSink) func(http.Handler)
 	return recoverTelemetryWithCapture(log, sink, sentryobs.CapturePanic)
 }
 
-func recoverTelemetryWithCapture(log *slog.Logger, sink ports.EventSink, capture func(context.Context, any, string, map[string]string, string)) func(http.Handler) http.Handler {
+func recoverTelemetryWithCapture(log *slog.Logger, sink ports.EventSink, capture func(context.Context, map[string]string, string, telemetrymeta.SafeRoute, telemetrymeta.FailureSite)) func(http.Handler) http.Handler {
 	log = loggerOrDefault(log)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +37,8 @@ func recoverTelemetryWithCapture(log *slog.Logger, sink ports.EventSink, capture
 						writeRecoveredError(w, r)
 						return
 					}
+
+					failureSite := telemetrymeta.CurrentFailureSite()
 					stack := string(debug.Stack())
 					log.Error("http handler panic",
 						"id", middleware.GetReqID(r.Context()),
@@ -45,7 +47,8 @@ func recoverTelemetryWithCapture(log *slog.Logger, sink ports.EventSink, capture
 						"panic", fmt.Sprint(rec),
 						"stack", stack,
 					)
-					path := telemetrymeta.RoutePattern(r)
+					route := telemetrymeta.RoutePattern(r)
+					path := route.String()
 					panicKind := telemetrymeta.PanicKind(rec)
 					fingerprint := telemetrymeta.Fingerprint("httpd", "http_request_panic", r.Method, path, panicKind)
 					if sink != nil {
@@ -66,15 +69,14 @@ func recoverTelemetryWithCapture(log *slog.Logger, sink ports.EventSink, capture
 							},
 						})
 					}
-					// Capture the panic to Sentry with its Go stack.
-					capture(r.Context(), rec, stack, map[string]string{
+					// Sentry keeps safe stack frames without raw panic text.
+					capture(r.Context(), map[string]string{
 						"component":  "httpd",
 						"operation":  "http_request_panic",
 						"method":     r.Method,
 						"path":       path,
 						"panic_kind": panicKind,
-						"request_id": middleware.GetReqID(r.Context()),
-					}, fingerprint)
+					}, fingerprint, route, failureSite)
 					writeRecoveredError(w, r)
 				}
 			}()

@@ -34,6 +34,7 @@ func (s *Store) UpsertSessionCleanupFacts(ctx context.Context, rec domain.Sessio
 		LastAttemptAt:        timeToNullTime(rec.LastAttemptAt),
 		NextAttemptAt:        timeToNullTime(rec.NextAttemptAt),
 		FailureCode:          rec.FailureCode,
+		ReportOnly:           rec.ReportOnly,
 	})
 }
 
@@ -66,7 +67,7 @@ func (s *Store) ListSessionCleanupFactsForSessions(ctx context.Context, ids []do
 		return nil, fmt.Errorf("list session cleanup facts: %w", err)
 	}
 	for _, row := range rows {
-		out[row.SessionID] = sessionCleanupFromGen(gen.GetSessionCleanupFactsRow(row))
+		out[row.SessionID] = sessionCleanupFromGen(row)
 	}
 	return out, nil
 }
@@ -124,7 +125,7 @@ func (s *Store) ListTerminalCleanupCandidates(ctx context.Context, now time.Time
 	return ids, nil
 }
 
-func sessionCleanupFromGen(row gen.GetSessionCleanupFactsRow) domain.SessionCleanupRecord {
+func sessionCleanupFromGen(row gen.SessionCleanupFact) domain.SessionCleanupRecord {
 	return domain.SessionCleanupRecord{
 		SessionID:            row.SessionID,
 		SessionGeneration:    row.SessionGeneration,
@@ -134,5 +135,6 @@ func sessionCleanupFromGen(row gen.GetSessionCleanupFactsRow) domain.SessionClea
 		LastAttemptAt:        nullTimeToTime(row.LastAttemptAt),
 		NextAttemptAt:        nullTimeToTime(row.NextAttemptAt),
 		FailureCode:          row.FailureCode,
+		ReportOnly:           row.ReportOnly,
 	}
 }

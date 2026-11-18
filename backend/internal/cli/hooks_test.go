@@ -376,6 +376,39 @@ func TestHooks_ReviewerRoutesToReviewActivity(t *testing.T) {
 	}
 }
 
+func TestHooks_ClineReviewerUsesResumableIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload, want string
+	}{
+		{"task ID", `{"taskId":"conv_123"}`, ""},
+		{"snake task ID", `{"task_id":"conv_123"}`, ""},
+		{"root ID", `{"taskId":"conv_123","sessionContext":{"rootSessionId":"native-root"}}`, "native-root"},
+		{"legacy ID", `{"taskResume":{"taskMetadata":{"ulid":"native-legacy"}}}`, "native-legacy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AO_REVIEW_SESSION_ID", "review-7")
+			t.Setenv("AO_REVIEW_HARNESS", "cline")
+			cfg := setConfigEnv(t)
+			srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+			writeRunFileFor(t, cfg, srv)
+			_, _, err := executeCLI(t, Deps{
+				In:           strings.NewReader(tc.payload),
+				ProcessAlive: func(int) bool { return true },
+			}, "hooks", "cline", "session-start")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var req setReviewActivityAPIRequest
+			if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+				t.Fatal(err)
+			}
+			if capture.path != "/api/v1/reviews/review-7/activity" || req.AgentSessionID != tc.want || req.State != "active" {
+				t.Fatalf("review hook = %s, %+v; want native ID %q and active state", capture.path, req, tc.want)
+			}
+		})
+	}
+}
+
 func TestHooks_ReviewerActivityOmitsToolCorrelationFields(t *testing.T) {
 	t.Setenv("AO_REVIEW_SESSION_ID", "review-7")
 	t.Setenv("AO_REVIEW_WORKER_SESSION_ID", "worker-7")
@@ -939,13 +972,182 @@ func TestHooks_UserPromptSubmitReportsOnlyMainUserCheckpoint(t *testing.T) {
 }
 
 func TestHookConversationFactsCorrelatesAcceptedReportDelivery(t *testing.T) {
-	prompt := domain.WrapReportDelivery("report-batch:abc123", "Reports since your previous turn:")
-	payload := []byte(`{"prompt":` + mustJSONString(t, prompt) + `,"prompt_id":"native-turn"}`)
-	got := hookConversationFacts(domain.HarnessClaudeCode, "user-prompt-submit", payload)
-	if got.CheckpointOrigin != domain.ConversationCheckpointOriginCoordination ||
-		got.CoordinationID != "report-batch:abc123" || got.LatestUserPrompt != "" {
-		t.Fatalf("conversation facts = %+v", got)
+	// Claude transcript lines 1538, 687, 659, and 1303 from the replay
+	// investigation. Keep the paste boundaries; shorten unrelated report text.
+	tests := []struct {
+		name, prompt, deliveryID string
+	}{
+		{
+			name: "fully wrapped",
+			prompt: `
+
+<pasted_content id="eead">
+<ao-report-delivery id="report-batch:rpt_7bf824eb-2fd9-4b15-a920-04f0469aac0f">
+Reports since your previous turn:
+
+[stuck] ao://sessions/ao-agentic-testing/ao-agentic-testing-28
+artifact: /evidence/unattended-rebuild-02/create.log
+</ao-report-delivery>
+</pasted_content id="eead">
+`,
+			deliveryID: "report-batch:rpt_7bf824eb-2fd9-4b15-a920-04f0469aac0f",
+		},
+		{
+			name: "partially wrapped",
+			prompt: `
+
+<pasted_content id="eead">
+<ao-report-delivery id="report-batch:rpt_7e0c477b-4631-4357-8763-969d2e2ac026">
+Reports since your previous turn:
+
+artifact: /evidence/vnc-headless-6gb-02
+</pasted_content id="eead">
+
+/character-fidelity-result-01.json
+</ao-report-delivery>`,
+			deliveryID: "report-batch:rpt_7e0c477b-4631-4357-8763-969d2e2ac026",
+		},
+		{
+			name: "multiple paste blocks",
+			prompt: `
+
+<pasted_content id="eead">
+<ao-report-delivery id="report-batch:rpt_7e0c477b-4631-4357-8763-969d2e2ac026">
+Reports since your previous turn:
+
+artifact: /evidence/vnc-headless-6gb-02
+</pasted_content id="eead">
+
+
+<pasted_content id="eead">
+/character-fidelity-result-01.json
+</ao-report-delivery>
+</pasted_content id="eead">
+`,
+			deliveryID: "report-batch:rpt_7e0c477b-4631-4357-8763-969d2e2ac026",
+		},
+		{
+			name:       "unwrapped",
+			prompt:     domain.WrapReportDelivery("report-batch:rpt_a0cdacc3-6362-43b0-aa86-9030fcdcecf1", "Reports since your previous turn:"),
+			deliveryID: "report-batch:rpt_a0cdacc3-6362-43b0-aa86-9030fcdcecf1",
+		},
+		{
+			name:       "plain closing tag",
+			prompt:     "<pasted_content id=\"eead\">\n" + domain.WrapReportDelivery("report-batch:abc123", "worker finished") + "\n</pasted_content>",
+			deliveryID: "report-batch:abc123",
+		},
+		{
+			name: "multiple paste blocks with plain closing tags",
+			prompt: "<pasted_content id=\"a\"><ao-report-delivery id=\"report-batch:abc123\">worker </pasted_content>\n" +
+				"<pasted_content id=\"b\">finished</ao-report-delivery></pasted_content>",
+			deliveryID: "report-batch:abc123",
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := []byte(`{"prompt":` + mustJSONString(t, tt.prompt) + `,"prompt_id":"native-turn"}`)
+			got := hookConversationFacts(domain.HarnessClaudeCode, "user-prompt-submit", payload)
+			if got.CheckpointOrigin != domain.ConversationCheckpointOriginCoordination ||
+				got.CoordinationID != tt.deliveryID || got.LatestUserPrompt != "" || got.ProviderTurnID != "native-turn" {
+				t.Fatalf("conversation facts = %+v", got)
+			}
+		})
+	}
+}
+
+func TestHookConversationFactsPreservesHumanTextAfterReportPaste(t *testing.T) {
+	const deliveryID = "report-batch:abc123"
+	report := domain.WrapReportDelivery(deliveryID, "worker finished")
+	pasteOpen, pasteClose := "<pasted_content id=\"eead\">\n", "\n</pasted_content id=\"eead\">"
+	instruction := "Please stop the worker and wait for my approval."
+	tests := []struct {
+		name, prompt string
+	}{
+		{
+			name:   "instruction inside paste wrapper",
+			prompt: pasteOpen + report + "\n" + instruction + pasteClose,
+		},
+		{
+			name:   "instruction after paste wrapper",
+			prompt: pasteOpen + report + pasteClose + "\n" + instruction,
+		},
+		{
+			name: "instruction after multiple paste blocks",
+			prompt: pasteOpen +
+				"<ao-report-delivery id=\"" + deliveryID + "\">\nworker " + pasteClose +
+				"\n\n" + pasteOpen + "finished\n</ao-report-delivery>" + pasteClose + "\n" + instruction,
+		},
+		{
+			name:   "unmatched paste closer",
+			prompt: report + "\n</pasted_content id=\"eead\">",
+		},
+		{
+			name:   "unmatched plain paste closer",
+			prompt: report + "\n</pasted_content>",
+		},
+		{
+			name: "paste block closed twice",
+			prompt: pasteOpen + "<ao-report-delivery id=\"" + deliveryID + "\">\nworker " + pasteClose +
+				"\n" + pasteOpen + "finished\n</ao-report-delivery>" + pasteClose + "\n</pasted_content>",
+		},
+		{
+			name: "closer for a block a plain closer already closed",
+			prompt: "<ao-report-delivery id=\"" + deliveryID + "\"><pasted_content id=\"a\">worker</pasted_content>" +
+				"<pasted_content id=\"b\">finished</ao-report-delivery></pasted_content id=\"a\">",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := []byte(`{"prompt":` + mustJSONString(t, tt.prompt) + `}`)
+			got := hookConversationFacts(domain.HarnessClaudeCode, "user-prompt-submit", payload)
+			if got.CheckpointOrigin != domain.ConversationCheckpointOriginHuman ||
+				got.CoordinationID != deliveryID || got.LatestUserPrompt != tt.prompt {
+				t.Fatalf("conversation facts = %+v", got)
+			}
+		})
+	}
+}
+
+func TestHookConversationFactsRejectsInvalidReportPastes(t *testing.T) {
+	report := domain.WrapReportDelivery("report-batch:abc123", "worker finished")
+	pasteOpen, pasteClose := "<pasted_content id=\"eead\">\n", "\n</pasted_content id=\"eead\">"
+	wrapped := pasteOpen + report + pasteClose
+	tests := []struct {
+		name, prompt string
+	}{
+		{name: "missing closing tag", prompt: pasteOpen + report},
+		{name: "mismatched paste id", prompt: pasteOpen + report + "\n</pasted_content id=\"other\">"},
+		{name: "malformed opening tag", prompt: "<pasted_content id=eead>\n" + report + pasteClose},
+		{name: "lookalike opening tag", prompt: "<pasted_content_other id=\"eead\">\n" + report + pasteClose},
+		{name: "invalid delivery id", prompt: pasteOpen + domain.WrapReportDelivery("bad value", "worker finished") + pasteClose},
+		{name: "empty delivery id", prompt: pasteOpen + domain.WrapReportDelivery("", "worker finished") + pasteClose},
+		{name: "long delivery id", prompt: pasteOpen + domain.WrapReportDelivery(strings.Repeat("a", 129), "worker finished") + pasteClose},
+		{name: "human text before report", prompt: "Please speed up.\n" + report},
+		{name: "human text before paste", prompt: "Please speed up.\n" + wrapped},
+		{name: "human text inside paste", prompt: pasteOpen + "Please speed up.\n" + report + pasteClose},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := []byte(`{"prompt":` + mustJSONString(t, tt.prompt) + `}`)
+			got := hookConversationFacts(domain.HarnessClaudeCode, "user-prompt-submit", payload)
+			if got.CheckpointOrigin != domain.ConversationCheckpointOriginHuman ||
+				got.CoordinationID != "" || got.LatestUserPrompt != tt.prompt {
+				t.Fatalf("conversation facts = %+v", got)
+			}
+		})
+	}
+	t.Run("other harness", func(t *testing.T) {
+		payload := []byte(`{"prompt":` + mustJSONString(t, wrapped) + `}`)
+		got := hookConversationFacts(domain.HarnessCodex, "user-prompt-submit", payload)
+		if got.CheckpointOrigin != domain.ConversationCheckpointOriginHuman || got.CoordinationID != "" || got.LatestUserPrompt != wrapped {
+			t.Fatalf("conversation facts = %+v", got)
+		}
+	})
+	t.Run("domain parser stays strict", func(t *testing.T) {
+		if id, ok := domain.ReportDeliveryID(wrapped); ok || id != "" {
+			t.Fatalf("ReportDeliveryID(wrapped) = %q, %v", id, ok)
+		}
+	})
 }
 
 func TestHooks_SubagentStopCannotReportMainConversationCheckpoint(t *testing.T) {
@@ -1202,7 +1404,7 @@ func TestHookAgentSessionIDReadsClineTaskID(t *testing.T) {
 	}
 }
 
-func TestHooks_ClineSessionStartReportsTaskID(t *testing.T) {
+func TestHooks_ClineSessionStartIgnoresTaskID(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "ao-7")
 	cfg := setConfigEnv(t)
 	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
@@ -1219,7 +1421,7 @@ func TestHooks_ClineSessionStartReportsTaskID(t *testing.T) {
 	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
 		t.Fatalf("decode body: %v\nbody=%s", err, capture.body)
 	}
-	want := setActivityAPIRequest{State: "active", Event: "session-start", AgentSessionID: "cline-task-abc123"}
+	want := setActivityAPIRequest{State: "active", Event: "session-start"}
 	assertActivityRequest(t, req, want)
 }
 
@@ -1327,6 +1529,58 @@ func TestHooks_PostToolUseCarriesCorrelationFields(t *testing.T) {
 	assertActivityRequest(t, req, want)
 }
 
+func TestHooks_ClineTaskIDDoesNotBecomeAgentSessionID(t *testing.T) {
+	for _, payload := range []string{`{"taskId":"conv_123"}`, `{"task_id":"conv_123"}`, `{"session_id":"conv_123"}`} {
+		t.Run(payload, func(t *testing.T) {
+			t.Setenv("AO_SESSION_ID", "ao-7")
+			cfg := setConfigEnv(t)
+			srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+			writeRunFileFor(t, cfg, srv)
+			_, _, err := executeCLI(t, Deps{
+				In:           strings.NewReader(payload),
+				ProcessAlive: func(int) bool { return true },
+			}, "hooks", "cline", "session-start")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var req setActivityAPIRequest
+			if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+				t.Fatal(err)
+			}
+			if req.AgentSessionID != "" || req.State != "active" {
+				t.Fatalf("hook must report activity without replacing native ID: %+v", req)
+			}
+		})
+	}
+}
+
+func TestHooks_ClineTaskStartCarriesAgentSessionID(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(`{"taskId":"conv_123","sessionContext":{"rootSessionId":"cline-session-123"},"hookName":"agent_start","taskStart":{"task":"fix restore"}}`),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "cline", "session-start")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v\nbody=%s", err, capture.body)
+	}
+	if req.ObservedAt.IsZero() {
+		t.Fatal("hook omitted its observation time")
+	}
+	req.ObservedAt = time.Time{}
+	want := setActivityAPIRequest{State: "active", Event: "session-start", AgentSessionID: "cline-session-123", Harness: "cline"}
+	if req != want {
+		t.Errorf("body = %+v, want %+v", req, want)
+	}
+}
+
 func TestHooks_EventWithoutToolIdentityOmitsIt(t *testing.T) {
 	// Adapters whose payloads carry no tool fields (codex permission-request
 	// payload here has tool_name only) still tag the event; missing identity
@@ -1391,6 +1645,32 @@ func TestHooks_CodexSessionStartReportsAgentSessionID(t *testing.T) {
 	}
 	want := setActivityAPIRequest{Event: "session-start", AgentSessionID: "codex-native-1"}
 	assertActivityRequest(t, req, want)
+}
+
+func TestHooks_PiSessionStartReportsUsageTranscriptPath(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{
+		In: strings.NewReader(`{
+			"session_id":"pi-native-1",
+			"transcript_path":"/ao/data/pi/sessions/pi-native-1.jsonl"
+		}`),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "pi", "session-start")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v\nbody=%s", err, capture.body)
+	}
+	if req.AgentSessionID != "pi-native-1" || req.TranscriptPath != "/ao/data/pi/sessions/pi-native-1.jsonl" || req.Usage == nil ||
+		req.Usage.Harness != "pi" || req.Usage.TranscriptPath != "/ao/data/pi/sessions/pi-native-1.jsonl" {
+		t.Fatalf("body = %+v", req)
+	}
 }
 
 func TestHooks_CodexBlankSessionIDIsIgnored(t *testing.T) {

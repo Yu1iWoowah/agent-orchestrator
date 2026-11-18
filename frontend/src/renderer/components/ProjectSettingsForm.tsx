@@ -1,3 +1,4 @@
+import { apiErrorException } from "../lib/api-error-exception";
 import {
 	projectDraftConflictPaths,
 	rebaseSettings,
@@ -9,6 +10,7 @@ import { localAccountModelScope } from "../lib/local-account-model-scope";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useRef } from "react";
+import { ProjectSettingsSection as SettingsSection } from "@aoagents/product-ui";
 import type { components } from "../../api/schema";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
 import { workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
@@ -20,6 +22,8 @@ import { LOCAL_HOST, refKey } from "../lib/hosts";
 import { isLaunchableAgent } from "../lib/agent-select-options";
 import { WORKER_DEFAULT_REVIEWERS } from "../lib/reviewer-harnesses";
 import { captureRendererEvent } from "../lib/telemetry";
+import { importableProject } from "../lib/session-import";
+import { useSessionImportStore } from "../stores/session-import-store";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import { buildIntake } from "./IntakeFields";
 import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
@@ -30,6 +34,8 @@ import {
 	type ProjectSettingsDraft,
 } from "./ProjectSettingsEditor";
 import { CloudProjectSettingsAdapter } from "./CloudProjectSettingsForm";
+import { SettingsRow } from "./settings/SettingsRow";
+import { Button } from "./ui/button";
 
 type Project = components["schemas"]["Project"];
 type ProjectConfig = components["schemas"]["ProjectConfig"];
@@ -82,7 +88,7 @@ function LocalProjectSettingsAdapter({ projectId, hostId, section = "general", o
 			const { data, error } = await (hostId ? clientForHost(hostId) : apiClient).GET("/api/v1/projects/{id}", {
 				params: { path: { id: projectId } },
 			});
-			if (error) throw new Error(apiErrorMessage(error));
+			if (error) throw apiErrorException(error);
 			if (data?.status !== "ok" || "resolveError" in data.project) throw new Error(t("settings.project.degraded"));
 			return data.project;
 		},
@@ -146,6 +152,8 @@ function SettingsBody({
 	const isScratchProject = project.kind === "scratch";
 	const { settings } = useSettings(hostId);
 	const intakeVisible = !isScratchProject && !!settings?.trackerIntakeEnabled;
+    const workspace = { ...project, sessions: [] };
+    const openProjectImport = useSessionImportStore((state) => state.openProjectImport);
 	const initialValues = localSettingsDraft(baseline.current, hostId);
 	const agentsQuery = useAgentReadinessQuery(true, hostId);
 	useEnsureAgentReadiness({ hostId });
@@ -189,7 +197,7 @@ function SettingsBody({
 		const client = hostId ? clientForHost(hostId) : apiClient;
 		const before = localSettingsDraft(baseline.current, hostId);
 		const { data, error } = await client.GET("/api/v1/projects/{id}", { params: { path: { id: projectId } } });
-		if (error) throw new Error(apiErrorMessage(error));
+		if (error) throw apiErrorException(error);
 		if (data?.status !== "ok" || !data.project || "resolveError" in data.project) throw new Error(t("settings.project.degraded"));
 		const latest = localSettingsDraft(data.project, hostId);
 		accept(data.project);
@@ -228,6 +236,11 @@ function SettingsBody({
 			reload={reload}
 			onSaveState={onSaveState}
 			modelHostId={hostId}
+            generalExtra={() => workspace && importableProject(workspace) ? <SettingsSection title={t("sessionImport.settingsTitle")} grouped>
+                <SettingsRow label={t("sessionImport.settingsLabel")} description={t("sessionImport.settingsDescription")}>
+                    <Button type="button" variant="quiet" size="sm" onClick={() => openProjectImport(projectId)}>{t("sessionImport.menuItem")}</Button>
+                </SettingsRow>
+            </SettingsSection> : undefined}
 			renderAgent={(props) => <LocalAgentPicker {...props} projectId={projectId} hostId={hostId} agentsQuery={agentsQuery} />}
 		/>
 	);

@@ -171,7 +171,7 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 		return fail(safeAccountProviderError(e))
 	}
 	s.activeLogins[id] = true
-	terminal, e := terminals.OpenCommandTerminal(ctx, shellterm.OpenCommandTerminalInput{HandleID: o.TerminalID, Argv: argv, Env: provider.LaunchEnv(home), WorkingDir: home, Title: title})
+	terminal, e := terminals.OpenCommandTerminal(ctx, shellterm.OpenCommandTerminalInput{Owner: "agentaccounts:" + string(p), HandleID: o.TerminalID, Argv: argv, Env: provider.LaunchEnv(home), WorkingDir: home, Title: title})
 	if e != nil {
 		delete(s.activeLogins, id)
 		return fail(ports.ErrAgentAccountStorageUnavailable)
@@ -235,6 +235,9 @@ func (s *Service) verifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 		return "", nil, safeAccountProviderError(e)
 	}
 	if !identity.SignedIn {
+		if identity.LoggedIn {
+			return LoginNotSubscription, nil, nil
+		}
 		return LoginWaiting, nil, nil
 	}
 	if e := s.checkCredentialStore(o.Provider, account.Home); e != nil {
@@ -242,6 +245,7 @@ func (s *Service) verifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 	}
 	// Refresh the catalog inside the same boundary as acceptance. Two
 	// operations must not both commit the same identity from a stale list.
+	s.read(ctx, domain.AgentAccount{ID: domain.DeviceAgentAccountID(o.Provider), Provider: o.Provider})
 	views, e := s.List(ctx, false)
 	if e != nil {
 		return "", nil, e
@@ -249,13 +253,20 @@ func (s *Service) verifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 	o.Outcome = "complete"
 	o.ResultAccountID = o.AccountID
 	for _, v := range views {
-		if v.Account.ID != o.AccountID && v.Account.Provider == o.Provider && (v.SignedIn || !v.Account.Device()) && v.Account.Email != "" && strings.EqualFold(v.Account.Email, identity.Email) {
+		if v.Account.ID == o.AccountID || (o.Action == "login-again" && v.Account.Device()) {
+			continue
+		}
+		held := v.SignedIn || (o.Action == "login" && !v.Account.Device())
+		if v.Account.Provider == o.Provider && held && v.Account.Email != "" && strings.EqualFold(v.Account.Email, identity.Email) && sameOrg(v.OrgID, identity.OrgID) {
 			o.Outcome = "duplicate"
 			o.ResultAccountID = v.Account.ID
 			break
 		}
 	}
-	if o.Action == "login-again" && account.Email != "" && !strings.EqualFold(account.Email, identity.Email) {
+	s.mu.Lock()
+	knownOrg := s.lastOrg[account.ID]
+	s.mu.Unlock()
+	if o.Action == "login-again" && ((account.Email != "" && !strings.EqualFold(account.Email, identity.Email)) || !sameOrg(knownOrg.id, identity.OrgID)) {
 		o.Outcome = "mismatch"
 		o.ResultAccountID = account.ID
 	}

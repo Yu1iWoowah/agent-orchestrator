@@ -180,7 +180,7 @@ func TestDeferredDirectBindFailureAcceptsPiggybackWithoutDuplication(t *testing.
 			t.Fatal("direct recovery retried a persistent Bind failure more than once")
 		}
 	}
-	first, sendErr := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "first request", ClientMessageID: "first"})
+	first, sendErr := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Origin: domain.MessageOriginDaemon, Text: "first request", ClientMessageID: "first"})
 	report, found, err := h.st.GetReport(ctx, "direct-report")
 	if err != nil || !found || report.DeliveryState != domain.ReportAcknowledged {
 		t.Fatalf("retained message released its report: report=%+v found=%t err=%v sendErr=%v", report, found, err, sendErr)
@@ -196,7 +196,7 @@ func TestDeferredDirectBindFailureAcceptsPiggybackWithoutDuplication(t *testing.
 	// the same report again. No synthetic provider Ready is emitted in this test.
 	fault.failAlways.Store(false)
 	h.advance(time.Second)
-	second, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "next request", ClientMessageID: "next"})
+	second, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Origin: domain.MessageOriginDaemon, Text: "next request", ClientMessageID: "next"})
 	if err != nil || second.ID == "" || second.State != domain.TurnStateQueued {
 		t.Fatalf("next send: %+v %v", second, err)
 	}
@@ -228,7 +228,7 @@ func TestDeferredBindFailurePreservesUnsentInput(t *testing.T) {
 				texts = append(texts, "keep follower")
 			}
 			for _, text := range texts {
-				turn, err := h.ctrl.Send(ctx, ports.ChatUserMessage{Text: text, ClientMessageID: text})
+				turn, err := h.ctrl.Send(ctx, ports.ChatUserMessage{Origin: domain.MessageOriginAutomation, Text: text, ClientMessageID: text})
 				if err != nil || turn.ID == "" || turn.State != domain.TurnStateQueued {
 					t.Fatalf("Send: %+v %v", turn, err)
 				}
@@ -284,7 +284,7 @@ func TestDeferredBindFailurePreservesUnsentInput(t *testing.T) {
 			for range 4 {
 				retries.Go(func() {
 					for _, text := range texts {
-						if _, err := h.ctrl.Send(ctx, ports.ChatUserMessage{Text: text, ClientMessageID: text}); err != nil {
+						if _, err := h.ctrl.Send(ctx, ports.ChatUserMessage{Origin: domain.MessageOriginAutomation, Text: text, ClientMessageID: text}); err != nil {
 							t.Errorf("same-ID retry: %v", err)
 						}
 					}
