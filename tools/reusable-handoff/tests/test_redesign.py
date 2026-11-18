@@ -984,6 +984,19 @@ c.call(['spawn','--help']);e.close()
         manifest = h.decode(h.private_read(self.directory / "manifest.json"))
         self.assertEqual(manifest["cli"], dict(path=str(self.path_cli), sha256=h.digest(self.path_cli.read_bytes())))
 
+    def test_retirement_saves_the_cli_bytes_its_transport_used_even_if_ao_updates_afterwards(self):
+        used = self.path_cli.read_bytes()
+        original = h.retirement_preconditions
+        def then_update(*args, **kwargs):
+            closed = original(*args, **kwargs)
+            self.path_cli.write_bytes(b"#!/bin/sh\n# updated after the last call\nexit 0\n")
+            return closed
+        with patch.object(h, "retirement_preconditions", side_effect=then_update):
+            self.retire()
+        manifest = h.decode(h.private_read(self.directory / "manifest.json"))
+        saved = h.private_read(self.directory / "saved/cli.bytes")
+        self.assertEqual((saved, h.digest(saved)), (used, manifest["cli"]["sha256"]))
+
     def test_crash_after_manifest_before_intent_recovers_without_another_io(self):
         publish = h.publish
         def crash(path, raw):

@@ -3960,7 +3960,9 @@ def retire_run(root, run_id, initial=None):
                             not state.get("effects"), "prelaunch evidence UNKNOWN")
                 execution = journal.register("retire", operator, maintenance=fence["token"])
                 execution.configure(request, state["start_sha256"])
-                cli = CLI(executable, operator, data, state["run_file"], directory)
+                # Freeze the bytes once: the transport is pinned to them and they are what gets saved.
+                cli_bytes = read_regular(executable)
+                cli = CLI(executable, operator, data, state["run_file"], directory, digest(cli_bytes))
                 require(cli.base == state["daemon_base"], "retirement daemon location changed")
                 cli.execution = execution
                 try:
@@ -3977,7 +3979,7 @@ def retire_run(root, run_id, initial=None):
                 for source in request["sources"]:
                     require(digest(private_read(confined(current, source["raw_relpath"]))) == source["raw_sha256"], "authority source changed")
                 saved = mkdir(directory / "saved")
-                publish(saved / "cli.bytes", read_regular(executable))
+                publish(saved / "cli.bytes", cli_bytes)
                 for item in authorization.get("materials", []):
                     sid = identifier(item["worker_id"])
                     require(sid in {w["worker_id"] for w in request["workers"]}, "material worker outside original index")
@@ -3998,7 +4000,8 @@ def retire_run(root, run_id, initial=None):
             require(manifest["run"] == inputs["run"] and manifest["slot"] == inputs["slot"] and
                     manifest["authorization_sha256"] == digest(authorization_raw) and manifest["fence_token"] == fence["token"] and
                     private_manifest(directory / "journal.original") == manifest["journal"] and
-                    private_manifest(directory / "saved") == manifest["saved"], "immutable retirement preparation changed")
+                    private_manifest(directory / "saved") == manifest["saved"] and
+                    digest(private_read(directory / "saved/cli.bytes")) == manifest["cli"]["sha256"], "immutable retirement preparation changed")
             require(private_manifest(journal.root) == manifest["journal"], "frozen journal drift before commit")
             intent = dict(schema="rh-retirement-intent/2", run_id=run_id, old_id=old, authorization_sha256=digest(authorization_raw),
                           manifest_sha256=digest(manifest_raw), fence_token=fence["token"], closed_effects=manifest["closed_effects"])
