@@ -1071,8 +1071,9 @@ class CLI:
         require(execution is not None, "durable execution context required")
         descriptor = execution.descriptor(self, "cli", {"argv": args, "timeout": timeout}, read=read, effect_id=effect_id)
         self.last_dispatched, self.last_received = None, None
+        self.last_code, self.last_stderr = None, ""
         raw, stderr, code = execution.dispatch(self, descriptor, deadline, on_dispatch)
-        self.last_raw = raw
+        self.last_raw, self.last_code = raw, code
         self.last_stderr = stderr.decode(errors="replace")
         require(code == 0, "CLI error: " + self.last_stderr)
         return raw
@@ -3044,14 +3045,23 @@ def producer(run, action):
                 require(decode(private_read(intent)).get("sha256") == digest(text.encode()), "final payload changed")
             else:
                 publish(intent, canonical({"worker_id": wid, "payload": text, "sha256": digest(text.encode()), "at": now()}))
+            receipt = {"accepted": True, "read": "UNKNOWN", "executed": "UNKNOWN"}
             if known:
                 raw, call_id = private_read(known[2] / "stdout.raw"), known[0]["call_id"]
             else:
-                raw = acting.call(["send", "--session", wid, "--steer", "--client-message-id", handle, "--message", text], 60)
+                try:
+                    raw = acting.call(["send", "--session", wid, "--steer", "--client-message-id", handle, "--message", text], 60)
+                except Stop:
+                    # Only a dispatched call the daemon refused because the worker's agent is not running.
+                    if not (getattr(acting, "last_code", None) == 1 and "(CHAT_CONTROLLER_NOT_READY)" in getattr(acting, "last_stderr", "")):
+                        raise
+                    raw = b""
+                    receipt.update(accepted=False, error_code="CHAT_CONTROLLER_NOT_READY")
                 call_id = getattr(getattr(acting, "execution", None), "last_call_id", None)
-            publish(result, canonical({"accepted": True, "stdout": raw.decode(), "call_id": call_id, "read": "UNKNOWN", "executed": "UNKNOWN"}))
-        notifications.append({"worker_id": wid, "receipt": str(result), "call_id": decode(private_read(result)).get("call_id"),
-                              "accepted": True, "read": "UNKNOWN", "executed": "UNKNOWN"})
+            publish(result, canonical(dict(receipt, stdout=raw.decode(), call_id=call_id)))
+        recorded = decode(private_read(result))
+        notifications.append({"worker_id": wid, "receipt": str(result), "call_id": recorded.get("call_id"),
+                              "accepted": recorded["accepted"], "read": "UNKNOWN", "executed": "UNKNOWN"})
     final = {"run_id": run.run_id, "new_id": sid, "evidence_turn_id": turn, "notifications": notifications, "created_at": now()}
     publish(run.root / "bootstrap/new/final.json", canonical(final))
     return final

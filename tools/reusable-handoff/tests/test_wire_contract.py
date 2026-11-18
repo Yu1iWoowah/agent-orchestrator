@@ -133,6 +133,49 @@ class WireContractTests(unittest.TestCase):
         self.assertEqual([n["worker_id"] for n in result["notifications"]], ["worker"])
         self.assertEqual([a[a.index("--session") + 1] for a in calls if a[0] == "send"], ["worker"])
 
+    def test_finalize_records_only_controller_not_ready_as_refused(self):
+        # B1: a worker whose agent is not running refuses the steer; final still completes and the hold stays.
+        refused = b"the agent controller for this session is not running (CHAT_CONTROLLER_NOT_READY) [request r-1]\n"
+        cases = {"refused": (1, refused), "other-code": (1, b"session not found (SESSION_NOT_FOUND) [request r-2]\n"),
+                 "other-exit": (75, refused), "before-dispatch": None}
+        self.cli.execution.close()
+        for case, outcome in cases.items():
+            with self.subTest(case=case):
+                execution = self.cli.execution.journal.register("finalize", "old")
+                self.addCleanup(execution.close)
+                execution.phase, execution.bindings = "final", {"old", "new", "worker"}
+                self.cli.execution = execution
+                root = h.mkdir(self.root / case)
+                run = SimpleNamespace(cli=self.cli, root=root, run_id="wire-" + case, old="old",
+                                      state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3}, request={"workers": []})
+                sends = []
+                def transport(args, **kwargs):
+                    if args[1] == "send":
+                        sends.append(args)
+                        return SimpleNamespace(returncode=outcome[0], stdout=b"", stderr=outcome[1])
+                    name = "list" if args[1:3] == ["session", "ls"] else "active"
+                    return SimpleNamespace(returncode=0, stdout=wire_bytes(name), stderr=b"")
+                original = execution.dispatch
+                def dispatch(cli, descriptor, *args, **kwargs):
+                    if outcome is None and descriptor["parameters"]["argv"][0] == "send":
+                        raise h.Stop("synthetic refusal before dispatch")
+                    return original(cli, descriptor, *args, **kwargs)
+                with patch.object(h, "CLI", return_value=self.cli), patch.object(h.subprocess, "run", side_effect=transport), \
+                     patch.object(execution, "dispatch", side_effect=dispatch), \
+                     patch.dict(os.environ, AO_SESSION_ID="old", TMPDIR=str(root / "bootstrap/new/draft")):
+                    if case != "refused":
+                        with self.assertRaises(h.Stop):
+                            h.producer(run, "finalize")
+                        self.assertFalse((root / "bootstrap/new/final.json").exists())
+                        continue
+                    result = h.producer(run, "finalize")
+                    receipt = h.decode(h.private_read(root / "bootstrap/new/notifications/worker/result.json"))
+                    self.assertEqual((receipt["accepted"], receipt["error_code"]), (False, "CHAT_CONTROLLER_NOT_READY"))
+                    self.assertEqual([n["accepted"] for n in result["notifications"]], [False])
+                    (root / "bootstrap/new/final.json").unlink()
+                    h.producer(run, "finalize")
+                self.assertEqual(len(sends), 1 if outcome else 0)
+
     def test_http_DTOs_support_both_targets_and_fail_closed(self):
         self.cli.execution.registration["role"] = "start"
         for harness in ("codex", "claude-code"):
