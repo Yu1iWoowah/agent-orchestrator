@@ -120,7 +120,7 @@ class WireContractTests(unittest.TestCase):
         self.cli.execution.phase = "final"
         self.cli.execution.bindings = {"old", "new", "worker"}
         run = SimpleNamespace(cli=self.cli, root=self.root, run_id="wire", old="old",
-                              state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3},
+                              state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3, "cli_sha256": self.cli.sha256},
                               request={"workers": []})
         calls = []
         def transport(args, **kwargs):
@@ -147,7 +147,7 @@ class WireContractTests(unittest.TestCase):
                 self.cli.execution = execution
                 root = h.mkdir(self.root / case)
                 run = SimpleNamespace(cli=self.cli, root=root, run_id="wire-" + case, old="old",
-                                      state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3}, request={"workers": []})
+                                      state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3, "cli_sha256": self.cli.sha256}, request={"workers": []})
                 sends = []
                 def transport(args, **kwargs):
                     if args[1] == "send":
@@ -175,6 +175,23 @@ class WireContractTests(unittest.TestCase):
                     (root / "bootstrap/new/final.json").unlink()
                     h.producer(run, "finalize")
                 self.assertEqual(len(sends), 1 if outcome else 0)
+
+    def test_actor_adapter_keeps_the_run_cli_hash_across_an_update_while_waiting(self):
+        # The run CLI was checked at load; AO is updated while the producer waits for new_id.
+        self.cli.execution.close()
+        self.cli.execution = self.cli.execution.journal.register("finalize", "old")
+        self.addCleanup(self.cli.execution.close)
+        state = {"nonce_completed": True, "bootstrap_sequence": 3, "cli_sha256": self.cli.sha256}
+        h.publish(self.root / "state.json", h.canonical(dict(state, new_id="old")))
+        run = SimpleNamespace(cli=self.cli, root=self.root, run_id="wire", old="old", state=dict(state), request={"workers": []})
+        before = h.digest(self.cli.executable.read_bytes())
+        def update_while_waiting(_):
+            self.cli.executable.write_bytes(b"#!/bin/sh\n# updated AO\nexit 0\n")
+        with patch.object(h.time, "sleep", side_effect=update_while_waiting), patch.object(h.subprocess, "run") as transport, \
+             patch.dict(os.environ, AO_SESSION_ID="old", TMPDIR=str(self.root / "bootstrap/new/draft")), \
+             self.assertRaisesRegex(h.Stop, "AO CLI changed since run start: .* " + before[:8] + " → "):
+            h.producer(run, "finalize")
+        transport.assert_not_called()
 
     def test_http_DTOs_support_both_targets_and_fail_closed(self):
         self.cli.execution.registration["role"] = "start"

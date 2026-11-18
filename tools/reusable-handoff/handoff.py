@@ -1150,9 +1150,12 @@ class Execution:
 
 
 class CLI:
-    def __init__(self, executable, old, data_dir, run_file, temp):
+    def __init__(self, executable, old, data_dir, run_file, temp, sha256=None):
         self.executable = no_symlinks(executable)
-        self.sha256 = digest(self.executable.read_bytes())
+        # An adapter rebuilt for an actor or a later step inherits the run's fixed hash; it never re-binds to new bytes.
+        self.sha256 = sha256 or digest(self.executable.read_bytes())
+        if sha256:
+            self.unchanged()
         self.env = cli_environment(old, data_dir, run_file, temp)
         self.data_dir, self.run_file = Path(data_dir), Path(run_file)
         raw = self.run_file.read_bytes()
@@ -1165,11 +1168,10 @@ class CLI:
     def transport_binding(self):
         return dict(data_dir=str(self.data_dir), run_file=str(self.run_file), run_file_sha256=self.run_file_sha256, daemon_base=self.base)
 
-    def unchanged(self, expected=None):
+    def unchanged(self):
         """The run's CLI is the PATH executable recorded at start; replaced bytes stop the run, never re-bind."""
         current = digest(self.executable.read_bytes())
-        expected = expected or self.sha256
-        require(current == expected, "AO CLI changed since run start: " + str(self.executable) + " " + expected[:8] + " → " + current[:8])
+        require(current == self.sha256, "AO CLI changed since run start: " + str(self.executable) + " " + self.sha256[:8] + " → " + current[:8])
 
     def call(self, args, timeout=30, deadline=None, on_dispatch=None, *, read=False, effect_id=None):
         self.unchanged()
@@ -2245,7 +2247,7 @@ def worker_receipt(run):
     rules = next((x for x in run.request["workers"] if x["worker_id"] == sid), None)
     require(rules and rules["reserved_stop_d"] and workspace_entry(run.request, sid)["kind"] == "worker", "worker producer not in bound rules")
     directory = mkdir(run.root / "workers" / sid)
-    acting = CLI(run.cli.executable, sid, run.cli.data_dir, run.cli.run_file, directory / "draft")
+    acting = CLI(run.cli.executable, sid, run.cli.data_dir, run.cli.run_file, directory / "draft", run.state["cli_sha256"])
     acting.execution = getattr(run.cli, "execution", None)
     run.cli = acting
     workspace = bound_workspace(run, sid)
@@ -3097,7 +3099,7 @@ def producer(run, action):
                 execution.new_id in (None, sid), "producer execution binding changed")
         execution.bindings.add(sid)
         execution.new_id = sid
-    acting = CLI(run.cli.executable, sid, run.cli.data_dir, run.cli.run_file, draft)
+    acting = CLI(run.cli.executable, sid, run.cli.data_dir, run.cli.run_file, draft, run.state["cli_sha256"])
     acting.execution = getattr(run.cli, "execution", None)
     snap = acting.session(sid)
     running = [t for t in snap["transcript"].get("turns", []) if t["state"] == "running"]
@@ -3242,7 +3244,7 @@ def locate(old=None, create=False, execution=None):
 
 def path_cli(old, initial, temp):
     """The ao found on PATH at start (initial) is the run's CLI; its path and bytes are recorded in state."""
-    cli = CLI(initial.executable, old, initial.data_dir, initial.run_file, temp)
+    cli = CLI(initial.executable, old, initial.data_dir, initial.run_file, temp, initial.sha256)
     cli.execution = initial.execution
     return cli
 
@@ -4104,9 +4106,8 @@ def load_run(root, run_id, initial, execution=None):
     require(binding.get("root") == str(root) and binding.get("old_id") == state["old_id"] and
             binding.get("start_sha256") == state["start_sha256"] == digest(private_read(directory / "start.json")),
             "run/journal immutable binding mismatch")
-    cli = CLI(state["cli_path"], state["old_id"], state["data_dir"], state["run_file"], directory)
+    cli = CLI(state["cli_path"], state["old_id"], state["data_dir"], state["run_file"], directory, state["cli_sha256"])
     cli.execution = execution
-    cli.unchanged(state["cli_sha256"])
     require(cli.base == state["daemon_base"], "run daemon location changed")
     return Run(directory, cli)
 
