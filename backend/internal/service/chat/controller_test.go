@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/kimiacp"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
@@ -91,6 +92,10 @@ type fakeConversation struct {
 	deliveryPrepared bool
 	deliveryDenied   bool // a missing receipt answers like a host without a record
 	deliveryReceipts map[string]domain.ChatDeliveryReceipt
+	// outboundEpoch names the attached host; empty reports no host identity.
+	outboundEpoch string
+	// deliveryEpoch is the host epoch new receipts carry (default fake-native-epoch).
+	deliveryEpoch string
 
 	// noNetwork makes SandboxAllowsNetwork report a sandbox with no network.
 	noNetwork bool
@@ -307,6 +312,27 @@ func (f *fakeConversation) setCapabilities(caps ports.ChatCapabilities) {
 	f.mu.Unlock()
 }
 func (f *fakeConversation) Events() <-chan ports.ChatEvent { return f.events }
+
+func (f *fakeConversation) OutboundProviderEpoch() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.outboundEpoch
+}
+
+// DeliveryEpochFromPreviousBoot uses the real persistent-host judgment, so a
+// receipt epoch must be a real host epoch (boot id included) to count as gone.
+func (f *fakeConversation) DeliveryEpochFromPreviousBoot(epoch string) bool {
+	return persistenthost.EpochFromPreviousBoot(epoch)
+}
+
+// replaceProviderHost models a reboot or host restart: a new host epoch that
+// has never seen the old host's delivery records.
+func (f *fakeConversation) replaceProviderHost() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outboundEpoch = "replacement-host-epoch"
+	f.deliveryReceipts = nil
+}
 
 func (f *fakeConversation) SendTurn(_ context.Context, msg ports.ChatUserMessage) (ports.ChatTurnRef, error) {
 	f.mu.Lock()

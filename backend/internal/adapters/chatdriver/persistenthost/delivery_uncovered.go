@@ -2,6 +2,7 @@ package persistenthost
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -14,16 +15,103 @@ type nativeDeliveryGap struct {
 	Method, ThreadID, NativeTurn, RequestedTurn string
 	Acknowledged                                bool
 	TerminalObserved                            bool
+	// SessionID is the ACP session of a session-scoped request.
+	SessionID string
+	// SteerPrompts are the session's prompt requests in flight when an ACP
+	// steering request was forwarded; injected guidance can only join them.
+	SteerPrompts []string
+	// SteerHadPrompts is true when at least one prompt was in flight then.
+	SteerHadPrompts bool
+	// SteerJoined records an injected (or errored) steering answer: the gap
+	// settles once every prompt in SteerPrompts has a terminal stopReason.
+	SteerJoined bool
 }
+
+// acpSteeringMethod is ACP's _session/steering extension. AO always sends it
+// with idleBehavior promptRequired, so it never starts a turn of its own.
+const acpSteeringMethod = "_session/steering"
 
 func (j *deliveryJournal) trackUncovered(id, method string, params map[string]json.RawMessage) {
 	gap := nativeDeliveryGap{Method: method}
 	_ = json.Unmarshal(params["threadId"], &gap.ThreadID)
+	_ = json.Unmarshal(params["sessionId"], &gap.SessionID)
 	if method == "turn/steer" {
 		_ = json.Unmarshal(params["expectedTurnId"], &gap.RequestedTurn)
 	}
+	if method == acpSteeringMethod {
+		gap.SteerPrompts = j.promptsInFlight(gap.SessionID)
+		gap.SteerHadPrompts = len(gap.SteerPrompts) > 0
+	}
 	j.uncovered[id] = method
 	j.unsettled[id] = gap
+}
+
+// promptsInFlight lists the session's forwarded session/prompt requests that
+// have no terminal answer yet, managed and unmanaged alike.
+func (j *deliveryJournal) promptsInFlight(session string) []string {
+	if session == "" {
+		return nil
+	}
+	var ids []string
+	for request, attempt := range j.requests {
+		record := j.records[attempt]
+		if record.Method == "session/prompt" && record.NativeSession == session && !record.Receipt.ExecutionSettled {
+			ids = append(ids, request)
+		}
+	}
+	for request, gap := range j.unsettled {
+		if gap.Method == "session/prompt" && gap.SessionID == session {
+			ids = append(ids, request)
+		}
+	}
+	return ids
+}
+
+// promptEnded releases steering gaps waiting on a prompt that has just
+// returned its stopReason; a joined steer settles when none remain.
+func (j *deliveryJournal) promptEnded(request string) {
+	for id, gap := range j.unsettled {
+		if gap.Method != acpSteeringMethod || !slices.Contains(gap.SteerPrompts, request) {
+			continue
+		}
+		gap.SteerPrompts = slices.DeleteFunc(slices.Clone(gap.SteerPrompts), func(p string) bool { return p == request })
+		j.unsettled[id] = gap
+		j.settleJoinedSteer(id)
+	}
+}
+
+func (j *deliveryJournal) settleJoinedSteer(id string) {
+	gap := j.unsettled[id]
+	if gap.SteerJoined && len(gap.SteerPrompts) == 0 && j.uncovered[id] == "" {
+		delete(j.unsettled, id)
+	}
+}
+
+// observeSteeringResponse applies the extension's answer. promptRequired and
+// failed prove nothing was delivered. injected (or an RPC error, which the
+// adapter raises before queuing any input) can only have joined the prompts
+// in flight when it was sent; with none, or on startedNewTurn or an unknown
+// outcome, work may run outside any prompt and the gap stays.
+func (j *deliveryJournal) observeSteeringResponse(id string, gap nativeDeliveryGap, result, rpcError json.RawMessage) {
+	outcome := ""
+	if len(rpcError) == 0 {
+		var response struct {
+			Outcome string `json:"outcome"`
+		}
+		if json.Unmarshal(result, &response) != nil {
+			return
+		}
+		outcome = response.Outcome
+	}
+	switch {
+	case outcome == "promptRequired" || outcome == "failed":
+		delete(j.unsettled, id)
+	case (outcome == "injected" || len(rpcError) > 0) && gap.SteerHadPrompts:
+		// The answer may arrive after those prompts already ended.
+		gap.SteerJoined = true
+		j.unsettled[id] = gap
+		j.settleJoinedSteer(id)
+	}
 }
 
 func (j *deliveryJournal) observeUncoveredResponse(id string, result, rpcError json.RawMessage) {
@@ -34,6 +122,10 @@ func (j *deliveryJournal) observeUncoveredResponse(id string, result, rpcError j
 	}
 	// These methods never submit model input or start a native turn. The RPC
 	// response (including a null result or refusal) ends their control request.
+	if gap.Method == acpSteeringMethod {
+		j.observeSteeringResponse(id, gap, result, rpcError)
+		return
+	}
 	if gap.Method == "config/mcpServer/reload" || gap.Method == "thread/delete" {
 		if len(result) > 0 || len(rpcError) > 0 {
 			delete(j.unsettled, id)
@@ -66,6 +158,7 @@ func (j *deliveryJournal) observeUncoveredResponse(id string, result, rpcError j
 		}
 		if json.Unmarshal(result, &response) == nil && response.StopReason != "" {
 			delete(j.unsettled, id)
+			j.promptEnded(id)
 		}
 	case "turn/start":
 		var response struct {

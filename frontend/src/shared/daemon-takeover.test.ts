@@ -10,6 +10,7 @@ import {
 	keepAliveForReplacement,
 	portHolderPidToReplace,
 	shouldReplaceDaemonForStartup,
+	shutdownRefusalMessage,
 } from "./daemon-takeover";
 
 // A minimal valid DaemonProbe (non-null means the AO daemon answered /healthz).
@@ -206,5 +207,22 @@ describe("startup replacement", () => {
 		expect(keepAliveForReplacement({ ownership: { action: "replace", keepAlive: true }, forceRequested: false })).toBe(
 			true,
 		);
+	});
+});
+
+describe("shutdownRefusalMessage", () => {
+	it("names the session and reason that blocked the old daemon's shutdown", () => {
+		expect(shutdownRefusalMessage(409, { status: "shutdown_not_settled", blockedSession: "atm-544", blockedReason: "journal_gap" })).toBe(
+			"daemon shutdown returned HTTP 409 (blocked by journal_gap in session atm-544)",
+		);
+		expect(shutdownRefusalMessage(409, { status: "shutdown_not_settled", blockedReason: "controller_starting" })).toBe(
+			"daemon shutdown returned HTTP 409 (blocked by controller_starting)",
+		);
+	});
+
+	it("keeps the plain status when the daemon gave no reason", () => {
+		expect(shutdownRefusalMessage(409, { status: "shutdown_not_settled" })).toBe("daemon shutdown returned HTTP 409");
+		expect(shutdownRefusalMessage(409, null)).toBe("daemon shutdown returned HTTP 409");
+		expect(shutdownRefusalMessage(500, { blockedReason: "journal_gap" })).toBe("daemon shutdown returned HTTP 500");
 	});
 });

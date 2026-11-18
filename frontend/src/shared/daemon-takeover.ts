@@ -188,3 +188,17 @@ export function keepAliveForReplacement(input: {
 }): boolean {
 	return input.forceRequested ? true : input.ownership.action === "replace" && input.ownership.keepAlive;
 }
+
+/**
+ * The error text for a refused takeover shutdown. A 409 names the session and
+ * fixed reason code that kept the old daemon from settling, so the user can
+ * see what it is waiting for instead of only a status number.
+ */
+export function shutdownRefusalMessage(status: number, body: unknown): string {
+	const message = `daemon shutdown returned HTTP ${status}`;
+	if (status !== 409 || typeof body !== "object" || body === null) return message;
+	const { blockedReason, blockedSession } = body as { blockedReason?: unknown; blockedSession?: unknown };
+	if (typeof blockedReason !== "string" || blockedReason === "") return message;
+	const session = typeof blockedSession === "string" && blockedSession !== "" ? ` in session ${blockedSession}` : "";
+	return `${message} (blocked by ${blockedReason}${session})`;
+}

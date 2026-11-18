@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -30,6 +31,54 @@ func (e *ChatShutdownSideError) Error() string {
 }
 
 func (*ChatShutdownSideError) Unwrap() error { return ErrChatShutdownNotSettled }
+
+// ChatShutdownBlockedError names what kept shutdown from settling: the session
+// (empty for a service-wide condition) and a fixed reason code. It carries no
+// provider text; the cause stays available to logs through Unwrap.
+type ChatShutdownBlockedError struct {
+	SessionID string
+	Reason    string
+	Cause     error
+}
+
+func (e *ChatShutdownBlockedError) Error() string {
+	text := "shutdown_not_settled: " + e.Reason
+	if e.SessionID != "" {
+		text += " (session " + e.SessionID + ")"
+	}
+	if e.Cause != nil {
+		text += ": " + e.Cause.Error()
+	}
+	return text
+}
+
+func (e *ChatShutdownBlockedError) Unwrap() []error {
+	return []error{ErrChatShutdownNotSettled, e.Cause}
+}
+
+// ChatDeliveryGapError is a host flush refusal that names the native methods
+// still lacking settlement evidence. It carries method names only.
+type ChatDeliveryGapError struct {
+	Methods []string
+}
+
+func (e *ChatDeliveryGapError) Error() string {
+	return "shutdown_not_settled: host journal gap: " + strings.Join(e.Methods, ",")
+}
+
+func (*ChatDeliveryGapError) Unwrap() error { return ErrChatShutdownNotSettled }
+
+// ChatDeliveryEpochJudge proves that a recorded provider epoch belongs to an
+// earlier boot, so neither its host nor any process it started can still run.
+type ChatDeliveryEpochJudge interface {
+	DeliveryEpochFromPreviousBoot(epoch string) bool
+}
+
+// ChatDeliveryEpochReporter names the provider host that currently holds
+// outbound custody; empty when no host is attached.
+type ChatDeliveryEpochReporter interface {
+	OutboundProviderEpoch() string
+}
 
 // ChatDeliveryLookup contains correlation keys only, never a prompt or path.
 type ChatDeliveryLookup struct {

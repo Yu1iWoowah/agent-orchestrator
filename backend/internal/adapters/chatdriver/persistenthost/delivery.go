@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -155,9 +156,11 @@ func (j *deliveryJournal) prepare(frame []byte) ([]byte, error) {
 			"session/set_mode", "session/set_model", "session/set_config_option",
 			"thread/start", "thread/resume", "thread/read", "thread/list", "thread/name/set", "thread/unsubscribe",
 			"thread/backgroundTerminals/list", "turn/interrupt", "session/cancel",
-			"config/read", "model/list", "skills/list", "account/read", "account/rateLimits/read", "mcpServerStatus/list":
+			"config/read", "model/list", "skills/list", "account/read", "account/rateLimits/read", "mcpServerStatus/list",
+			"_ao/session/can_hibernate":
 			// Initialization is covered by launch admission; settings by the attempt
-			// checkpoint (or the enclosing prompt reservation). Reads/control add no input.
+			// checkpoint (or the enclosing prompt reservation). Reads/control add no input;
+			// AO's own hibernation probe only asks whether background work ended.
 			return frame, nil
 		default:
 			// An unclassified native method must not disappear from the denominator
@@ -311,6 +314,7 @@ func (j *deliveryJournal) observe(frame []byte) error {
 		j.records[attempt] = record
 		if record.Receipt.ExecutionSettled {
 			j.clearWaiting(attempt, record.NativeTurn)
+			j.promptEnded(string(e.ID))
 		}
 		return j.append(record)
 	}
@@ -454,7 +458,7 @@ func (j *deliveryJournal) query(lookups []ports.ChatDeliveryLookup, flush bool) 
 	defer j.mu.Unlock()
 	if flush {
 		if len(j.uncovered) > 0 || len(j.unsettled) > 0 || len(j.executions) > 0 {
-			return nil, ports.ErrChatShutdownNotSettled
+			return nil, &ports.ChatDeliveryGapError{Methods: j.gapMethods()}
 		}
 		// Rewrite the latest memory snapshot, including progress and retired records.
 		if err := j.compact(); err != nil {
@@ -485,6 +489,40 @@ func (j *deliveryJournal) query(lookups []ports.ChatDeliveryLookup, flush bool) 
 		out = append(out, receipt)
 	}
 	return out, nil
+}
+
+// deliveryGapPrefix marks a flush refusal that names unsettled methods. A
+// missing record keeps the empty error text legacy settlement depends on.
+const deliveryGapPrefix = "not_settled:"
+
+const maxGapMethods = 8
+
+// gapMethods names what keeps a flush open: sorted method names (bounded, no
+// parameters or content), and native-execution for turns without a request.
+func (j *deliveryJournal) gapMethods() []string {
+	seen := map[string]bool{}
+	for _, method := range j.uncovered {
+		seen[method] = true
+	}
+	for _, gap := range j.unsettled {
+		seen[gap.Method] = true
+	}
+	if len(j.executions) > 0 {
+		seen["native-execution"] = true
+	}
+	methods := make([]string, 0, len(seen))
+	for method := range seen {
+		if len(method) > 64 {
+			method = method[:64]
+		}
+		methods = append(methods, method)
+	}
+	slices.Sort(methods)
+	methods = slices.Compact(methods)
+	if len(methods) > maxGapMethods {
+		methods = methods[:maxGapMethods]
+	}
+	return methods
 }
 
 // DeliveryClient uses the existing authenticated host control endpoint.
@@ -530,6 +568,9 @@ func (c *DeliveryClient) call(ctx context.Context, keys []ports.ChatDeliveryLook
 		return nil, err
 	}
 	if !response.OK {
+		if methods, ok := strings.CutPrefix(response.Error, deliveryGapPrefix); ok {
+			return nil, &ports.ChatDeliveryGapError{Methods: strings.Split(methods, ",")}
+		}
 		switch response.Error {
 		case "":
 			return nil, ports.ErrChatDeliveryDenied
@@ -541,8 +582,42 @@ func (c *DeliveryClient) call(ctx context.Context, keys []ports.ChatDeliveryLook
 	return response.Deliveries, nil
 }
 
+// deliveryEpoch identifies one host process: pid, start time and, when the host
+// recorded it, the boot it ran in. A host started before boot ids existed keeps
+// the older form, which both sides still derive from the same descriptor.
 func deliveryEpoch(d Descriptor) string {
-	return "host-" + strconv.Itoa(d.PID) + "-" + strconv.FormatInt(d.StartedAt.UnixNano(), 10)
+	epoch := "host-" + strconv.Itoa(d.PID) + "-" + strconv.FormatInt(d.StartedAt.UnixNano(), 10)
+	if d.BootID != "" {
+		epoch += "-" + d.BootID
+	}
+	return epoch
+}
+
+// EpochFromPreviousBoot reports positive proof that a delivery epoch's host and
+// every process it started belong to an earlier boot. A host that died in this
+// boot proves nothing: its provider runs in its own process group and can
+// outlive it. Malformed or unknown epochs are never proof.
+func EpochFromPreviousBoot(epoch string) bool {
+	rest, ok := strings.CutPrefix(epoch, "host-")
+	if !ok {
+		return false
+	}
+	parts := strings.SplitN(rest, "-", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	if _, err := strconv.Atoi(parts[0]); err != nil {
+		return false
+	}
+	nanos, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return false
+	}
+	if len(parts) == 3 {
+		return parts[2] != "" && hostFromPreviousBoot(parts[2], time.Time{})
+	}
+	// u3 transition (sdr-total-review-1 q5=b): no boot id was recorded.
+	return hostFromPreviousBoot("", time.Unix(0, nanos))
 }
 
 // flushReplay confirms the ACP replay boundary before reporting custody. It

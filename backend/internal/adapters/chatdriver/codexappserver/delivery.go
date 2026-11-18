@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -33,6 +34,13 @@ func (c *conversation) OutboundProviderEpoch() string {
 		return ""
 	}
 	return c.proc.delivery.ProviderEpoch()
+}
+
+// DeliveryEpochFromPreviousBoot proves an epoch's host belongs to an earlier
+// boot, the same judgment ACP uses, so an unknown Codex attempt left by a host
+// from before a reboot can settle instead of blocking delivery and shutdown.
+func (*conversation) DeliveryEpochFromPreviousBoot(epoch string) bool {
+	return persistenthost.EpochFromPreviousBoot(epoch)
 }
 
 // ReconcileOutbound uses an includeTurns read through the original host. The

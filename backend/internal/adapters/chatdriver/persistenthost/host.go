@@ -125,6 +125,9 @@ type Descriptor struct {
 	Token                string    `json:"token"`
 	PID                  int       `json:"pid"`
 	StartedAt            time.Time `json:"startedAt"`
+	// BootID names the boot the host started in; empty for hosts started
+	// before it was recorded.
+	BootID string `json:"bootId,omitempty"`
 }
 
 // Config identifies one provider process and its AO session ownership.
@@ -322,13 +325,18 @@ func acquireHostLock(dataDir, sessionID string) (func(), error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // AO-owned capability directory.
 	if errors.Is(err, os.ErrExist) {
 		owner, readErr := os.ReadFile(path) //nolint:gosec // AO-owned path derived from validated session id.
-		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(owner)))
-		if readErr != nil || parseErr != nil || pid <= 0 || processalive.Alive(pid) {
+		fields := strings.Fields(string(owner))
+		pid, parseErr := 0, errors.New("empty chat host lock")
+		if len(fields) > 0 {
+			pid, parseErr = strconv.Atoi(fields[0])
+		}
+		if readErr != nil || parseErr != nil || pid <= 0 || processalive.Alive(pid) && !lockFromPreviousBoot(dataDir, sessionID, pid, fields) {
 			return nil, ErrHostExists
 		}
 		// A host can die after atomically creating its launch lock but before it
-		// publishes host.json. Reclaim only a lock whose recorded owner is proven
-		// dead, then retry the same O_EXCL acquisition once.
+		// publishes host.json, or a reboot can leave both behind while its PID is
+		// reused. Reclaim only a lock whose recorded owner is proven gone, then
+		// retry the same O_EXCL acquisition once.
 		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			return nil, ErrHostExists
 		}
@@ -340,7 +348,7 @@ func acquireHostLock(dataDir, sessionID string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := fmt.Fprintf(f, "%d\n", os.Getpid()); err != nil {
+	if _, err := fmt.Fprintf(f, "%d %s\n", os.Getpid(), currentBootID()); err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
 		return nil, err
@@ -350,6 +358,17 @@ func acquireHostLock(dataDir, sessionID string) (func(), error) {
 		return nil, err
 	}
 	return func() { _ = os.Remove(path) }, nil
+}
+
+// lockFromPreviousBoot proves a lock's live-looking PID belongs to an earlier
+// boot: by the boot id the lock records, or for a lock written before boot ids
+// were recorded, by the descriptor its same PID published (u3 transition).
+func lockFromPreviousBoot(dataDir, sessionID string, pid int, fields []string) bool {
+	if len(fields) > 1 {
+		return hostFromPreviousBoot(fields[1], time.Time{})
+	}
+	d, err := readDescriptorOnce(dataDir, sessionID)
+	return err == nil && d.PID == pid && hostFromPreviousBoot(d.BootID, d.StartedAt)
 }
 
 func readDescriptorOnce(dataDir, sessionID string) (Descriptor, error) {
@@ -426,11 +445,17 @@ func validateDescriptor(cfg Config, d Descriptor) error {
 	return nil
 }
 
+// hostMayBeAlive is false when the descriptor's PID is gone or proven to be
+// reused after a reboot; a failed probe alone never proves a host dead.
+func hostMayBeAlive(d Descriptor) bool {
+	return processalive.Alive(d.PID) && !hostFromPreviousBoot(d.BootID, d.StartedAt)
+}
+
 // ConnectOrStart attaches to an existing compatible host or starts one with the
 // current AO executable. Failed/incompatible probes never terminate that host.
 func ConnectOrStart(ctx context.Context, cfg Config) (*Transport, error) {
 	if d, err := readDescriptor(cfg.DataDir, cfg.SessionID); err == nil {
-		if err := validateDescriptor(cfg, d); err != nil && processalive.Alive(d.PID) {
+		if err := validateDescriptor(cfg, d); err != nil && hostMayBeAlive(d) {
 			return nil, err
 		}
 		transport, attachErr := attach(ctx, d, true)
@@ -462,7 +487,7 @@ func ConnectOrStart(ctx context.Context, cfg Config) (*Transport, error) {
 		// A failed socket probe is not proof that a provider is dead. Only an OS
 		// process observation permits clearing the descriptor and falling back to
 		// native resume in a new host.
-		if processalive.Alive(d.PID) {
+		if hostMayBeAlive(d) {
 			return nil, fmt.Errorf("%w: %w", ErrOwnershipInconclusive, attachErr)
 		}
 		// Do not remove stale ownership files here. Another starter may have
@@ -515,7 +540,7 @@ func ConnectOrStart(ctx context.Context, cfg Config) (*Transport, error) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if d, readErr := readDescriptor(cfg.DataDir, cfg.SessionID); readErr == nil && processalive.Alive(d.PID) {
+	if d, readErr := readDescriptor(cfg.DataDir, cfg.SessionID); readErr == nil && hostMayBeAlive(d) {
 		return nil, fmt.Errorf("%w: %w", ErrOwnershipInconclusive, lastErr)
 	}
 	return nil, fmt.Errorf("start chat host: %w", lastErr)
@@ -718,7 +743,12 @@ func pidFileHostState(path string, pathErr error) HostState {
 	if errors.Is(err, os.ErrNotExist) {
 		return HostAbsent
 	}
-	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(owner)))
+	// The lock holds "<pid> <boot id>"; locks written before boot ids hold the pid only.
+	fields := strings.Fields(string(owner))
+	pid, parseErr := 0, errors.New("empty chat host lock")
+	if len(fields) > 0 {
+		pid, parseErr = strconv.Atoi(fields[0])
+	}
 	switch {
 	case err != nil || parseErr != nil || pid <= 0:
 		return HostUnknown
@@ -962,6 +992,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Version:          ProtocolVersion, SessionID: cfg.SessionID, Protocol: cfg.Protocol,
 		OwnershipFingerprint: cfg.OwnershipFingerprint,
 		Address:              listener.Addr().String(), Token: token, PID: os.Getpid(), StartedAt: time.Now().UTC(),
+		BootID: currentBootID(),
 	}
 	if err := writeDescriptor(cfg.DataDir, d); err != nil {
 		_ = killProviderProcess(context.WithoutCancel(ctx), child)
@@ -1234,6 +1265,9 @@ func (h *host) handle(conn net.Conn) {
 				receipts, err := h.delivery.query(request.Deliveries, request.Action == "delivery-flush")
 				response.OK = err == nil
 				response.Deliveries = receipts
+				if gap := (*ports.ChatDeliveryGapError)(nil); errors.As(err, &gap) {
+					response.Error = deliveryGapPrefix + strings.Join(gap.Methods, ",")
+				}
 			}
 		}
 		_ = json.NewEncoder(conn).Encode(response)

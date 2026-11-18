@@ -1103,6 +1103,40 @@ func TestSpawnRecordNamesTheHostUntilItExits(t *testing.T) {
 	}
 }
 
+// The launch lock names its owner as "<pid> <boot id>"; locks written before
+// boot ids hold the pid only. Both name a live host until its pid exits.
+func TestProbeHostReadsTheLaunchLockOwner(t *testing.T) {
+	live := strconv.Itoa(os.Getpid())
+	for _, tt := range []struct {
+		name string
+		lock string
+		want HostState
+	}{
+		{name: "pid and boot id", lock: live + " 43e6afc6-809c-4182-9672-9ee71479f3d6\n", want: HostRunning},
+		{name: "pid only", lock: live, want: HostRunning},
+		{name: "exited pid and boot id", lock: "1073741823 43e6afc6-809c-4182-9672-9ee71479f3d6\n", want: HostAbsent},
+		{name: "not a pid", lock: "x 43e6afc6-809c-4182-9672-9ee71479f3d6\n", want: HostUnknown},
+		{name: "empty", lock: "", want: HostUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			path, err := lockPath(dataDir, "review-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tt.lock), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := ProbeHost(dataDir, "review-1"); got != tt.want {
+				t.Fatalf("probe = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // An exiting host that clears its spawn record after a new host has been
 // spawned for the same session leaves the new host's record in place.
 func TestExitingHostKeepsTheNextHostsSpawnRecord(t *testing.T) {
