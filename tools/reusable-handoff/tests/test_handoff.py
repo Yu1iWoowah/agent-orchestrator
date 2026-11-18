@@ -1917,6 +1917,22 @@ class OSProcessTests(unittest.TestCase):
         work = h.os_work_processes({child.pid: dict(table[child.pid], ppid=1)}, "worker", "/data", Path("/wt/worker"), lambda *a: None)
         self.assertEqual([x["pid"] for x in work], [child.pid])
 
+    def test_unreaped_zombie_is_kept_for_traversal_but_is_not_work(self):
+        # A resident server that has not yet wait()ed an exited child: the zombie cannot be stopped by the worker.
+        code = ("import subprocess,sys,time;c=subprocess.Popen([sys.executable,'-c','pass']);time.sleep(0.5);"
+                "print(c.pid,flush=True);time.sleep(60)")
+        parent = subprocess.Popen([sys.executable, "-I", "-c", code], cwd=self.root, stdout=subprocess.PIPE)
+        self.addCleanup(parent.wait)
+        self.addCleanup(parent.kill)
+        zombie = int(parent.stdout.readline())
+        table = h.proc_table()
+        self.assertEqual((table[zombie]["ppid"], table[zombie]["zombie"]), (parent.pid, True))
+        self.assertFalse(table[parent.pid]["zombie"])
+        # Under a provider (B10 MCP server) the zombie is still walked but never listed as work.
+        tree = {10: proc(1, ["ao", "chat-host", "worker", "/data", "/wt/worker"]), 11: proc(10, ["codex", "app-server"]),
+                parent.pid: dict(table[parent.pid], ppid=11, start=50.0), zombie: dict(table[zombie], start=60.0)}
+        self.assertEqual(h.os_work_processes(tree, "worker", "/data", Path("/wt/worker"), lambda *a: 100.0), [])
+
     def test_claude_tree_terminal_reviewer_and_reparented_attribution(self):
         calls = []
         def base_of(pid, tick, started):

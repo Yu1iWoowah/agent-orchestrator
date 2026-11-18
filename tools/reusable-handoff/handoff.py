@@ -583,14 +583,14 @@ def proc_table():
                 raise Stop("process table UNKNOWN: " + directory.name + ": " + str(exc)) from exc
         argv, missing_argv = read(lambda: [x.decode(errors="replace") for x in (directory / "cmdline").read_bytes().split(b"\0") if x], [])
         cwd, missing_cwd = read(lambda: os.readlink(directory / "cwd"), None)
-        live_thread = state != b"Z"
+        # After the main thread exits (pthread_exit) the leader shows Z while other threads work; a real zombie has no
+        # live thread left: it has terminated and only its parent's wait() removes it.
+        live = [task for task in (sorted((directory / "task").glob("*")) if (state == b"Z" or missing_cwd) and (directory / "task").is_dir() else [])
+                if (proc_stat(task) or (b"Z",))[0] != b"Z"]
+        live_thread = state != b"Z" or bool(live)
         if missing_cwd:
-            # After the main thread exits (pthread_exit) the leader shows Z and the group's cwd is only visible
-            # through its live threads; a real zombie has no live thread left.
-            for task in sorted((directory / "task").glob("*")) if (directory / "task").is_dir() else []:
-                if (proc_stat(task) or (b"Z",))[0] == b"Z":
-                    continue
-                live_thread = True
+            # The group's cwd is then only visible through its live threads.
+            for task in live:
                 cwd, _ = read(lambda: os.readlink(task / "cwd"), None)
                 if cwd:
                     missing_cwd = False
@@ -599,7 +599,7 @@ def proc_table():
         if (missing_argv or missing_cwd) and (proc_stat(directory) or (None, None, None))[2] != tick:
             continue  # the PID really went away (or was reused) while reading
         table[int(directory.name)] = dict(ppid=ppid, tick=tick, start=btime + tick / hz, cwd=cwd, argv=argv, terminal=terminal,
-                                          cwd_unknown=missing_cwd and live_thread)
+                                          cwd_unknown=missing_cwd and live_thread, zombie=not live_thread)
     return table
 
 
@@ -638,7 +638,8 @@ def os_work_processes(table, sid, data_dir, workspace, base_of, exclude=()):
                                     (parent in roots and (name(pid) == "node_repl" or argv[:2] == ["node", "./mcp/launch.mjs"])) or  # B5, B6
                                     (base is not None and table[pid]["start"] < base)):  # B10
             infrastructure.add(pid)
-    return [dict(pid=pid, exe=name(pid)) for pid in sorted(candidates - infrastructure)]
+    # A terminated zombie stays in the tree for traversal but is not work: stopping it is its parent's wait(), not the worker's.
+    return [dict(pid=pid, exe=name(pid)) for pid in sorted(candidates - infrastructure) if not table[pid].get("zombie")]
 
 
 def provider_base(read, sid, started, evidence, clock=time.time):
