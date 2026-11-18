@@ -213,6 +213,7 @@ func TestGoneHostAttemptNoLongerBlocksHibernationOrVersionRefresh(t *testing.T) 
 			})
 			conv.replaceProviderHost()
 			var stopped bool
+			var stopErr error
 			if path == "hibernation" {
 				rec, found, err := h.st.GetSession(ctx, testSession)
 				if err != nil || !found {
@@ -222,14 +223,14 @@ func TestGoneHostAttemptNoLongerBlocksHibernationOrVersionRefresh(t *testing.T) 
 				if err := h.st.UpdateSession(ctx, rec); err != nil {
 					t.Fatal(err)
 				}
-				stopped, err = h.svc.HibernateChat(ctx, testSession)
+				stopped, stopErr = h.svc.HibernateChat(ctx, testSession)
 			} else {
 				markStale(t, h)
 				h.advance(refreshIdle)
-				stopped, err = h.svc.HibernateChatForVersionRefresh(ctx, testSession, refreshIdle)
+				stopped, stopErr = h.svc.HibernateChatForVersionRefresh(ctx, testSession, refreshIdle)
 			}
-			if err != nil || !stopped {
-				t.Fatalf("%s blocked by a gone host's attempt: stopped=%v err=%v", path, stopped, err)
+			if stopErr != nil || !stopped {
+				t.Fatalf("%s blocked by a gone host's attempt: stopped=%v err=%v", path, stopped, stopErr)
 			}
 			saved, err := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, turn.ID)
 			if err != nil || !saved.ExecutionSettled || saved.ErrorCode != "CHAT_DELIVERY_HOST_GONE_SETTLED" || saved.AttentionID != "" {

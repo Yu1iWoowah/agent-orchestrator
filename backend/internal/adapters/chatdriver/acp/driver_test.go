@@ -184,13 +184,15 @@ func TestPersistentACPSteeredTurnSettlesHostCustody(t *testing.T) {
 			if err := conv.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
 				t.Fatalf("StartDeferredTurn: %v", err)
 			}
-			for event := nextEvent(t, conv.Events()); event.Kind != ports.ChatEventMessageDelta; event = nextEvent(t, conv.Events()) {
+			for event := (ports.ChatEvent{}); event.Kind != ports.ChatEventMessageDelta; {
+				event = nextEvent(t, conv.Events())
 			}
 			_, steerErr := conv.(ports.ChatSteerer).Steer(context.Background(), ref.ProviderTurnID, ports.ChatUserMessage{Text: "also this"})
 			if tc.settled && steerErr != nil {
 				t.Fatalf("Steer: %v", steerErr)
 			}
-			for event := nextEvent(t, conv.Events()); event.Kind != ports.ChatEventTurnCompleted; event = nextEvent(t, conv.Events()) {
+			for event := (ports.ChatEvent{}); event.Kind != ports.ChatEventTurnCompleted; {
+				event = nextEvent(t, conv.Events())
 			}
 			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
