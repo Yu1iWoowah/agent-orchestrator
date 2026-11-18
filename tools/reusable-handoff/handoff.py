@@ -3582,9 +3582,12 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
             isinstance(item.get("path"), str) and isinstance(item.get("sha256"), str) and
             re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) for item in materials), "authorized material index UNKNOWN")
     live = [x for x in cli.sessions() if x["projectId"] == PROJECT and not x["isTerminated"]]
-    require({x["id"] for x in live if x["role"] == "worker"} == set(workers) and
-            [x["id"] for x in live if x["role"] == "orchestrator"] == [old], "actor membership/responsibility changed")
+    require([x["id"] for x in live if x["role"] == "orchestrator"] == [old], "actor membership/responsibility changed")
     require(not state.get("new_id"), "new ownership responsibility not proven for retirement")
+    # No worker ever received this run's control: no dispatch, hold or preservation is left to close.
+    if not controls and not any((d / "sent.json").exists() for d in (current / "control").glob("worker-stop-*")):
+        return []
+    require({x["id"] for x in live if x["role"] == "worker"} == set(workers), "actor membership/responsibility changed")
     closed, remaining = [], set(controls)
     for sid, rules in workers.items():
         snap = cli.session(sid)

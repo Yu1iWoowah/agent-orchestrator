@@ -993,13 +993,88 @@ c.call(['spawn','--help']);e.close()
         self.assertFalse((self.root / ".retired" / self.run_id).exists())
 
     def test_three_workers_with_other_reserved_directives_keep_their_holds(self):
+        # Once any worker received control, the uncontrolled workers' original holds are closed too.
+        self.dispatch_control(0)
         receipt = self.retire()
         self.assertEqual(len(receipt["closed_effects"]), 3)
         self.assertTrue(all(x["held"] for x in receipt["closed_effects"]))
         self.assertEqual([w["reserved_stop_d"] for w in self.request["workers"]], ["D-77", "D-78", "D-79"])
 
+    def rebind_inputs(self, holds=None):
+        self.inputs["run"] = h.private_manifest(self.run)
+        h.replace_private(self.directory / "input-manifest.json", self.inputs)
+        self.authorization.update(input_manifest_sha256=h.digest(h.canonical(self.inputs)))
+        if holds is not None:
+            self.authorization["hold_evidence"] = holds
+        h.replace_private(self.directory / "authorization.json", self.authorization)
+
+    def dispatch_control(self, index):
+        """One worker really received this run's stop control, so the run is no longer zero-control."""
+        rules = self.request["workers"][index]
+        sid = rules["worker_id"]
+        handle = self.run_id + ":worker-stop:" + sid
+        raw = h.canonical(dict(run_id=self.run_id, recipient=sid, old_id="old", phase="worker-stop",
+                               instruction=dict(directive=rules["reserved_stop_d"], rules=rules))).decode()
+        argv = ["send", "--session", sid, "--steer", "--client-message-id", handle, "--message", raw]
+        control = self.run / "control" / ("worker-stop-" + sid)
+        h.publish(control / "payload.json", raw.encode())
+        h.publish(control / "intent.json", h.canonical(dict(argv=argv)))
+        h.publish(control / "sent.json", b"{}")
+        code = """import importlib.util,json,pathlib,sys
+s=importlib.util.spec_from_file_location('h',sys.argv[1]);h=importlib.util.module_from_spec(s);s.loader.exec_module(h)
+d=pathlib.Path(sys.argv[2]);j=h.Journal(d,sys.argv[3]);e=j.register('_run','old');e.configure(json.loads(sys.argv[5]),sys.argv[6])
+c=h.CLI(pathlib.Path(sys.argv[4]),'old',d,d/'running.json',d);c.execution=e
+c.call(json.loads(sys.argv[7]));e.close()
+"""
+        subprocess.run([sys.executable, "-I", "-B", "-c", code, h.__file__, str(self.data), self.run_id, self.state["cli_path"],
+                        json.dumps(self.request), self.state["start_sha256"], json.dumps(argv)], check=True, capture_output=True)
+        snap = self.snaps[sid]
+        snap["transcript"]["turns"].append(dict(id="dispatch", state="completed", completedAt="2026-11-18T00:00:01Z"))
+        snap["transcript"]["entries"].append(dict(id="directive", kind="message", role="user", sequence=2, turnId="dispatch",
+                                                  clientMessageId=handle, origin="automation", senderSessionId="old",
+                                                  senderProjectId=h.PROJECT, text="[from old] " + raw))
+        h.publish(self.run / "workers" / sid / "stop.json", h.canonical(dict(
+            schema="rh-worker-stop/1", run_id=self.run_id, worker_id=sid, project_id=h.PROJECT, state="blocked", resume_state="held",
+            evidence_turn_id="dispatch", preservation=[], stop_directive=dict(last_ack_d="D-1", next_d=rules["reserved_stop_d"]))))
+        self.authorization["expected_effect_ids"] = [handle]
+        self.rebind_inputs()
+
+    def test_three_workers_zero_control_run_retires_after_membership_and_hold_change(self):
+        # P-4: nothing was ever dispatched, so a changed worker set and unknown holds no longer block retirement.
+        workers = [w["worker_id"] for w in self.request["workers"]]
+        del self.snaps[workers[0]]
+        self.rebind_inputs(holds={})
+        receipt = self.retire()
+        self.assertEqual(receipt["closed_effects"], [])
+
+    def test_three_workers_intent_without_sent_still_retires_as_zero_control(self):
+        # F11: an intent written but never dispatched (no sent.json, no fact) is not a control.
+        sid = self.request["workers"][0]["worker_id"]
+        control = self.run / "control" / ("worker-stop-" + sid)
+        payload = h.canonical(dict(run_id=self.run_id, recipient=sid, old_id="old", phase="worker-stop"))
+        h.publish(control / "payload.json", payload)
+        h.publish(control / "intent.json", h.canonical(dict(argv=["send", "--session", sid, "--steer", "--client-message-id",
+                                                                    self.run_id + ":worker-stop:" + sid, "--message", payload.decode()])))
+        del self.snaps[self.request["workers"][1]["worker_id"]]
+        self.rebind_inputs(holds={})
+        self.assertEqual(self.retire()["closed_effects"], [])
+
+    def test_three_workers_dispatched_or_controlled_run_still_closes_every_worker(self):
+        sid = self.request["workers"][0]["worker_id"]
+        cli = SimpleNamespace(session=lambda actor: self.snaps[actor], documents=lambda: dict(lease=dict(sessionId="old", frozen=False)),
+                              sessions=lambda: [dict(id=k, role=v["session"]["kind"], projectId=h.PROJECT, isTerminated=False)
+                                                for k, v in self.snaps.items() if k != sid])
+        state = dict(run_id=self.run_id)
+        fact = dict(kind="worker-control", effect_id="worker-stop-" + sid, target=dict(session_id=sid), terminal="returned", result=dict(returncode=0))
+        with self.assertRaisesRegex(h.Stop, "actor membership"):
+            h.retirement_preconditions(cli, state, self.request, {"worker-stop-" + sid: [fact]}, self.authorization, self.run)
+        h.publish(self.run / "control" / ("worker-stop-" + sid) / "sent.json", b"{}")
+        with self.assertRaisesRegex(h.Stop, "actor membership"):
+            h.retirement_preconditions(cli, state, self.request, {}, self.authorization, self.run)
+
     def test_three_workers_later_durable_steer_blocks_even_after_completed(self):
         from producer_transport import directive
+        self.dispatch_control(1)
         sid = self.request["workers"][0]["worker_id"]
         snap = self.snaps[sid]
         snap["session"]["activity"]["state"] = "active"
