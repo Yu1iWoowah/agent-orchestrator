@@ -42,7 +42,7 @@ export function AgentSettingsRecovery({ snapshot, session, hostId }: {
 	}
 	return <div className="space-y-2">
 		{uncertain && <p className="text-warning [overflow-wrap:anywhere]" role="alert">
-			{t("agentSettings.waitForSettingsEvidence", { id: uncertain.operationId || uncertain.id, evidence: uncertain.missingEvidence.join(", ") || t("agentSettings.providerOutcome") })}
+			{t("agentSettings.waitForSettingsEvidence", { id: uncertain.operationId || uncertain.id, evidence: uncertain.missingEvidence?.join(", ") || t("agentSettings.providerOutcome") })}
 		</p>}
 		{!uncertain && pending && canCancelAgentSettings(pending) && <button className="underline" disabled={busy} onClick={() => action.mutate({ kind: "cancel", sessionId, hostId, operationId: pending.id, version: pending.version })} type="button">{t("agentSettings.cancelPending")}</button>}
 		{pending && !canCancelAgentSettings(pending) && <p className="text-muted-foreground">{t("agentSettings.operationStarted")}</p>}

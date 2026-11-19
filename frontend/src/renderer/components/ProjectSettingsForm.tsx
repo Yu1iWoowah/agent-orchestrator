@@ -228,7 +228,7 @@ function SettingsBody({
 			repository={project.repo}
 			modelScope={(agent, role, draft) => {
 				const roleAccount = role === "reviewer" ? draft.accountSettings?.reviewers[agent] : draft.accountSettings?.[role];
-				return localAccountModelScope(roleAccount || role === "orchestrator" ? projectId : "", role, roleAccount);
+				return localAccountModelScope(hostId || roleAccount || role === "orchestrator" ? projectId : "", role, roleAccount);
 			}}
 			defaultReviewer={(draft) => WORKER_DEFAULT_REVIEWERS[draft.workerAgent] ?? "claude-code"}
 			reviewerWarning={reviewerTrustWarning}
