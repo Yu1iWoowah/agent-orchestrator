@@ -79,6 +79,10 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 	owner := ownerForSettings(current)
 	replay := op
 	replay.Source = current.Settings
+	if !bindingChanged && c.harness == domain.HarnessClaudeCode && op.Source.Effort != "" && current.Settings.Effort == "" {
+		// Keep the reset transition so reattach rechecks the live reset selector.
+		replay.Source = op.Source
+	}
 	replay.Target = current.Settings
 	replay.BaseRevision = current.Revision
 	proof, err := c.qualifySettings(ctx, replay, owner, true)

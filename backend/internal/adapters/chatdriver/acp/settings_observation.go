@@ -24,6 +24,9 @@ func (c *conversation) AgentSettingsEffortOptions() *domain.AgentSettingsEffortO
 			continue
 		}
 		result := &domain.AgentSettingsEffortOptions{ObservedAt: c.settingsObservedAt, Model: native.Model, Permission: permission}
+		if reset := c.agentSettingsDefaults["effort"]; reset != "" && choiceOffered(option.Choices, reset) {
+			result.ResetSelector = reset
+		}
 		for _, choice := range option.Choices {
 			effort := domain.AgentSettings{Effort: domain.AgentEffortSelection(choice.Value), FastMode: domain.AgentFastDefault}
 			if choice.Value != "" && choice.Value != "default" && effort.Validate() == nil {

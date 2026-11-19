@@ -157,3 +157,51 @@ func TestClaudeInheritedEffortRequiresOptionsFromTheCurrentAttachment(t *testing
 		})
 	}
 }
+
+func TestClaudeInheritedEffortResetRequiresSelectorFromTheCurrentAttachment(t *testing.T) {
+	c, st, rec, _, _ := scopedControlFixture(t, domain.HarnessClaudeCode, true, false)
+	rec.Metadata.Model, rec.Metadata.Effort = "", "high"
+	if err := st.UpdateSession(t.Context(), rec); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.SessionAgentSettings(t.Context(), rec.ID)
+	if err != nil || current.Settings.Model != "" || current.Settings.Effort != "high" {
+		t.Fatalf("explicit effort fixture: %+v, %v", current, err)
+	}
+	owner := domain.AgentSettingsOwner{SessionID: current.SessionID, AccountID: current.AccountID, ControllerGeneration: current.OwnerGeneration, ProviderConversationID: current.ProviderConversationID, BranchID: current.BranchID}
+	options := domain.AgentSettingsEffortOptions{ObservedAt: c.now(), Model: "native", Permission: "auto", Efforts: []string{"high"}}
+	receipt := domain.AgentSettingsObservation{Owner: owner, EffortOptions: &options}
+	var reset domain.AgentEffortSelection
+	change := Change{ExpectedRevision: &current.Revision, IdempotencyKey: "reset-effort", Settings: domain.AgentSettingsPatch{Effort: &reset}}
+
+	c.core.SetObservationSource(observationSource{receipt})
+	if _, err := c.Change(t.Context(), Caller{}, rec.ID, change); !hasCode(err, "AGENT_SETTINGS_UNSUPPORTED") {
+		t.Fatalf("reset without selector was admitted: %v", err)
+	}
+	options.ResetSelector = "default"
+	receipt.Owner.ControllerGeneration = "old-controller"
+	c.core.SetObservationSource(observationSource{receipt})
+	if _, err := c.Change(t.Context(), Caller{}, rec.ID, change); !hasCode(err, "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE") {
+		t.Fatalf("reset from an old attachment was admitted: %v", err)
+	}
+	receipt.Owner = owner
+	c.core.SetObservationSource(observationSource{receipt})
+	op, err := c.Change(t.Context(), Caller{}, rec.ID, change)
+	if err != nil || op.Phase != domain.AgentSettingsPending || op.Target.Model != "" || op.Target.Effort != "" {
+		t.Fatalf("qualified reset did not queue: %+v, %v", op, err)
+	}
+	if _, err := c.ValidateAgentSettings(t.Context(), op, owner, false); err != nil {
+		t.Fatal(err)
+	}
+	receipt.Owner.ControllerGeneration = "old-controller"
+	c.core.SetObservationSource(observationSource{receipt})
+	if _, err := c.ValidateAgentSettings(t.Context(), op, owner, false); !errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable) {
+		t.Fatalf("execution accepted a reset selector from an old attachment: %v", err)
+	}
+	options.ResetSelector = ""
+	receipt.Owner = owner
+	c.core.SetObservationSource(observationSource{receipt})
+	if _, err := c.ValidateAgentSettings(t.Context(), op, owner, false); !errors.Is(err, ports.ErrAgentSettingsUnsupported) {
+		t.Fatalf("execution accepted a withdrawn reset selector: %v", err)
+	}
+}

@@ -211,10 +211,8 @@ func (c *Control) change(ctx context.Context, caller Caller, id domain.SessionID
 	if rec.Harness == domain.HarnessClaudeCode && in.Settings.FastMode == nil {
 		selection.FastMode = domain.AgentFastDefault
 	}
-	effortOnly := rec.Harness == domain.HarnessClaudeCode && rec.Mode == domain.SessionModeChat &&
-		target.Model == "" && target.Effort != "" && in.Settings.Effort != nil &&
-		in.Settings.Model == nil && in.Settings.FastMode == nil && current.Settings.Model == "" &&
-		current.Settings.FastMode == target.FastMode
+	effortOnly := in.Settings.Effort != nil && in.Settings.Model == nil && in.Settings.FastMode == nil &&
+		inheritedClaudeEffortChange(rec, current.Settings, target)
 	if !effortOnly {
 		validated, err := c.core.ValidateSpawn(ctx, id, selection, in.Settings.Model != nil && in.Settings.Effort == nil && target.Model != base.Model)
 		if err != nil {
@@ -245,6 +243,12 @@ func (c *Control) change(ctx context.Context, caller Caller, id domain.SessionID
 	return result, settingsError(err)
 }
 
+func inheritedClaudeEffortChange(rec domain.SessionRecord, source, target domain.AgentSettings) bool {
+	return rec.Harness == domain.HarnessClaudeCode && rec.Mode == domain.SessionModeChat &&
+		source.Model == "" && target.Model == "" && source.FastMode == target.FastMode &&
+		(source.Effort != "" || target.Effort != "")
+}
+
 func (c *Control) effortSelectionProof(ctx context.Context, current domain.SessionAgentSettings, effort domain.AgentEffortSelection) (string, error) {
 	receipt, unavailable, err := c.core.qualifiedObservation(ctx, current)
 	if err != nil {
@@ -254,10 +258,16 @@ func (c *Control) effortSelectionProof(ctx context.Context, current domain.Sessi
 		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
 	options := receipt.EffortOptions
-	if !slices.Contains(options.Efforts, string(effort)) {
+	selector := string(effort)
+	if selector == "" {
+		selector = options.ResetSelector
+		if selector == "" {
+			return "", ports.ErrAgentSettingsUnsupported
+		}
+	} else if !slices.Contains(options.Efforts, selector) {
 		return "", ports.ErrAgentSettingsUnsupported
 	}
-	raw, err := json.Marshal([3]string{options.Model, options.Permission, string(effort)})
+	raw, err := json.Marshal([3]string{options.Model, options.Permission, selector})
 	if err != nil {
 		return "", err
 	}
@@ -436,8 +446,7 @@ func (c *Control) ValidateAgentSettings(ctx context.Context, op domain.AgentSett
 		selection = current.Settings
 	}
 	var fingerprint string
-	if rec.Harness == domain.HarnessClaudeCode && rec.Mode == domain.SessionModeChat &&
-		selection.Model == "" && selection.Effort != "" && op.Source.Model == "" && op.Source.FastMode == selection.FastMode {
+	if inheritedClaudeEffortChange(rec, op.Source, selection) {
 		fingerprint, err = c.effortSelectionProof(ctx, current, selection.Effort)
 	} else {
 		fingerprint, err = c.selectionProof(ctx, op.SessionID, selection, rec.Harness == domain.HarnessClaudeCode)

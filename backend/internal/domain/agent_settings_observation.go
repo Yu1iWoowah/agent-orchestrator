@@ -92,6 +92,8 @@ type AgentSettingsEffortOptions struct {
 	Model      string
 	Permission string
 	Efforts    []string
+	// ResetSelector is the native reset value when the provider offered it.
+	ResetSelector string
 }
 
 // UnknownAgentSettingsEffective never supplies a value inferred from preference.

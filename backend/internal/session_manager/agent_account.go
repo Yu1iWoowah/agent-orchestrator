@@ -160,16 +160,13 @@ func (m *Manager) AccountLoginUsageOwners(ctx context.Context, id string) ([]dom
 		if m.chat.HasLiveChatController(rec.ID) {
 			owner.Blocking = true
 		} else if m.dataDir != "" {
-			switch persistenthost.ProbeHost(m.dataDir, string(rec.ID)) {
-			case persistenthost.HostRunning:
+			switch persistenthost.ProbeProviderOwnership(m.dataDir, string(rec.ID)) {
+			case persistenthost.ProviderOwnershipUncertain:
 				owner.Blocking = true
-			case persistenthost.HostAbsent:
-				// These local adapters record a persistent host before launching.
+			case persistenthost.ProviderOwnershipPreviousBoot:
 				if rec.Harness == domain.HarnessCodex || rec.Harness == domain.HarnessClaudeCode {
 					owner.Blocking = false
 				}
-			case persistenthost.HostUnknown:
-				owner.Blocking = true
 			}
 		}
 	}
