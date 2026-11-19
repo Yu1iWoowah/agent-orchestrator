@@ -5,10 +5,13 @@ import subprocess
 import tempfile
 import unittest
 
-from test_handoff import h, FlowFixture
+from test_handoff import h, FlowFixture, fixture_proc_table, proc
 from producer_transport import activity
 import copy
 import os
+import signal
+import sys
+import time
 from unittest.mock import patch
 
 
@@ -164,7 +167,7 @@ class WorkerProducerTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.root.chmod(0o700)
 
-    def prepared(self, rebatch=False):
+    def prepared(self, rebatch=False, dispatch=True):
         fake = FlowFixture(self.root, "claude-code", "codex", worker=True)
         fake.rebatch_directive = rebatch
         rules = fake.run.request["workers"][0]
@@ -182,7 +185,8 @@ class WorkerProducerTests(unittest.TestCase):
         h.publish(artifact, b"original necessary material")
         fake.worker_statement = dict(schema="rh-worker-statement/1", run_id=fake.run_id, worker_id="worker", requested_state="safe", block_reason=None,
                                      preservation_sources=[dict(path=str(artifact), kind="original-task", basis="necessary input")], in_flight=[], pending_question_refs=[])
-        self.assertFalse(fake.run.worker_stop({"id": "worker"}))
+        if dispatch:
+            self.assertFalse(fake.run.worker_stop({"id": "worker"}))
         return fake, artifact
 
     def test_real_worker_helper_copies_material_and_runner_verifies_same_snapshot(self):
@@ -249,7 +253,8 @@ class WorkerProducerTests(unittest.TestCase):
         fake.snapshots["worker"]["transcript"]["turns"].append(current)
         receipt = fake.dispatch_actor(2)
         self.assertEqual(receipt["state"], "blocked")
-        self.assertFalse(fake.run.worker_stop({"id": "worker"}))
+        with self.assertRaisesRegex(h.Stop, "workers: worker stop.json blocked:"):
+            fake.run.worker_stop({"id": "worker"})
 
     def test_worker_source_escape_and_sensitive_material_stop(self):
         fake, artifact = self.prepared()
@@ -274,6 +279,117 @@ class WorkerProducerTests(unittest.TestCase):
         self.assertFalse(fake.run.worker_stop({"id": "worker"}))
         fake.snapshots["worker"] = final
         self.assertEqual(fake.run.worker_stop({"id": "worker"})["state"], "safe")
+
+    def test_worker_receipt_is_checked_after_observing_its_original_turn(self):
+        for publish in (False, True):
+            with self.subTest(publish=publish), tempfile.TemporaryDirectory() as temp:
+                self.root = Path(temp)
+                self.root.chmod(0o700)
+                fake, _ = self.prepared()
+                self.addCleanup(fake.transport.close)
+                original = fake.session
+
+                def settled(sid):
+                    if fake.pending_actor and publish:
+                        fake.dispatch_actor(2)
+                    snap = original(sid)
+                    turn = snap["transcript"]["turns"][-1]
+                    turn.update(state="completed", completedAt=h.now())
+                    return snap
+
+                fake.session = settled
+                fake.run.sleep = lambda _: self.fail("polled after a conclusive observation")
+                if publish:
+                    self.assertEqual(fake.run.wait("workers", fake.run.workers), True)
+                else:
+                    with self.assertRaisesRegex(h.Stop, "workers: worker turn .* completed without stop.json"):
+                        fake.run.wait("workers", fake.run.workers)
+                self.assertEqual(fake.mutations.count("worker-stop"), 1)
+
+    def test_truncated_worker_command_uses_worktable_and_never_hides_visible_remote_evidence(self):
+        fake, _ = self.prepared(dispatch=False)
+        self.addCleanup(fake.transport.close)
+        snap = fake.snapshots["worker"]
+        sid, tool = "worker", "historical-command"
+        turn = snap["transcript"]["turns"][-1]
+        turn.update(state="completed", completedAt=h.now())
+        snap["session"]["activity"]["state"] = "idle"
+        tail = "x" * 70000
+        ordinary = activity(snap, "submit-or-log", tail, 0, sid, turn["id"], tool, 5)
+        hidden = activity(snap, "submit-or-log", "Job running with ID remote\n" + tail, 0, sid, turn["id"], tool, 5)
+        entry = lambda view: next(item for item in h.entries(view) if item["id"] == tool)
+        self.assertEqual(entry(ordinary)["detail"], entry(hidden)["detail"])
+        self.assertTrue(entry(hidden)["detail"]["outputTruncated"])
+        self.assertTrue(h.quiescent(ordinary, worker=True))
+        self.assertTrue(h.quiescent(hidden, worker=True))
+        self.assertFalse(h.quiescent(hidden))
+        remote = copy.deepcopy(hidden)
+        entry(remote)["detail"]["result"] = {"type": "job", "truncated": True}
+        fake.snapshots[sid] = remote
+        reason = h.truncated_command_blocker(entry(remote), worker=True)
+        self.assertEqual(reason, "remote operation evidence truncated")
+        self.assertFalse(h.quiescent(remote, worker=True))
+        with self.assertRaisesRegex(h.Stop, reason + ": worker activity " + tool):
+            fake.run.worker_stop({"id": sid})
+        rules = fake.run.request["workers"][0]
+        rules["reserved_stop_d"] = None
+        entry(remote)["detail"].update(toolName="exec_command", result={"session_id": 7, "exit_code": 0},
+                                         output="Job running with ID known-remote")
+        self.assertFalse(h.quiescent(remote, worker=True))
+        with self.assertRaisesRegex(h.Stop, "unresolved activity historical-command without an authorized stop directive"):
+            fake.run.worker_stop({"id": sid})
+        for exit_code in (None, True, "0"):
+            with self.subTest(exit_code=exit_code):
+                invalid = copy.deepcopy(entry(hidden))
+                invalid["detail"]["exitCode"] = exit_code
+                self.assertFalse(h.activity_quiescent(invalid, worker=True))
+
+        fake.snapshots[sid] = hidden
+        fake.processes.update({10: proc(1, ["ao", "chat-host", sid, str(fake.data_dir)]),
+                               11: proc(10, ["codex", "app-server"], start=100),
+                               12: proc(11, ["mcp-server"], start=150)})
+        baseline_page = {"transcript": {"conversationId": "conv", "hasMoreBefore": False, "turns": [
+            dict(id="baseline", state="completed", startedAt="1970-01-01T00:03:20Z", completedAt="1970-01-01T00:03:30Z")]}}
+        fake.read = lambda _: baseline_page
+        # The work process belongs to the worker worktree and is reparented,
+        # as real work outside the runner tree would be.
+        code = ("import subprocess; print(subprocess.Popen(['sleep', '60'], "
+                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid)")
+        pid = int(subprocess.check_output([sys.executable, "-I", "-B", "-c", code], cwd=fake.worker_path))
+        directory = Path("/proc") / str(pid)
+        with fixture_proc_table(pid):
+            fake.processes[pid] = row = h.proc_table()[pid]
+        self.assertEqual(row["cwd"], str(fake.worker_path))
+        self.assertNotEqual(row["ppid"], os.getpid())
+
+        def stop_child():
+            stat = h.proc_stat(directory)
+            if stat and stat[2] == row["tick"] and stat[0] != b"Z":
+                os.kill(pid, signal.SIGTERM)
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    stat = h.proc_stat(directory)
+                    if not stat or stat[0] == b"Z":
+                        return
+                    time.sleep(0.01)
+                self.fail("fixture work process did not exit")
+
+        self.addCleanup(stop_child)
+        with self.assertRaisesRegex(h.Stop, f"without a reserved stop directive: worker: {pid}"):
+            fake.run.worker_stop({"id": sid})
+        rules["reserved_stop_d"] = "D-7"
+        self.assertFalse(fake.run.worker_stop({"id": sid}))
+        self.assertFalse(fake.run.worker_stop({"id": sid}))
+        self.assertFalse((fake.run.root / "workers/worker/stop.json").exists())
+        stop_child()
+        fake.processes.pop(pid)
+        # Precheck and runner both use the recorded B10 baseline and worker command rules.
+        base = lambda pid, tick, started: h.provider_base(fake.read, sid, started, lambda _: None)
+        self.assertEqual(h.os_work_processes(fake.processes, sid, fake.data_dir, fake.worker_path, base), [])
+        self.assertTrue(h.quiescent(hidden, worker=True))
+        self.assertEqual(fake.dispatch_actor(2)["state"], "safe")
+        self.assertEqual(fake.run.worker_stop({"id": sid})["state"], "safe")
+        self.assertEqual(fake.mutations.count("worker-stop"), 1)
 
     def test_blocked_reference_is_confined_before_reading(self):
         stop = h.worker_template("run", "worker")
@@ -332,7 +448,13 @@ class WorkerProducerTests(unittest.TestCase):
             fake.dispatch_actor(2)
 
     def test_duplicate_running_helper_cannot_be_self_excluded(self):
-        fake, _ = self.prepared()
+        foreign = {999999: dict(proc(1, []), cwd_unknown=True)}
+        with patch.object(h, "proc_table", return_value=foreign):
+            fake, _ = self.prepared()
+        fake.processes.update(foreign)
+        with self.assertRaisesRegex(h.Stop, 'worker processes running without an agent.*999999'):
+            fake.run.worker_stop({"id": "worker"})
+        fake.processes.clear()
         command = h.helper_command(fake.run.root, 'worker-receipt', 'worker')
         fake.snapshots['worker'] = activity(fake.snapshots['worker'], command, '', None, 'worker', fake.snapshots['worker']['transcript']['turns'][-1]['id'], 'duplicate-helper', 9)
         with self.assertRaisesRegex(h.Stop, 'self activity missing/ambiguous'):
@@ -363,7 +485,7 @@ class ProducerChainTests(unittest.TestCase):
                 else:
                     fake.dispatch_actor(seconds)
             fake.run.sleep = advance
-            with self.assertRaisesRegex(h.Stop, "wait deadline reached: bootstrap"):
+            with self.assertRaisesRegex(h.Stop, "command output truncated: new activity bootstrap-tool"):
                 h.run_protocol(fake.run)
             event = next(x for x in fake.helper_events if x["action"] == "bootstrap")
             self.assertEqual(h.private_read(event["capture_path"] / "stdout").decode(), event["stdout"])

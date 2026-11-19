@@ -72,6 +72,51 @@ class WireContractTests(unittest.TestCase):
     def http_transport(self, document):
         return patch.object(h.urllib.request.OpenerDirector, "open", side_effect=lambda *a, **kw: io.BytesIO(h.canonical(document)))
 
+    def final_snapshot(self, run):
+        snap = wire("active")
+        running = next(turn["id"] for turn in snap["transcript"]["turns"] if turn["state"] == "running")
+        handle = run.run_id + ":final:old"
+        payload = h.canonical({"phase": "final"}).decode()
+        directory = run.root / "control/final-old"
+        h.publish(directory / "payload.json", payload.encode())
+        h.publish(directory / "intent.json", h.canonical({"argv": ["send", "--session", "old", "--steer",
+                  "--client-message-id", handle, "--message", payload]}))
+        h.publish(directory / "result.json", b"{}")
+        snap["transcript"]["entries"].append(dict(kind="message", role="user", origin="automation", id="dispatch",
+                senderSessionId="old", senderProjectId=h.PROJECT, turnId=running, sequence=4,
+                clientMessageId=handle, text="[from old] " + payload))
+        return h.canonical(snap)
+
+    def test_admission_contention_proves_no_dispatch_and_releases_to_one_attempt(self):
+        execution = self.cli.execution
+        execution.phase = "retire"
+        journal = execution.journal
+        argv = ["session", "kill", "old", "--project", h.PROJECT]
+        effect = journal.run_id + ":kill"
+        delivered = []
+        flock = h.fcntl.flock
+        def nonblocking(fd, operation):
+            self.assertEqual(operation, h.fcntl.LOCK_EX | h.fcntl.LOCK_NB)
+            return flock(fd, operation)
+
+        with (journal.root / "admission.lock").open("r+b") as held, self.transport("kill") as transport:
+            flock(held, h.fcntl.LOCK_EX)
+            with patch.object(h.fcntl, "flock", side_effect=nonblocking), patch.object(h, "ADMISSION_LIMIT", 0.02):
+                with self.assertRaisesRegex(h.AdmissionBusy, "this attempt not dispatched"):
+                    self.cli.call(argv, effect_id=effect, on_dispatch=lambda: delivered.append(effect))
+                with self.assertRaises(h.AdmissionBusy):
+                    self.cli.call(argv, deadline=h.time.monotonic(), effect_id=effect, on_dispatch=lambda: delivered.append(effect))
+            self.assertEqual(execution.effect_attempts(effect), [])
+            self.assertEqual(delivered, [])
+            transport.assert_not_called()
+            with patch.object(h.time, "sleep", side_effect=lambda _: flock(held, h.fcntl.LOCK_UN)):
+                self.cli.call(argv, effect_id=effect, on_dispatch=lambda: delivered.append(effect))
+            with self.assertRaisesRegex(h.Stop, "effect already attempted"):
+                self.cli.call(argv, effect_id=effect, on_dispatch=lambda: delivered.append(effect))
+            self.assertEqual(delivered, [effect])
+            self.assertEqual(len(execution.effect_attempts(effect)), 1)
+            transport.assert_called_once()
+
     def test_true_cli_list_and_all_role_callers(self):
         with self.transport("list"):
             rows = self.cli.sessions()
@@ -122,11 +167,12 @@ class WireContractTests(unittest.TestCase):
         run = SimpleNamespace(cli=self.cli, root=self.root, run_id="wire", old="old",
                               state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3, "cli_sha256": self.cli.sha256},
                               request={"workers": []})
+        active = self.final_snapshot(run)
         calls = []
         def transport(args, **kwargs):
             calls.append(args[1:])
             name = "list" if args[1:3] == ["session", "ls"] else "active" if args[1:3] == ["session", "get"] else "send"
-            return SimpleNamespace(returncode=0, stdout=wire_bytes(name), stderr=b"")
+            return SimpleNamespace(returncode=0, stdout=active if name == "active" else wire_bytes(name), stderr=b"")
         with patch.object(h, "CLI", return_value=self.cli), patch.object(h.subprocess, "run", side_effect=transport), \
              patch.dict(os.environ, AO_SESSION_ID="old", TMPDIR=str(self.root / "bootstrap/new/draft")):
             result = h.producer(run, "finalize")
@@ -148,13 +194,14 @@ class WireContractTests(unittest.TestCase):
                 root = h.mkdir(self.root / case)
                 run = SimpleNamespace(cli=self.cli, root=root, run_id="wire-" + case, old="old",
                                       state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3, "cli_sha256": self.cli.sha256}, request={"workers": []})
+                active = self.final_snapshot(run)
                 sends = []
                 def transport(args, **kwargs):
                     if args[1] == "send":
                         sends.append(args)
                         return SimpleNamespace(returncode=outcome[0], stdout=b"", stderr=outcome[1])
                     name = "list" if args[1:3] == ["session", "ls"] else "active"
-                    return SimpleNamespace(returncode=0, stdout=wire_bytes(name), stderr=b"")
+                    return SimpleNamespace(returncode=0, stdout=active if name == "active" else wire_bytes(name), stderr=b"")
                 original = execution.dispatch
                 def dispatch(cli, descriptor, *args, **kwargs):
                     if outcome is None and descriptor["parameters"]["argv"][0] == "send":
@@ -182,13 +229,14 @@ class WireContractTests(unittest.TestCase):
         self.cli.execution.close()
         run = SimpleNamespace(cli=self.cli, root=self.root, run_id="wire", old="old", request={"workers": []},
                               state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3, "cli_sha256": self.cli.sha256})
+        active = self.final_snapshot(run)
         result = self.root / "bootstrap/new/notifications/worker/result.json"
         sends = []
         def transport(args, **kwargs):
             if args[1] == "send":
                 sends.append(args)
                 return SimpleNamespace(returncode=1, stdout=b"", stderr=refused)
-            return SimpleNamespace(returncode=0, stdout=wire_bytes("list" if args[1:3] == ["session", "ls"] else "active"), stderr=b"")
+            return SimpleNamespace(returncode=0, stdout=wire_bytes("list") if args[1:3] == ["session", "ls"] else active, stderr=b"")
         original = h.publish
         def crash(path, raw):
             if Path(path) == result:

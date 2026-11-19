@@ -100,16 +100,78 @@ old 在處理 human 交接指令的同一回合完成準備，不需要 operator
 
    ````text
    ```rh-control
-   {"schema":"rh-control-record/1","stop":"無具名停","target":{"harness":"…","account":"…","model":"…","effort":"…","approval_mode":"bypass-permissions"},
-    "workers":[<request 的 worker 欄位；來源 ref 用 "human" 或 "control">],
-    "workspace_index":[{"session_id":"<old>","kind":"orchestrator","path":"<絕對實際路徑>"},{"session_id":"<worker>","kind":"worker","path":"…"}]}
+   {
+     "schema": "rh-control-record/1",
+     "stop": "無具名停",
+     "target": {"harness": "codex", "account": "acct", "model": "model", "effort": "high", "approval_mode": "bypass-permissions"},
+     "workers": [{
+       "worker_id": "worker",
+       "reserved_stop_d": null,
+       "stop_d_source_refs": [],
+       "hold_state": "unknown",
+       "hold_source_refs": [],
+       "task_owner_id": null,
+       "task_refs": [],
+       "pending_question_refs": [],
+       "release": {"mode": "keep-held", "authority_refs": [], "reserved_resume_d": null, "resume_d_source_refs": []}
+     }],
+     "workspace_index": [
+       {"session_id": "old", "kind": "orchestrator", "path": "/actual/orchestrator/old"},
+       {"session_id": "worker", "kind": "worker", "path": "/actual/worker"}
+     ]
+   }
    ```
    ````
 
-   `stop` 只能是 `無具名停` 或命中的 ①～⑤；命中就停在這裡，不發布、不 start。
-3. 另開一個 tool command 執行固定 helper，參數是原 human 與上述 control 訊息的 message id：
-   `python3 tools/reusable-handoff/handoff.py prepare-request --old <old-id> --human <human-message-id> --control <control-message-id>`。
-   helper 以正常 CLI 讀原 transcript bytes、取實際 revision／正文 hash，從 JSON 區塊組 request，原子發布 request 與 evidence；它不做授權判斷。區塊缺漏、標記不是 `無具名停`、control 不屬處理該 human 的同一回合，或 request 驗證不過，都停。
+   以上為合成資料。實際填寫時用本回合綁定的來源、實際註冊路徑與原 target。只有原授權有保留 D 時填 D 與來源，缺 D 維持 null。
+   `stop` 只能是 `無具名停` 或命中的 ①～⑤。命中就停在這裡。
+3. 另開一個 tool command，以正常 CLI 的原 transcript JSON 找到本次唯一 running 的準備回合，再取該回合唯一合法的 control ID。指令輸出直接帶入 helper：
+
+   ```bash
+   OLD_ID="$AO_SESSION_ID"
+   CONTROL_ID=$(python3 - "$OLD_ID" <<'PYTHON'
+   import json
+   import re
+   import subprocess
+   import sys
+
+   old = sys.argv[1]
+   argv = ["ao", "session", "get", old, "--transcript", "500", "--cap", "0", "--json"]
+   page = json.loads(subprocess.check_output(argv))
+   session, transcript = page["session"], page["transcript"]
+   if (session.get("id"), session.get("kind"), session.get("mode")) != (old, "orchestrator", "chat"):
+       sys.exit("STOP: old scope changed")
+   running = [turn["id"] for turn in transcript["turns"] if turn.get("state") == "running"]
+   if len(running) != 1:
+       sys.exit("STOP: expected a unique running preparation turn")
+
+   scope = transcript["conversationId"], transcript["activeBranchId"]
+   controls, cursor = [], None
+   while True:
+       if (transcript["conversationId"], transcript["activeBranchId"]) != scope or transcript.get("truncatedFields"):
+           sys.exit("STOP: preparation transcript scope changed or was truncated")
+       for entry in transcript["entries"]:
+           if (entry.get("kind"), entry.get("role"), entry.get("turnId")) != ("message", "assistant", running[0]):
+               continue
+           blocks = re.findall(r"(?m)^```rh-control\s*\n([\s\S]*?)\n```[ \t]*$", entry.get("text", ""))
+           if len(blocks) == 1 and json.loads(blocks[0]).get("schema") == "rh-control-record/1":
+               controls.append(entry["id"])
+       if not transcript["hasMoreBefore"]:
+           break
+       before = transcript["next"]["before"]
+       if type(before) is not int or (cursor is not None and before >= cursor):
+           sys.exit("STOP: preparation transcript cursor stalled")
+       cursor = before
+       transcript = json.loads(subprocess.check_output(argv + ["--before", str(cursor)]))["transcript"]
+   if len(controls) != 1:
+       sys.exit("STOP: expected a unique control in the running preparation turn")
+   print(controls[0])
+   PYTHON
+   ) && python3 tools/reusable-handoff/handoff.py prepare-request --old "$OLD_ID" --control "$CONTROL_ID"
+   ```
+
+   查詢缺件或當前回合有歧義時停止。同 branch 的歷史回合不參與 control 計數。
+   helper 從同一 conversation／branch 及實際處理回合找唯一的原 structural human，保留各來源的原 CLI 回應 bytes、revision、正文 hash 與 T0，再原子發布 request。實際處理回合以 `consumedByTurnId` 優先。找不到或多於一個 human 時停止。
 4. 照 helper 輸出的 `start_command` 呼叫一次 start，回 run-id、status 指令與「10 分鐘未見 new 首報就只查原 run」提示後自然結束。
 
 start 接受仍在進行中的準備回合：control record 只核 message id 與正文 hash，revision 可因定稿而變大。
@@ -146,7 +208,8 @@ session.branch／實際 branch／HEAD 只作證據；同路徑 root、sibling、
 未結工具＝status 非終態；或帶遠端 job／async-operation handle（含 `Job running with ID`）而無完成收據。worker 的本機程序類 handle（exec／write_stdin session、`Process running`／`Script running` 續接）不要求收據，command 缺 exitCode 也不算未結，改由下述 OS 層檢查判定。old 與 new 仍要求本機 handle 的收據；command 缺 exitCode 且帶 `processId`／`terminalId`、沒有同一操作的終態收據時，old 與 new 仍算未結（status 證明不了程序已結束）。
 worker 停點另用 OS 層檢查該 worker 的工作程序：在 agent 程序樹內，或 cwd 在其 worktree；排除 AO／provider 基礎程序、provider 在啟動後第一個 turn 開始前就已啟動的直接子程序（MCP 伺服器；之後才出現的一律算工作程序，provider 重啟就重算基準），以及 AO session 終端機（`AO_SHELL_TERMINAL`）整棵樹。有工作程序就送停止 D，要求 worker 先停掉；回條後 runner 再核，仍有程序就 STOP 並指名 worker 與程序；沒有 controller 的 worker 有工作程序時直接 STOP 指名。
 讀 `/proc` 時只有 PID 已消失（或 start tick 不同）才當成已結束；其他讀取或解析錯誤一律 STOP「process table UNKNOWN」，不當成程序已停止。沒有任何存活執行緒的 zombie 不算工作程序。
-workers 逾時 STOP 會指名每個未完成的 worker 與原因，包括 blocked／pending 回條、continue 之後，以及快照有變動的情形。
+已驗證的 blocked／pending 回條立即具名 STOP。原回合終態後才確認固定回條缺件，保留同一輪合法發布的回條。可收束的工作逾時時，workers 會列出未完成的 worker 及已知原因。
+worker 普通 command 若已 completed、有 JSON 整數 exitCode，且留存資料無可辨識的遠端線索，即使 stdout 截斷也可進 OS 與 workspace 停點檢查（Q1＝B）。可辨識遠端操作照原終態／收據規則，必要證據被截去且無法補足時具名 STOP。固定 helper 及 old／new 的截斷規則照舊。
 無法保全必要敏感／不可讀原件時具名停止，不越權讀取或 force clean／commit。
 
 ## old Git 保全與正常回收（v3.1 §6）
@@ -228,6 +291,7 @@ plan settle 可使 latestSequence 高於原文列最大序號；只要求列序�
 
 | 等待點 | 上限（秒） |
 | --- | ---: |
+| 同 run admission lock 競爭 | 5，受目前階段或派送窗口剩餘時間限制 |
 | 唯讀 CLI／metadata | 30 |
 | kill／exit／單筆通知 | 60 |
 | spawn／resume | 180 |
@@ -237,7 +301,9 @@ plan settle 可使 latestSequence 高於原文列最大序號；只要求列序�
 | new bootstrap／每次安全 idle | 各 900 |
 | nonce／最終回報 | 各 600 |
 
-到限保存部分證據、停止新動作並 needs-input，不 interrupt 正在工作的 actor。
+原回合已確定終止且必要回條仍缺，會具名 STOP。檢查順序先核原回合與投影，再核回條。
+若 admission lock 到限，STOP 會標明本次尚未派送。相同效果已有的派送紀錄照常保留。
+可進展的等待到限時，保存部分證據、停止新動作並 needs-input，不 interrupt 正在工作的 actor。
 runner 死亡無法自行通知，依 old 在 start 時回覆的 status 指令由人查原 run；不另建監督。
 
 ## Export 位置與必要材料（RH-EXPORT-LOCATION）

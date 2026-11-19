@@ -102,7 +102,8 @@ else:raise SystemExit('unimplemented synthetic CLI transport: '+str(a))
         argv = ["/bin/sh", "-c", command]
         raw_command = shlex.join(argv)
         snap = f.snapshots[actor]
-        turn = snap["transcript"]["turns"][-1]
+        turns = snap["transcript"]["turns"]
+        turn = next((candidate for candidate in turns if candidate["state"] == "running"), turns[-1])
         turn.update(state="running")
         turn.pop("completedAt", None)
         snap["session"]["activity"]["state"] = "active"
@@ -135,7 +136,7 @@ else:raise SystemExit('unimplemented synthetic CLI transport: '+str(a))
         self.sync()
         if result.returncode:
             raise h.Stop(result.stderr.strip())
-        turn = f.snapshots[actor]["transcript"]["turns"][-1]
+        turn = next(candidate for candidate in f.snapshots[actor]["transcript"]["turns"] if candidate["id"] == turn["id"])
         turn.update(state="completed", completedAt=h.now())
         f.snapshots[actor]["session"]["activity"]["state"] = "idle"
         f.snapshots[actor]["session"]["status"] = "idle"

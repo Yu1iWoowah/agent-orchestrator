@@ -247,7 +247,7 @@ class PrepareRequestEntryTests(unittest.TestCase):
                 patch.object(h.subprocess, "run", side_effect=self.cli_transport), \
                 patch.object(h.urllib.request.OpenerDirector, "open", side_effect=self.http_transport), \
                 patch("sys.stdout", new_callable=io.StringIO) as output, patch("sys.stderr", new_callable=io.StringIO) as errors:
-            code = h.main(["prepare-request", "--old", "old", "--human", "human", "--control", "control"])
+            code = h.main(["prepare-request", "--old", "old", "--control", "control"])
         return code, output.getvalue(), errors.getvalue()
 
     def test_first_prepare_request_creates_the_private_run_root(self):
@@ -259,6 +259,12 @@ class PrepareRequestEntryTests(unittest.TestCase):
         self.assertEqual(Path(result["request"]), self.root / ".start/old/request.json")
         self.assertTrue(Path(result["request"]).is_file())
         self.assertIn("start --run " + result["run_id"], result["start_command"])
+
+    def test_prepare_request_rejects_legacy_human_argument(self):
+        with patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as stopped:
+            h.main(["prepare-request", "--old", "old", "--control", "control", "--human", "human"])
+        self.assertEqual(stopped.exception.code, 2)
+        self.assertFalse(self.root.exists())
 
     def test_existing_run_root_that_is_not_0700_stops_without_publishing(self):
         self.root.mkdir()

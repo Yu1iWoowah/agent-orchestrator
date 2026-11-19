@@ -1,7 +1,8 @@
 """RH-SCRIPT1 protocol proofs; never connects to an installed AO daemon."""
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 import copy
 import importlib.util
+import io
 import json
 import os
 import signal
@@ -10,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 import tempfile
+import textwrap
 import time
 import unittest
 import uuid
@@ -57,6 +59,9 @@ class ProtocolTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.root.chmod(0o700)
+        patcher = patch.object(h, "proc_table", return_value={})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def request(self):
         old_path = self.root / "worktrees" / h.PROJECT / "orchestrator/old"
@@ -820,8 +825,10 @@ class ProtocolTests(unittest.TestCase):
         h.continue_phase(run, "old", "2a", "original", snap)
         self.assertEqual(len(run.cli.calls), 1)
         snap["transcript"]["turns"].append({"id": "continued", "state": "completed", "completedAt": h.now()})
-        snap["transcript"]["entries"].append({"kind": "message", "origin": "automation", "turnId": "continued",
-            "clientMessageId": run.run_id + ":2a-continue:old"})
+        snap["transcript"]["entries"].append({"kind": "activity", "activityKind": "system", "status": "completed",
+            "turnId": "batch-input", "consumedByTurnId": "continued", "sequence": 2,
+            "detail": {"event": "steer", "origin": "automation", "senderSessionId": "old", "senderProjectId": h.PROJECT,
+                       "clientMessageId": run.run_id + ":2a-continue:old", "text": "[from old] " + run.cli.calls[0][-1]}})
         self.assertEqual(h.phase_completed(run, "old", "2a", "original", snap), "continued")
         snap["transcript"]["turns"][-1].update(state="interrupted", startedAt="2026-11-08T01:00:00Z", completedAt="2026-11-08T01:00:01Z")
         with self.assertRaises(h.Stop):
@@ -1073,18 +1080,17 @@ finally:
         self.assertEqual(run.state["waits"]["workers"]["monotonic"], 0)
 
     def test_named_continue_workers_deadline_names_early_returns_after_reload(self):
-        # RH-NAMED-CONTINUE / F2: every early return keeps a reason, also on a Run rebuilt by continue.
         cases = {"blocked": dict(state="blocked", block_reason="tool still running: activity-9", source_type="worker-self"),
-                 "evidence": dict(state="safe", source_type="worker-self", evidence_turn_id="dispatch"),
+                 "pending": dict(state="pending", source_type="worker-self", block_reason="original result pending"),
                  "drift": None}
-        expected = {"blocked": "blocked: tool still running: activity-9", "evidence": "evidence turn not completed: dispatch",
+        expected = {"blocked": "blocked: tool still running: activity-9", "pending": "pending: original result pending",
                     "drift": "workspace changed during quiescence check"}
         for case, stop in cases.items():
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
                 self.root = Path(temp)
                 self.root.chmod(0o700)
                 run = self.run_fixture()
-                idle = snapshot(turns=[{"id": "dispatch", "state": "running"}] if case == "evidence" else None)
+                idle = snapshot()
                 idle["session"].update(id="worker", kind="worker")
                 self.worker_index(run)
                 run.request["workers"] = [{"worker_id": "worker", "reserved_stop_d": "D-7"}]
@@ -1103,8 +1109,12 @@ finally:
                 with patch.object(h, "validate_stop"), patch.object(h, "git_snapshot", side_effect=lambda *a, **k: next(shots)), \
                         self.assertRaises(h.Stop) as caught:
                     run.wait("workers", lambda: run.worker_stop({"id": "worker"}))
-                self.assertIn("wait deadline reached: workers", str(caught.exception))
-                self.assertIn(json.dumps({"worker": [expected[case]]}), str(caught.exception))
+                if stop:
+                    self.assertEqual(elapsed, [0])
+                    self.assertIn("workers: worker stop.json " + expected[case], str(caught.exception))
+                else:
+                    self.assertIn("wait deadline reached: workers", str(caught.exception))
+                    self.assertIn(json.dumps({"worker": [expected[case]]}), str(caught.exception))
 
     def test_T05_running_2a_and_bootstrap_receipts_wait_for_completed(self):
         for sid, phase in (("old", "old_2a"), ("new", "bootstrap")):
@@ -1126,6 +1136,8 @@ finally:
                 fake.session = record
                 h.run_protocol(fake.run)
                 identity = ("old-receipt" if sid == "old" else "bootstrap") + "-tool"
+                observations = [value for value in observations if any(
+                    e.get("id") == identity for e in value["transcript"]["entries"])]
                 tools = [next(e for e in value["transcript"]["entries"] if e.get("id") == identity) for value in observations]
                 self.assertEqual([e["status"] for e in tools], ["running", "running", "completed"])
                 self.assertEqual(len({e["sequence"] for e in tools}), 1)
@@ -1136,6 +1148,91 @@ finally:
                 self.assertEqual(fake.run.state["waits"][phase]["elapsed"], 6)
                 self.assertEqual(fake.mutations.count("2a"), 1)
                 self.assertEqual(fake.mutations.count("spawn"), 1)
+
+    def test_bound_dispatch_survives_same_poll_receipt_publication(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake = FlowFixture(Path(temp), "codex", "claude-code")
+            self.addCleanup(fake.transport.close)
+            fake.steer_phases = {"nonce", "final"}
+            original = fake.session
+            published = []
+
+            def observe(sid):
+                stage = fake.run.state.get("stage")
+                actor = fake.pending_actor
+                if stage in ("2a", "bootstrap", "final") and actor and sid == actor[0]:
+                    published.append(stage)
+                    fake.dispatch_actor(2)
+                return original(sid)
+
+            fake.session = observe
+            fake.run.sleep = lambda _: self.fail(f"polled past publication: {fake.run.state['stage']}")
+            h.run_protocol(fake.run)
+            self.assertEqual(published, ["2a", "bootstrap", "final"])
+            self.assertEqual(fake.run.state["outcome"], "complete")
+            self.assertEqual(fake.mutations.count("nonce"), 1)
+            self.assertEqual(fake.mutations.count("final"), 1)
+            self.assertEqual(fake.run.state["nonce_completed"]["turn_id"], "nonce")
+            final_path = fake.run.root / "bootstrap/new/final.json"
+            receipt = h.decode(h.private_read(final_path))
+            h.replace_private(final_path, dict(receipt, evidence_turn_id="nonce"))
+            with self.assertRaisesRegex(h.Stop, "receipt evidence turn differs from original dispatch"):
+                h.final_ready(fake.run)
+            final_path.unlink()
+            with self.assertRaisesRegex(h.Stop, "completed without final.json"):
+                h.final_ready(fake.run)
+
+    def test_permanent_export_idle_and_native_blockers_are_named(self):
+        run = self.run_fixture()
+        own = snapshot(entries=[dict(id="truncated", kind="activity", activityKind="command", status="completed",
+                                     detail={"outputTruncated": True, "exitCode": 0})])
+        run.cli.session = lambda _: own
+        run.sleep = lambda _: self.fail("polled a permanent blocker")
+        with self.assertRaisesRegex(h.Stop, "command output truncated: old activity truncated"):
+            run.wait("export", lambda: h.export_material(run))
+        own["session"]["isTerminated"] = True
+        with self.assertRaisesRegex(h.Stop, "old_idle: old terminated"):
+            h.idle_window(run, "old", "old_idle")
+        run.state["new_id"] = "new"
+        run.cli.get = lambda _: {"session": {"isTerminated": True}}
+        with patch.object(h, "native_identity", return_value=None), self.assertRaisesRegex(h.Stop, "native: new terminated"):
+            run.wait("native", lambda: h.native_ready(run))
+
+    def test_nonce_takes_one_bound_report_continuation_before_terminal_stop(self):
+        run = self.run_fixture()
+        run.state.update(new_id="new", nonce="unique-nonce", new_binding={"native": "new"}, bootstrap_sequence=1)
+        snap = snapshot(turns=[])
+        snap["session"]["id"] = "new"
+        run.cli.session = lambda _: copy.deepcopy(snap)
+        run.send("new", "nonce", {"challenge": run.state["nonce"]})
+
+        def projected(send, phase, turn_id, sequence):
+            return dict(kind="activity", activityKind="system", status="completed", turnId="input-" + turn_id,
+                        consumedByTurnId=turn_id, sequence=sequence,
+                        detail=dict(event="steer", origin="automation", senderSessionId="old", senderProjectId=h.PROJECT,
+                                    clientMessageId=run.run_id + ":" + phase + ":new", text="[from old] " + send[-1]))
+
+        interrupted = dict(id="original", state="interrupted", startedAt="2026-11-08T01:00:00Z",
+                           completedAt="2026-11-08T01:00:01Z")
+        snap["transcript"]["turns"].append(interrupted)
+        snap["transcript"]["entries"] += [
+            projected(run.cli.calls[-1], "nonce", "original", 2),
+            dict(kind="message", role="user", origin="automation", clientMessageId="report-batch:123",
+                 createdAt="2026-11-08T01:00:02Z", text="Reports [worker](ao://sessions/agent-orchestrator/worker)", sequence=3)]
+        self.assertFalse(h.nonce_completed(run))
+        self.assertFalse(h.nonce_completed(run))
+        self.assertEqual(len(run.cli.calls), 2)
+        snap["transcript"]["turns"].append(dict(id="continuation", state="completed", completedAt=h.now(),
+                  providerTurnId="native-turn", agentSettings={"state": "known", "settings": {"model": "model", "effort": "high"}}))
+        snap["transcript"]["entries"] += [
+            projected(run.cli.calls[-1], "nonce-continue", "continuation", 4),
+            dict(kind="message", role="assistant", id="answer", turnId="continuation", sequence=5, text=run.state["nonce"])]
+        with patch.object(h, "verify_target", return_value={"native": "new"}):
+            self.assertTrue(h.nonce_completed(run))
+        self.assertEqual(run.state["nonce_completed"]["turn_id"], "continuation")
+        snap["transcript"]["entries"].pop()
+        with self.assertRaisesRegex(h.Stop, "completed without verified answer"):
+            h.nonce_completed(run)
 
     def test_review_hidden_index_flags_stop_before_clean_reclaim(self):
         for flag in ("--assume-unchanged", "--skip-worktree"):
@@ -1392,6 +1489,12 @@ finally:
 
 
 
+class FixtureRun(h.Run):
+    def worker_stop(self, worker):
+        with patch.object(h, "proc_table", return_value=self.cli.processes):
+            return super().worker_stop(worker)
+
+
 class FlowFixture:
     """A persisted fake daemon: actual exporter/receipt checks, zero live I/O."""
     def __init__(self, root, old_harness, new_harness, worker=False, *, run_id=None, git_prepared=False):
@@ -1412,6 +1515,8 @@ class FlowFixture:
         self.preservation_problem, self.kill_outcome, self.classification_extra = None, None, []
         self.run_file = root / "run.json"
         self.mutations = []
+        self.processes = {}
+        self.steer_phases = set()
         self.last_received = h.time.monotonic()
         self.snapshots = {"old": snapshot()}
         self.snapshots["old"]["session"]["harness"] = old_harness
@@ -1455,7 +1560,7 @@ class FlowFixture:
         h.publish(directory / "start.json", h.canonical(req))
         h.publish(directory / "state.json", h.canonical({"start_sha256": h.digest(h.canonical(req)), "effects": {},
                   "original_t0": req["authority"], "old_settings": h.old_settings(self.snapshots["old"]), "old_native": "native-old"}))
-        self.run = h.Run(directory, self)
+        self.run = FixtureRun(directory, self)
         self.run.state["location"] = h.location_info(self)
         self.pending_actor = None
         self.helper_events = []
@@ -1545,7 +1650,9 @@ class FlowFixture:
         snap = copy.deepcopy(self.snapshots[sid])
         remaining = getattr(self, "running_receipt_reads", {})
         phase = "2a" if sid == "old" else "bootstrap"
-        if self.run.state.get("stage") == phase and remaining.get(sid, 0):
+        action = "old-receipt" if sid == "old" else "bootstrap"
+        original = next((event for event in reversed(self.helper_events) if event["action"] == action), None)
+        if original and self.run.state.get("stage") == phase and remaining.get(sid, 0):
             remaining[sid] -= 1
             turn = snap["transcript"]["turns"][-1]
             turn.update(state="running")
@@ -1553,8 +1660,6 @@ class FlowFixture:
             snap["session"]["activity"]["state"] = "active"
             current = max((e for e in snap["transcript"]["entries"] if e.get("role") == "assistant" and e.get("turnId") == turn["id"]), key=lambda e:e["sequence"])
             current["streaming"] = True
-            action = "old-receipt" if sid == "old" else "bootstrap"
-            original = next(e for e in reversed(self.helper_events) if e["action"] == action)
             identifier = action + "-tool"
             entry = next(e for e in snap["transcript"]["entries"] if e.get("id") == identifier)
             snap = produced_activity(snap, h.shlex.join(original["argv"]), original["stdout"], None, sid, turn["id"], identifier, entry["sequence"])
@@ -1611,8 +1716,8 @@ class FlowFixture:
             name = args[args.index("--name") + 1]
             snap = snapshot()
             snap["session"].update(id="new", harness=self.target["harness"], displayName=name, createdAt=h.now())
-            snap["transcript"]["turns"] = [{"id": "bootstrap", "state": "completed", "requestedAt": h.now(),
-                "completedAt": h.now(), "providerTurnId": "native-bootstrap",
+            snap["transcript"]["turns"] = [{"id": "bootstrap", "state": "running", "requestedAt": h.now(),
+                "providerTurnId": "native-bootstrap",
                 "agentSettings": {"state": "known", "settings": {"model": "model", "effort": "high"}}}]
             snap["transcript"]["entries"] = [
                 {"id": "opening", "kind": "message", "role": "user", "origin": "human", "turnId": "bootstrap",
@@ -1666,14 +1771,30 @@ class FlowFixture:
                 self.pending_actor = (sid, "worker-receipt" if phase == "worker-stop" else "old-receipt")
             elif phase in ("nonce", "final"):
                 snap = self.snapshots["new"]
-                snap["transcript"]["latestSequence"] += 1
-                turn = {"id": phase, "state": "completed", "requestedAt": h.now(), "completedAt": h.now(),
-                        "providerTurnId": "provider-" + phase, "agentSettings": {"state": "known", "settings": {"model": "model", "effort": "high"}}}
-                snap["transcript"]["turns"].append(turn)
+                handle = args[args.index("--client-message-id") + 1]
+                msg = dict(Text="[from old] " + h.canonical(payload).decode(), ClientMessageID=handle,
+                           Origin="automation", SenderSessionID="old", SenderProjectID=h.PROJECT)
+                prior = snap["transcript"]
+                stimulus = dict(snap, transcript=dict(prior, entries=[], turns=[dict(id=phase, state="running")]))
+                snap = persisted_directive(stimulus, [msg], phase in self.steer_phases)
+                self.snapshots[sid] = snap
+                control = h.directive_entry(snap, handle, "old", h.canonical(payload).decode())
+                turn = next(t for t in snap["transcript"]["turns"] if t["id"] == control["dispatch_turn_id"])
+                # Each projection call has its own store and restarts its synthetic IDs.
+                for entry in snap["transcript"]["entries"]:
+                    entry["turnId"] = phase
+                    entry["id"] = phase + "-" + entry["id"]
+                snap["transcript"]["entries"][:0] = prior["entries"]
+                snap["transcript"]["turns"][:0] = prior["turns"]
+                turn.update(id=phase, state="running", requestedAt=h.now(), providerTurnId="provider-" + phase,
+                            agentSettings={"state": "known", "settings": {"model": "model", "effort": "high"}})
                 if phase == "nonce":
-                    snap["transcript"]["entries"] += [
-                        {"id": "prompt", "kind": "message", "turnId": "nonce", "clientMessageId": self.run_id + ":nonce:new"},
-                        {"id": "answer", "kind": "message", "role": "assistant", "turnId": "nonce", "text": self.run.state["nonce"]}]
+                    turn.update(state="completed", completedAt=h.now())
+                    snap["transcript"]["latestSequence"] += 1
+                    snap["transcript"]["entries"].append(
+                        {"id": "answer", "kind": "message", "role": "assistant", "turnId": phase,
+                         "sequence": snap["transcript"]["latestSequence"], "text": self.run.state["nonce"]})
+                    snap["session"]["activity"]["state"] = "idle"
                 else:
                     self.pending_actor = ("new", "finalize")
             return b"accepted"
@@ -1721,7 +1842,7 @@ class SpeedPreparationTests(unittest.TestCase):
 
     def package(self, root, cli, run_id=None):
         with patch.object(h, "path_cli", return_value=cli), patch.dict(os.environ, {"AO_SESSION_ID": "old"}):
-            return h.prepare_request(root, None, "old", "human", "control", run_id or str(uuid.uuid4()))
+            return h.prepare_request(root, None, "old", "control", run_id or str(uuid.uuid4()))
 
     def test_packaging_helper_builds_request_from_original_bytes(self):
         root, cli, raw = self.packaging_fixture()
@@ -1741,8 +1862,58 @@ class SpeedPreparationTests(unittest.TestCase):
         request = h.decode(h.private_read(Path(self.package(root, cli)["request"])))
         self.assertEqual(request["prepared_by"]["turn_id"], "preparing")
         root, cli, _ = self.packaging_fixture(human_turn="other-leader", name="other")
-        with self.assertRaisesRegex(h.Stop, "not from the turn handling the human instruction"):
+        with self.assertRaisesRegex(h.Stop, "human source missing or ambiguous"):
             self.package(root, cli)
+
+    def test_readme_current_control_and_packaging_human_across_pages(self):
+        readme = Path(h.__file__).with_name("README.md").read_text()
+        template = readme.split("   ```rh-control\n", 1)[1].split("\n   ```", 1)[0]
+        block = json.loads(template)
+        snippet = textwrap.dedent(readme.split("<<'PYTHON'\n", 1)[1].split("\n   PYTHON", 1)[0])
+        self.assertIn('--old "$OLD_ID" --control "$CONTROL_ID"', readme)
+        path, cli, _ = self.packaging_fixture()
+        newest = cli.session("old")
+        human, control = newest["transcript"]["entries"]
+        control.update(text="\n```rh-control\n" + json.dumps(block, ensure_ascii=False) + "\n```", sequence=3)
+        historical = dict(control, id="historical", turnId="old-turn", sequence=2)
+        oldest = copy.deepcopy(newest)
+        oldest["transcript"]["entries"] = [human]
+        newest["transcript"].update(entries=[historical, control], hasMoreBefore=True, next={"before": 2})
+
+        def cli_page(args):
+            page = oldest if "--before" in args else newest
+            cli.last_raw = h.canonical(page)
+            return copy.deepcopy(page)
+
+        cli.session = lambda _: cli_page([])
+        cli.read = cli_page
+        with patch.object(sys, "argv", ["-", "old"]), patch.object(subprocess, "check_output", side_effect=lambda args: h.canonical(cli_page(args))):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exec(snippet, {})
+            self.assertEqual(output.getvalue().strip(), "control")
+            newest["transcript"]["entries"].append(dict(control, id="ambiguous", sequence=4))
+            with self.assertRaisesRegex(SystemExit, "unique control"):
+                exec(snippet, {})
+            newest["transcript"]["entries"].pop()
+        request = h.decode(h.private_read(Path(self.package(path, cli)["request"])))
+        self.assertEqual(request["authority"]["t0_created_at"], human["createdAt"])
+        self.assertEqual([source["message_id"] for source in request["sources"]], ["human", "control"])
+        self.assertEqual(request["sources"][0]["raw_sha256"], h.digest(h.canonical(oldest)))
+        self.assertEqual(request["workers"], block["workers"])
+        path = h.mkdir(self.root / "ambiguous-human")
+        oldest["transcript"]["entries"].append(dict(human, id="other-human", sequence=0))
+        with self.assertRaisesRegex(h.Stop, "human source missing or ambiguous"):
+            self.package(path, cli)
+        self.assertFalse((path / ".start/old/request.json").exists())
+        oldest["transcript"]["entries"].pop()
+        oldest["transcript"]["activeBranchId"] = "different"
+        with self.assertRaisesRegex(h.Stop, "conversation or branch changed"):
+            self.package(path, cli)
+        oldest["transcript"]["activeBranchId"] = newest["transcript"]["activeBranchId"]
+        oldest["transcript"]["entries"][0]["origin"] = "automation"
+        with self.assertRaisesRegex(h.Stop, "human source missing"):
+            self.package(path, cli)
 
     def test_packaging_helper_refuses_missing_block_named_stop_foreign_turn_and_conflicts(self):
         cases = {"missing block": dict(text="沒有區塊"), "named stop": dict(stop="②"), "foreign turn": dict(control_turn="earlier")}
@@ -1754,7 +1925,7 @@ class SpeedPreparationTests(unittest.TestCase):
                 self.assertFalse((root / ".start/old/request.json").exists())
         root, cli, _ = self.packaging_fixture()
         cli.session = lambda sid: snapshot(entries=[])
-        with self.assertRaisesRegex(h.Stop, "not in old transcript"):
+        with self.assertRaisesRegex(h.Stop, "control message missing"):
             self.package(root, cli)
         root, cli, _ = self.packaging_fixture()
         run_id = str(uuid.uuid4())
@@ -1764,7 +1935,7 @@ class SpeedPreparationTests(unittest.TestCase):
         root, cli, _ = self.packaging_fixture()
         with self.assertRaisesRegex(h.Stop, "must run as old"), patch.object(h, "path_cli", return_value=cli), \
              patch.dict(os.environ, {"AO_SESSION_ID": "worker"}):
-            h.prepare_request(root, None, "old", "human", "control", str(uuid.uuid4()))
+            h.prepare_request(root, None, "old", "control", str(uuid.uuid4()))
 
     def test_start_accepts_settling_control_record_but_not_changed_human(self):
         old_path = self.root / "worktrees" / h.PROJECT / "orchestrator/old"
@@ -1840,6 +2011,15 @@ def proc(ppid, argv, cwd=None, start=100.0, terminal=False):
     return dict(ppid=ppid, tick=int(start * 100), start=start, cwd=cwd, argv=argv, terminal=terminal)
 
 
+def fixture_proc_table(*pids):
+    iterdir = Path.iterdir
+    def owned(path):
+        if path == Path("/proc"):
+            return iter(path / str(pid) for pid in pids)
+        return iterdir(path)
+    return patch.object(Path, "iterdir", owned)
+
+
 class OSProcessTests(unittest.TestCase):
     """RH-GATE1 .11: OS-level worker work processes (contract rev3.3 §5.2-§5.3) on synthetic process tables."""
     request, run_fixture, worker_index = ProtocolTests.request, ProtocolTests.run_fixture, ProtocolTests.worker_index
@@ -1865,7 +2045,8 @@ class OSProcessTests(unittest.TestCase):
         }
 
     def test_proc_table_reads_the_real_running_process(self):
-        row = h.proc_table()[os.getpid()]
+        with fixture_proc_table(os.getpid()):
+            row = h.proc_table()[os.getpid()]
         self.assertEqual((row["ppid"], row["cwd"], row["terminal"]), (os.getppid(), os.getcwd(), False))
         self.assertLessEqual(row["start"], time.time())
         self.assertGreater(row["start"], time.time() - 3600)
@@ -1879,12 +2060,14 @@ class OSProcessTests(unittest.TestCase):
         stat = Path("/proc", str(child.pid), "stat").read_bytes()
         with self.assertRaises(UnicodeDecodeError):
             stat.decode()  # the kernel cut the name inside a multi-byte character
-        row = h.proc_table()[child.pid]
+        with fixture_proc_table(child.pid):
+            row = h.proc_table()[child.pid]
         self.assertEqual((row["ppid"], row["cwd"]), (os.getpid(), str(self.root)))
         original = Path.read_bytes
         def broken(path):
             return b"1 (x" if path == Path("/proc", str(child.pid), "stat") else original(path)
-        with patch.object(h.Path, "read_bytes", broken), self.assertRaisesRegex(h.Stop, "process table UNKNOWN: " + str(child.pid)):
+        with fixture_proc_table(child.pid), patch.object(h.Path, "read_bytes", broken), \
+                self.assertRaisesRegex(h.Stop, "process table UNKNOWN: " + str(child.pid)):
             h.proc_table()
 
     def test_proc_table_keeps_a_process_whose_main_thread_exited_while_others_work(self):
@@ -1903,7 +2086,8 @@ class OSProcessTests(unittest.TestCase):
             time.sleep(0.05)
         with self.assertRaises(FileNotFoundError):
             os.readlink(Path("/proc", str(child.pid), "cwd"))  # the group cwd is gone with the main thread
-        row = h.proc_table()[child.pid]
+        with fixture_proc_table(child.pid):
+            row = h.proc_table()[child.pid]
         self.assertEqual((row["ppid"], row["cwd"], row["cwd_unknown"]), (os.getpid(), str(self.root), False))
         # If no live thread exposes a cwd either, the process stays, marked, and counts as work (named, fail-closed).
         readlink = os.readlink
@@ -1911,7 +2095,7 @@ class OSProcessTests(unittest.TestCase):
             if str(path).startswith("/proc/" + str(child.pid) + "/"):
                 raise FileNotFoundError(path)
             return readlink(path)
-        with patch.object(h.os, "readlink", side_effect=hidden):
+        with fixture_proc_table(child.pid), patch.object(h.os, "readlink", side_effect=hidden):
             table = h.proc_table()
         self.assertTrue(table[child.pid]["cwd_unknown"])
         work = h.os_work_processes({child.pid: dict(table[child.pid], ppid=1)}, "worker", "/data", Path("/wt/worker"), lambda *a: None)
@@ -1925,7 +2109,8 @@ class OSProcessTests(unittest.TestCase):
         self.addCleanup(parent.wait)
         self.addCleanup(parent.kill)
         zombie = int(parent.stdout.readline())
-        table = h.proc_table()
+        with fixture_proc_table(parent.pid, zombie):
+            table = h.proc_table()
         self.assertEqual((table[zombie]["ppid"], table[zombie]["zombie"]), (parent.pid, True))
         self.assertFalse(table[parent.pid]["zombie"])
         # Under a provider (B10 MCP server) the zombie is still walked but never listed as work.
