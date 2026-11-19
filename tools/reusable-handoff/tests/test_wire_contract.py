@@ -157,6 +157,91 @@ class WireContractTests(unittest.TestCase):
                     self.assertEqual(attempts[0][1]["terminal"], "not-started")
                     self.assertEqual((attempts[0][2] / "attempt.json").exists(), location == "after-attempt")
 
+    def test_acp_remote_terminal_result_settles_only_its_own_launch_marker(self):
+        detail = dict(protocol="acp", toolKind="execute", exitCode=0,
+                      output=h.canonical(dict(type="job", reference="remote-fixture", state="completed")).decode())
+        entry = dict(id="command", kind="activity", activityKind="command", status="completed", detail=detail)
+
+        def retained(text):
+            detail["content"] = [dict(type="content", content=dict(type="text", text=text))]
+
+        retained("Job running with ID remote-fixture")
+        self.assertTrue(h.activity_quiescent(entry, worker=True))
+        retained("Job running with ID other-reference")
+        self.assertFalse(h.activity_quiescent(entry, worker=True))
+        retained("Job running with ID")
+        self.assertFalse(h.activity_quiescent(entry, worker=True))
+        detail.update(output="ordinary stdout", outputTruncated=True)
+        self.assertEqual(h.truncated_command_blocker(entry, worker=True), "remote operation evidence truncated")
+        retained("Job running with ID remote-fixture")
+        self.assertFalse(h.activity_quiescent(entry, worker=True))
+
+    def test_worker_callback_deadline_keeps_retirement_dispatch_evidence_accurate(self):
+        execution = self.cli.execution
+        journal = execution.journal
+        key = "worker-stop-worker"
+        handle = journal.run_id + ":worker-stop:worker"
+        request = h.canonical(dict(request_id=journal.run_id, old_id="old", workers=[dict(worker_id="worker")],
+                                   target=execution.request_target, authority={"source_refs": ["human"]}))
+        h.publish(self.root / "start.json", request)
+        h.publish(self.root / "state.json", h.canonical(dict(start_sha256=h.digest(request), stage="workers")))
+        run = h.Run(self.root, self.cli)
+        control = self.root / "control" / key
+        sent_path = control / "sent.json"
+        directive = {"directive": "D-7"}
+        publish = h.publish
+        clock = [0]
+
+        def expire_on(filename):
+            def record(path, raw):
+                publish(path, raw)
+                if path.name == filename:
+                    clock[0] = 2
+            return record
+
+        execution.admission_deadline = 1
+        with patch.object(h.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(h, "publish", side_effect=expire_on("sent.json")), patch.object(h.subprocess, "run") as transport:
+            with self.assertRaisesRegex(h.AdmissionBusy, "this attempt not dispatched"):
+                run.send("worker", "worker-stop", directive)
+            transport.assert_not_called()
+        intent = h.private_read(control / "intent.json")
+        self.assertEqual(h.decode(intent)["argv"][-4:-1], ["--client-message-id", handle, "--message"])
+        self.assertEqual(h.decode(h.private_read(self.root / "state.json"))["effects"][key], "not-dispatched")
+        self.assertFalse(sent_path.exists())
+
+        execution.close()
+        facts = journal.facts()
+        self.assertEqual([(row["effect_id"], row["terminal"]) for row in facts], [(handle, "not-started")])
+        controls = h.effect_closure(facts)
+        self.assertEqual(controls, {})
+        old = dict(session=dict(id="old", kind="orchestrator", projectId=h.PROJECT, activity=dict(state="idle")),
+                   transcript=dict(entries=[], turns=[]))
+        observer = SimpleNamespace(session=lambda actor: old, documents=lambda: dict(lease=dict(sessionId="old")),
+                                   sessions=lambda: [dict(id="old", projectId=h.PROJECT, role="orchestrator", isTerminated=False)])
+        self.assertEqual(h.retirement_preconditions(observer, run.state, run.request, controls, {}, self.root), [])
+
+        # A transport timeout leaves the original dispatch unresolved. A later
+        # recover-only call that misses admission must keep that evidence.
+        self.cli.execution = journal.register("_run", "old")
+        self.addCleanup(self.cli.execution.close)
+        run = h.Run(self.root, self.cli)
+        with patch.object(h.subprocess, "run", side_effect=h.subprocess.TimeoutExpired("send", 1)) as transport:
+            with self.assertRaises(h.subprocess.TimeoutExpired):
+                run.send("worker", "worker-stop", directive)
+            transport.assert_called_once()
+        original_sent = h.private_read(sent_path)
+        clock[0] = 0
+        self.cli.execution.admission_deadline = 1
+        with patch.object(h.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(h, "publish", side_effect=expire_on("attempt.json")), patch.object(h.subprocess, "run") as transport:
+            with self.assertRaises(h.AdmissionBusy):
+                run.send("worker", "worker-stop", directive)
+            transport.assert_not_called()
+        self.assertEqual(h.private_read(sent_path), original_sent)
+        self.assertEqual(h.private_read(control / "intent.json"), intent)
+        self.assertEqual(h.decode(h.private_read(self.root / "state.json"))["effects"][key], "UNKNOWN")
+
     def test_spawn_after_admission_timeout_reloads_the_original_intent_once(self):
         journal = self.cli.execution.journal
         request = h.canonical(dict(request_id=journal.run_id, old_id="old", workers=[],

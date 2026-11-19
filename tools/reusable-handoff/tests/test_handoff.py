@@ -1945,7 +1945,9 @@ class SpeedPreparationTests(unittest.TestCase):
         historical = dict(control, id="historical", turnId="old-turn", sequence=2)
         oldest = copy.deepcopy(newest)
         oldest["transcript"]["entries"] = [human]
-        newest["transcript"].update(entries=[historical, control], hasMoreBefore=True, next={"before": 2})
+        invalid = dict(control, id="invalid-schema", sequence=4,
+                       text='```rh-control\n{"schema":"rh-note/1"}\n```')
+        newest["transcript"].update(entries=[historical, control, invalid], hasMoreBefore=True, next={"before": 2})
 
         def cli_page(args):
             page = oldest if "--before" in args else newest
@@ -1954,15 +1956,19 @@ class SpeedPreparationTests(unittest.TestCase):
 
         cli.session = lambda _: cli_page([])
         cli.read = cli_page
-        with patch.object(sys, "argv", ["-", "old"]), patch.object(subprocess, "check_output", side_effect=lambda args: h.canonical(cli_page(args))):
+        with patch.object(sys, "argv", ["-", "old", str(Path(h.__file__))]), \
+             patch.object(subprocess, "check_output", side_effect=lambda args: h.canonical(cli_page(args))):
             output = io.StringIO()
             with redirect_stdout(output):
                 exec(snippet, {})
             self.assertEqual(output.getvalue().strip(), "control")
-            newest["transcript"]["entries"].append(dict(control, id="ambiguous", sequence=4))
+            newest["transcript"]["entries"].append(dict(control, id="ambiguous", sequence=5))
             with self.assertRaisesRegex(SystemExit, "unique control"):
                 exec(snippet, {})
             newest["transcript"]["entries"].pop()
+        with self.assertRaisesRegex(h.Stop, "control block schema mismatch"):
+            self.package(path, cli, control_id="invalid-schema")
+        self.assertFalse((path / ".start/old/request.json").exists())
         request = h.decode(h.private_read(Path(self.package(path, cli)["request"])))
         self.assertEqual(request["authority"]["t0_created_at"], human["createdAt"])
         self.assertEqual([source["message_id"] for source in request["sources"]], ["human", "control"])

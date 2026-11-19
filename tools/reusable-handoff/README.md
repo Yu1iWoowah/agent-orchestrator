@@ -129,13 +129,14 @@ old 在處理 human 交接指令的同一回合完成準備，不需要 operator
 
    ```bash
    OLD_ID="$AO_SESSION_ID"
-   CONTROL_ID=$(python3 - "$OLD_ID" <<'PYTHON'
+   CONTROL_ID=$(python3 - "$OLD_ID" tools/reusable-handoff/handoff.py <<'PYTHON'
    import json
-   import re
+   import runpy
    import subprocess
    import sys
 
-   old = sys.argv[1]
+   old, script = sys.argv[1:]
+   helper = runpy.run_path(script)
    argv = ["ao", "session", "get", old, "--transcript", "500", "--cap", "0", "--json"]
    page = json.loads(subprocess.check_output(argv))
    session, transcript = page["session"], page["transcript"]
@@ -153,9 +154,11 @@ old 在處理 human 交接指令的同一回合完成準備，不需要 operator
        for entry in transcript["entries"]:
            if (entry.get("kind"), entry.get("role"), entry.get("turnId")) != ("message", "assistant", running[0]):
                continue
-           blocks = re.findall(r"(?m)^```rh-control\s*\n([\s\S]*?)\n```[ \t]*$", entry.get("text", ""))
-           if len(blocks) == 1 and json.loads(blocks[0]).get("schema") == "rh-control-record/1":
-               controls.append(entry["id"])
+           try:
+               helper["control_block"](entry.get("text"))
+           except helper["Stop"]:
+               continue
+           controls.append(entry["id"])
        if not transcript["hasMoreBefore"]:
            break
        before = transcript["next"]["before"]

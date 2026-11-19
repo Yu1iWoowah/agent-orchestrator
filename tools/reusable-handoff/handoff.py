@@ -492,6 +492,11 @@ def operation_handles(entry, *, include_truncated_stdout=False):
             payload = block.get("content")
             if isinstance(payload, dict) and payload.get("type") == "text" and isinstance(payload.get("text"), str):
                 handles.extend(result_handles(payload["text"], name, True))
+        terminal_states = ("completed", "cancelled", "failed")
+        terminal = {(handle["reference"], bool(handle.get("local"))) for handle in handles
+                    if handle["reference"] != "UNKNOWN" and handle["state"] in terminal_states}
+        handles = [handle for handle in handles if handle["state"] in terminal_states or
+                   (handle["reference"], bool(handle.get("local"))) not in terminal]
     return handles
 
 
@@ -1921,23 +1926,40 @@ class Run:
         self.state.setdefault("effects", {})[key] = "not-dispatched"
         self.save()
         sent_path = directory / "sent.json"
+
         def dispatched():
+            nonlocal callback_ran, wrote_sent
+            callback_ran = True
             if not sent_path.exists():
                 publish(sent_path, canonical({"at": now(), "monotonic": self.clock()}))
+                wrote_sent = True
             self.state["effects"][key] = "UNKNOWN"
             self.save()
         while True:
             deadline = before_call() if before_call else None
+            callback_ran = wrote_sent = False
             try:
                 raw = self.cli.call(args, timeout, deadline=deadline, on_dispatch=dispatched, effect_id=key)
                 break
-            except WindowElapsed:
-                # The adapter proved no subprocess was started. Reobserve S1/S2,
-                # retaining the original bounded idle wait and mutation intent.
+            except (AdmissionBusy, WindowElapsed) as exc:
+                if callback_ran and execution:
+                    # The callback runs before transport. Only its own marker can
+                    # be rolled back, after the journal proves no attempt started.
+                    recorded = execution.effect_attempts(effect_id)
+                    if not any(intent["call_id"] == execution.last_call_id for intent, _, _ in recorded) or not all(
+                            result and result["terminal"] == "not-started" and result.get("dispatched_monotonic") is None
+                            for _, result, _ in recorded):
+                        raise
+                    if wrote_sent:
+                        sent_path.unlink()
+                        sync_directory(directory)
+                if callback_ran or isinstance(exc, WindowElapsed):
+                    self.state["effects"][key] = "not-dispatched"
+                    self.save()
+                if isinstance(exc, AdmissionBusy):
+                    raise
+                # Reobserve S1/S2 within the original bounded idle wait.
                 self.evidence("not-dispatched-" + key, {"at": now(), "reason": "idle window elapsed before subprocess"})
-                self.state["effects"][key] = "not-dispatched"
-                self.save()
-                continue
         result = {"stdout": raw.decode(), "stderr": getattr(self.cli, "last_stderr", ""), "sha256": digest(raw), "accepted_at": now(),
                   "call_id": getattr(getattr(self.cli, "execution", None), "last_call_id", None)}
         publish(result_path, canonical(result))
@@ -3598,16 +3620,21 @@ def prepare_request(root, initial, old, control_id, run_id):
                 type(control.get("sequence")) is int, "control lacks assistant turn provenance")
         running = [turn["id"] for turn in pages[0][1]["transcript"]["turns"] if turn.get("state") == "running"]
         require(running == [control["turnId"]], "control does not belong to the unique running preparation turn")
-        candidates = [entry for _, _, entry in records if entry.get("kind") == "message" and entry.get("role") == "assistant" and
-                      entry.get("turnId") == control["turnId"] and CONTROL_BLOCK.search(entry.get("text") or "")]
-        require(len(candidates) <= 1, "expected a unique control in the running preparation turn")
+        block = control_block(control.get("text"))
+        for _, _, entry in records:
+            if entry is control or (entry.get("kind"), entry.get("role"), entry.get("turnId")) != ("message", "assistant", running[0]):
+                continue
+            try:
+                control_block(entry.get("text"))
+            except Stop:
+                continue
+            raise Stop("expected a unique control in the running preparation turn")
         humans = [record for record in records if (entry := record[2]).get("kind") == "message" and
                   entry.get("role") == "user" and entry.get("origin") == "human" and not entry.get("senderSessionId") and
                   (entry.get("consumedByTurnId") or entry.get("turnId")) == control["turnId"] and
                   type(entry.get("sequence")) is int and entry["sequence"] < control["sequence"]]
         require(len(humans) == 1, "human source missing or ambiguous in control turn " + control["turnId"])
         human = humans[0][2]
-        block = control_block(control.get("text"))
         require(block.get("stop") == "無具名停", "old named a stop; request not published")
         sources = []
         for ref, kind, (raw, page, entry) in (("human", "human-message", humans[0]), ("control", "old-control-record", controls[0])):
