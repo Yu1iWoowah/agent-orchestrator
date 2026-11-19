@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
-	agentAccountName,
+	agentAccountLabel,
+	agentAccountProviderNames,
 	agentAccountProviderFor,
 	useAgentAccounts,
 } from "../hooks/useAgentAccounts";
@@ -48,7 +49,13 @@ export function AgentAccountPicker({
 	const rows = (accounts.data ?? []).filter((a) => a.provider === provider);
 	const binding = catalog.data?.accountBinding;
 	const inherited = rows.find((a) => a.id === binding?.accountId);
-	const inheritedName = inherited ? agentAccountName(inherited, t) : undefined;
+	const labelAccount = (account: (typeof rows)[number]) => {
+		const name = agentAccountLabel(account, rows, t);
+		return account.device && name === account.email
+			? name + " · " + t("settings.agentAccounts.cliLoginOf", { provider: agentAccountProviderNames[account.provider] })
+			: name;
+	};
+	const inheritedName = inherited && labelAccount(inherited);
 	const unavailable = value !== "" && !rows.some((a) => a.id === value);
 	const options = [
 		{
@@ -63,7 +70,7 @@ export function AgentAccountPicker({
 		...rows.map((a) => ({
 			value: a.id,
 			label:
-				agentAccountName(a, t) +
+				labelAccount(a) +
 				(!a.signedIn && !a.device ? ` · ${t("settings.agentAccounts.signedOut")}` : ""),
 			disabled: !a.device && !a.signedIn,
 		})),

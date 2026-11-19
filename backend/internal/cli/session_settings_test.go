@@ -42,6 +42,30 @@ func TestSessionSettingsReadsQualifiedStateWithoutProjection(t *testing.T) {
 	}
 }
 
+func TestSessionSettingsReportsOnlyCurrentRecovery(t *testing.T) {
+	const failed = `{"id":"old-timeout","phase":"failed","errorCode":"AGENT_SETTINGS_READ_TIMEOUT"}`
+	for _, tc := range []struct {
+		name, state, want, avoid string
+	}{
+		{"latest timeout", `"history":[` + failed + `]`, "old-timeout timed out before applying", "waiting for"},
+		{"subsequent applied", `"history":[{"id":"new-success","phase":"applied"},` + failed + `],"reconciliations":[{"operationId":"old-timeout","errorCode":"AGENT_SETTINGS_READ_TIMEOUT"}]`, "Committed:", "timed out"},
+		{"uncertain after reconnect", `"pending":{"id":"pending-op"},"history":[` + failed + `],"reconciliations":[{"operationId":"pending-op","effectPending":true,"missingEvidence":["current_settings"]}]`, "pending-op is waiting for current_settings", "timed out"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, `{"revision":1,"settings":{"fastMode":"default"},"effective":{},`+tc.state+`}`)
+			}))
+			t.Cleanup(srv.Close)
+			writeRunFileFor(t, cfg, srv)
+			out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "settings", "demo-1")
+			if err != nil || !strings.Contains(out, tc.want) || strings.Contains(out, tc.avoid) {
+				t.Fatalf("settings = %q, error = %v", out, err)
+			}
+		})
+	}
+}
+
 func TestSessionSetWaitReloadsDaemonRunFileAfterAcceptance(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var patches, replacementReads atomic.Int32

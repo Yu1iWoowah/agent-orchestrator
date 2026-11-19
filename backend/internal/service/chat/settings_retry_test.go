@@ -183,6 +183,37 @@ func TestSettingsReadDeadlineUsesFakeClockAndKeepsPendingInput(t *testing.T) {
 	}
 }
 
+func TestSettingsIdleReadTimeoutReleasesSettingsFenceWithoutAnotherTurn(t *testing.T) {
+	clock := newSettingsTestClock()
+	conv := &journalConversation{fakeConversation: newFakeConversation()}
+	h := retrySettingsHarness(t, conv, clock)
+	intent := journalIntent(t, h)
+	op, err := h.ctrl.QueueAgentSettings(t.Context(), intent)
+	if err != nil || op.Phase != domain.AgentSettingsPending {
+		t.Fatalf("could not queue intent before quiet: %+v, %v", op, err)
+	}
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "keep this input", ClientMessageID: "settings-timeout-input"})
+	if err != nil || turn.State != domain.TurnStateQueued || len(conv.sentMessages()) != 0 {
+		t.Fatalf("input crossed the settings fence: %+v, %v", turn, err)
+	}
+	clock.awaitTimer(t, time.Second)
+	clock.advance(30 * time.Second)
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool { return len(conv.sentMessages()) == 1 })
+	saved, err := h.st.AgentSettingsOperation(t.Context(), testSession, op.ID)
+	if err != nil || saved.Phase != domain.AgentSettingsFailed || saved.ErrorCode != "AGENT_SETTINGS_READ_TIMEOUT" || saved.StartedAt != nil {
+		t.Fatalf("unsafe operation outcome: %+v, %v", saved, err)
+	}
+	attempts, err := h.st.ListAgentSettingsReconciliations(t.Context(), testSession)
+	if err != nil || len(attempts) != 1 || attempts[0].Phase != "cancelled" || attempts[0].OperationID != op.ID || attempts[0].EffectPending {
+		t.Fatalf("attempt did not settle: %+v, %v", attempts, err)
+	}
+	current, err := h.st.SessionAgentSettings(t.Context(), testSession)
+	messages := conv.sentMessages()
+	if err != nil || current.Settings != intent.Source || current.Revision != intent.BaseRevision || conv.stepCount() != 0 || len(messages) != 1 || messages[0].Text != "keep this input" {
+		t.Fatalf("preference or delivery changed: %+v, messages=%+v, err=%v", current, messages, err)
+	}
+}
+
 type stickySettingsEvidence struct {
 	*journalConversation
 	current domain.AgentSettings

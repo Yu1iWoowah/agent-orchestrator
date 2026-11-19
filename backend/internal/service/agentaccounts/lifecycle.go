@@ -93,7 +93,11 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 	if account != nil {
 		release, err := s.acquireProfileMutation(account.ID)
 		if err != nil {
-			return LoginStart{}, err
+			contention := "profile_operation"
+			if s.accountUseLock(account.ID).launches.Load() > 0 {
+				contention = "launch_in_progress"
+			}
+			return LoginStart{}, &ports.AgentAccountInUseError{AccountID: account.ID, Contention: contention}
 		}
 		defer release()
 		current, err := s.find(ctx, account.ID)
@@ -103,7 +107,7 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 		account = &current
 		ctx = context.WithValue(ctx, profileMutationContextKey{}, account.ID)
 		if !s.signedOutForLoginAgain(ctx, s.providers[p], current) {
-			if err := s.refuseLiveOwners(ctx, account.ID); err != nil {
+			if err := s.refuseLoginOwners(ctx, account.ID); err != nil {
 				return LoginStart{}, err
 			}
 		}

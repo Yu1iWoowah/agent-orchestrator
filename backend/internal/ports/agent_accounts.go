@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -175,10 +176,25 @@ type ReviewerExecutionStore interface {
 	CreateReviewerAccountExecution(context.Context, string, string, domain.ResolvedAgentAccount, time.Time) (domain.Review, bool, error)
 }
 
+// WorkerRoleAccountMismatchError carries only public launch selection identifiers.
+type WorkerRoleAccountMismatchError struct {
+	AccountID string
+	Harness   domain.AgentHarness
+	Provider  domain.AgentAccountProvider
+}
+
+func (e *WorkerRoleAccountMismatchError) Error() string {
+	return fmt.Sprintf("Worker role account %s belongs to %s and cannot run %s. Choose a matching harness, choose an account for this run, or update the worker account in Project Settings.", e.AccountID, e.Provider, e.Harness)
+}
+
+func (*WorkerRoleAccountMismatchError) Unwrap() error { return ErrAgentAccountProviderMismatch }
+
 // AgentAccountInUseError describes a refused mutation. No operation has been
 // scheduled and no account was disabled; callers can show the affected owners.
 type AgentAccountInUseError struct {
-	Owners []domain.AgentAccountUsageOwner
+	Owners     []domain.AgentAccountUsageOwner
+	AccountID  string
+	Contention string
 }
 
 func (*AgentAccountInUseError) Error() string { return ErrAgentAccountInUse.Error() }

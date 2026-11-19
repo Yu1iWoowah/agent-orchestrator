@@ -746,6 +746,40 @@ func TestNewAuthenticationFailureAfterRecoveryHasNewIdentity(t *testing.T) {
 	}
 }
 
+func TestHistoricalAuthFailureDoesNotDemandReloginForLiveAccount(t *testing.T) {
+	ctx := t.Context()
+	st := openStore(t)
+	conv := &nativeHistoryConversation{fakeConversation: newFakeConversation(), events: []ports.ChatEvent{
+		{Kind: ports.ChatEventTurnStarted, ProviderEventID: "past-start", ProviderTurnID: "past-turn"},
+		{Kind: ports.ChatEventUserMessageCompleted, ProviderEventID: "past-user", ProviderTurnID: "past-turn", ProviderItemID: "past-input", Text: "earlier request"},
+		{Kind: ports.ChatEventError, ProviderEventID: "past-error", ProviderTurnID: "past-turn", Err: ports.ErrChatAuthRequired},
+		{Kind: ports.ChatEventTurnCompleted, ProviderEventID: "past-terminal", ProviderTurnID: "past-turn", TurnState: domain.TurnStateFailed, Err: ports.ErrChatAuthRequired},
+	}}
+	svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Reader: fullSnapshotReader(st), Drivers: fakeRegistry{driver: fakeDriver{conv: conv}}, NewID: sequentialIDs("auth-replay")})
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
+	if _, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryImport,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Snapshot(ctx, testSession)
+	if err != nil || len(got.Turns) != 1 || got.Turns[0].State != domain.TurnStateFailed ||
+		got.Conversation.Account != nil && got.Conversation.Account.ReauthRequiredAt != nil {
+		t.Fatalf("historical auth failure was lost or renewed: %+v, %v", got, err)
+	}
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventError, ProviderEventID: "live-error", Err: ports.ErrChatAuthRequired})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err = svc.Snapshot(ctx, testSession)
+		if err == nil && got.Conversation.Account != nil && got.Conversation.Account.ReauthRequiredAt != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("live auth failure did not request login: %+v, %v", got.Conversation.Account, err)
+}
+
 /* ---- thread state ----------------------------------------------------- */
 
 // Each report updates only what it spoke about. An ordinary idle report must not

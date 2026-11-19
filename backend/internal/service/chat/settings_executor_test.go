@@ -56,6 +56,11 @@ type journalConversation struct {
 	validSource   *domain.AgentSettings
 	freshRecovery atomic.Bool
 	restoredPlan  domain.AgentSettingsProviderPlan
+	effortOptions *domain.AgentSettingsEffortOptions
+}
+
+func (c *journalConversation) AgentSettingsEffortOptions() *domain.AgentSettingsEffortOptions {
+	return c.effortOptions
 }
 
 func (c *journalConversation) ReconciliationEvidence(_ context.Context, owner domain.AgentSettingsOwner) (ports.AgentSettingsReconciliationEvidence, error) {

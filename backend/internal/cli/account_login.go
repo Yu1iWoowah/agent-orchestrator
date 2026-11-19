@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -110,6 +111,9 @@ func newAccountLoginCommand(c *commandContext, again bool) *cobra.Command {
 			err := c.postJSON(startCtx, path, body, &start)
 			startCancel()
 			if err != nil {
+				if again {
+					writeLoginBlockers(cmd.ErrOrStderr(), args[0], err)
+				}
 				return err
 			}
 			operation, handle = start.OperationID, start.ShellTerminal.HandleID
@@ -417,4 +421,37 @@ func (c *commandContext) observeAccountLogin(ctx context.Context, cancel context
 		}()
 	}
 	return exited, cleanup, nil
+}
+
+func writeLoginBlockers(out io.Writer, accountID string, err error) {
+	var refused apiResponseError
+	if !errors.As(err, &refused) || refused.ErrorBody.Code != "AGENT_ACCOUNT_IN_USE" {
+		return
+	}
+	var details struct {
+		Owners []struct {
+			Kind         string `json:"kind"`
+			SessionID    string `json:"sessionId"`
+			ReviewID     string `json:"reviewId"`
+			TransitionID string `json:"transitionId"`
+			Blocking     bool   `json:"blocking"`
+		} `json:"usageOwners"`
+	}
+	if json.Unmarshal(refused.ErrorBody.Details, &details) != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(out, "Account %s:\n", accountID)
+	for _, owner := range details.Owners {
+		if !owner.Blocking {
+			continue
+		}
+		switch owner.Kind {
+		case "reviewer":
+			_, _ = fmt.Fprintf(out, "In use: reviewer %s (session %s)\n", owner.ReviewID, owner.SessionID)
+		case "transition":
+			_, _ = fmt.Fprintf(out, "In use: transition %s (session %s)\n", owner.TransitionID, owner.SessionID)
+		case "session":
+			_, _ = fmt.Fprintf(out, "In use: session %s\n", owner.SessionID)
+		}
+	}
 }

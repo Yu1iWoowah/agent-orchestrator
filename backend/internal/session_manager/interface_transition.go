@@ -2364,7 +2364,12 @@ func transitionDetail(transition domain.SessionInterfaceTransition, code, detail
 		return "AO could not confirm the saved model and effort on the target account. The current account was left unchanged. Check the target account model settings and retry."
 	case "TARGET_AUTH_REQUIRED":
 		return "The target account needs sign-in. The current account was left unchanged. Sign in again in Settings."
-	case "NATIVE_SESSION_MISSING", "NATIVE_SESSION_UNVERIFIED":
+	case "NATIVE_SESSION_MISSING":
+		if (transition.TargetAccountID == "device-codex" || transition.TargetAccountID == "device-claude") && transition.SourceAccountID != transition.TargetAccountID {
+			return fmt.Sprintf("Account %s cannot see this conversation from %s. Continue on %s, or start a new conversation on %s.", transition.TargetAccountID, transition.SourceAccountID, transition.SourceAccountID, transition.TargetAccountID)
+		}
+		fallthrough
+	case "NATIVE_SESSION_UNVERIFIED":
 		return "AO could not confirm that this conversation is available on the target account. The current account was left unchanged."
 	case "SOURCE_STOP_UNCERTAIN":
 		return "AO could not confirm that the original account controller stopped. Restart AO to reconcile this session before sending more work."

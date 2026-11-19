@@ -2,6 +2,9 @@ package domain
 
 import "time"
 
+// AgentSettingsReadTimeoutCode identifies a read deadline before any settings effect.
+const AgentSettingsReadTimeoutCode = "AGENT_SETTINGS_READ_TIMEOUT"
+
 // AgentSettingsReconciliation is work progress, never a session display status
 // or a replacement preference revision. No raw provider error is retained.
 type AgentSettingsReconciliation struct {

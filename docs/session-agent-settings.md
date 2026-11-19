@@ -44,6 +44,10 @@ account label, spawn provenance (labelled as initial resolution), restart needs
 and recent operation history. Only server-qualified orchestrator actors appear
 as orchestrator activities in the timeline. Local operators remain unverified.
 Claude fast `on` with no live fast option displays **Not provided**.
+For a Claude Chat using its inherited model, the editor can use
+`currentModelEfforts` from the current provider session, including when the
+saved catalog has no default. An effort-only change keeps the model inherited.
+The effective effort can be confirmed even when the native model is unresolved.
 
 The editor captures its revision when opened. External changes refresh the
 read-only sections without replacing its draft or the message composer. A 409
@@ -110,6 +114,12 @@ Managed pending operations and local operations already past `queued` return
 must keep its draft and show the conflict rather than assume it was saved.
 Managed callers may cancel only their own unstarted operations, using the
 operation version CAS.
+
+If Codex cannot confirm readiness or the current settings within its
+read-only reconciliation budget, `AGENT_SETTINGS_READ_TIMEOUT` ends the
+unstarted operation. The previous preference stays committed and queued
+messages return to the ordinary delivery checks. When a provider effect
+may have happened, the operation still waits for provider confirmation.
 
 ## TUI restart
 

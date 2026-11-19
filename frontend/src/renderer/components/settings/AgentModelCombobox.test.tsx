@@ -28,6 +28,21 @@ function renderCombobox(
 describe("AgentModelCombobox", () => {
 	beforeEach(() => window.localStorage.clear());
 
+	it("pins a catalog default only when the caller offers an explicit inherit action", async () => {
+		const inherit = vi.fn();
+		const { onChange } = renderCombobox([{ id: "model-default", label: "Model Default", isDefault: true }], {
+			pinCatalogDefault: true,
+			onUseDefault: inherit,
+		});
+		const picker = screen.getByRole("button", { name: "Worker model" });
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Model Default/ }));
+		expect(onChange).toHaveBeenCalledExactlyOnceWith("model-default");
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Use project or agent default/ }));
+		expect(inherit).toHaveBeenCalledTimes(1);
+	});
+
 	it("shows resolved effort beside the model and keeps effort in the menu", async () => {
 		function Picker() {
 			const [model, setModel] = useState("capable");

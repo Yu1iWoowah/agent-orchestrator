@@ -525,6 +525,7 @@ export function ProjectSettingsEditor({
 													effort={inheritsWorker ? draft.workerEffort : draft[fields.effort]}
 													allowCustomFallback={capabilities.runtimeDefaults}
 													followCatalogDefaults={!capabilities.runtimeDefaults}
+													pinCatalogDefault={Boolean(draft.accountSettings) && role !== "orchestrator"}
 													supportedEfforts={
 														capabilities.runtimeDefaults
 															? agent === "codex"

@@ -11479,6 +11479,7 @@ export interface components {
         };
         SessionAgentSettingsResponse: {
             capabilities: components["schemas"]["SessionAgentSettingsCapabilities"];
+            currentModelEfforts?: string[];
             currentTurn?: components["schemas"]["AgentSettingsTurnSnapshot"];
             effective: components["schemas"]["AgentSettingsEffective"];
             history?: components["schemas"]["AgentSettingsHistoryEntry"][];

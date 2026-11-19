@@ -49,6 +49,11 @@ func (s *Service) ResolveAccount(ctx context.Context, in ports.AgentAccountResol
 		return domain.ResolvedAgentAccount{}, err
 	}
 	if account.Provider != provider {
+		if source == domain.AgentAccountSourceRole && in.Role == domain.AgentAccountRoleWorker {
+			return domain.ResolvedAgentAccount{}, &ports.WorkerRoleAccountMismatchError{
+				AccountID: account.ID, Harness: in.Harness, Provider: account.Provider,
+			}
+		}
 		return domain.ResolvedAgentAccount{}, ports.ErrAgentAccountProviderMismatch
 	}
 	if err := accountAvailability(account); err != nil {

@@ -15,6 +15,28 @@ func (s *Service) SetUsageOwners(owners func(context.Context, string) ([]domain.
 	s.usageOwners = owners
 }
 
+// SetLoginUsageOwners wires the login-specific projection once at startup.
+func (s *Service) SetLoginUsageOwners(owners func(context.Context, string) ([]domain.AgentAccountUsageOwner, error)) {
+	s.loginOwners = owners
+}
+
+func (s *Service) refuseLoginOwners(ctx context.Context, id string) error {
+	lookup := s.loginOwners
+	if lookup == nil {
+		lookup = s.UsageOwners
+	}
+	owners, err := lookup(ctx, id)
+	if err != nil {
+		return ports.ErrAgentAccountStorageUnavailable
+	}
+	for _, owner := range owners {
+		if owner.Blocking {
+			return &ports.AgentAccountInUseError{AccountID: id, Owners: owners}
+		}
+	}
+	return nil
+}
+
 // UsageOwners includes durable users and in-flight launches for a local account.
 func (s *Service) UsageOwners(ctx context.Context, id string) ([]domain.AgentAccountUsageOwner, error) {
 	if _, err := s.find(ctx, id); err != nil {

@@ -35,6 +35,7 @@ export function AgentModelField({
 	allowCustomFallback = false,
 	supportedEfforts,
 	followCatalogDefaults = true,
+	pinCatalogDefault = false,
 	emptyLabel,
 	independentMode = false,
 	cloudOrgId,
@@ -58,6 +59,7 @@ export function AgentModelField({
 	supportedEfforts?: readonly string[];
 	/** Local catalog defaults may differ from the Cloud worker runtime. */
 	followCatalogDefaults?: boolean;
+	pinCatalogDefault?: boolean;
 	emptyLabel?: string;
 	/** Cloud Cursor can select both a model and a launch mode. */
 	independentMode?: boolean;
@@ -239,6 +241,8 @@ export function AgentModelField({
 				retryAt={catalog?.retryAt}
 				disabled={catalogFetching || agentId === ""}
 				onChange={selectCatalogModel}
+				pinCatalogDefault={pinCatalogDefault}
+				onUseDefault={pinCatalogDefault ? () => selectCatalogModel("") : undefined}
 				onCustom={selectCustomModel}
 				triggerClassName={cn(MENU_TRIGGER_CHROME, "w-fit")}
 				compact

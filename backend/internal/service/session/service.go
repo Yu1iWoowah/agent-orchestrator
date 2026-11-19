@@ -2116,6 +2116,10 @@ func mapSessionError(err error) error {
 	case errors.Is(err, ports.ErrAgentAccountUnknown):
 		return apierr.NotFound("AGENT_ACCOUNT_NOT_FOUND", "Unknown agent account")
 	case errors.Is(err, ports.ErrAgentAccountProviderMismatch):
+		var mismatch *ports.WorkerRoleAccountMismatchError
+		if errors.As(err, &mismatch) {
+			return apierr.Invalid("AGENT_ACCOUNT_PROVIDER_MISMATCH", mismatch.Error(), nil)
+		}
 		return apierr.Invalid("AGENT_ACCOUNT_PROVIDER_MISMATCH", "The account is for a different agent", nil)
 	case errors.Is(err, ports.ErrAgentAccountDefaultUnusable):
 		return apierr.Conflict("AGENT_ACCOUNT_DEFAULT_UNUSABLE", "The default account is signed out or now holds another login, and no other account is signed in. Sign one in again in Settings.", nil)

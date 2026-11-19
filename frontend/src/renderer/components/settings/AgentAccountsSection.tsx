@@ -142,7 +142,7 @@ export function AgentAccountsPanel({ provider, cliLogin, hostId }: { provider: A
 	const requestedLogin = useUiStore((state) => state.accountLogin);
 	useEffect(() => {
 		if (hostId) return;
-		const account = rows.find((row) => row.id === requestedLogin);
+		const account = providerAccounts.find((row) => row.id === requestedLogin);
 		if (!account || (account.device && (!cliLogin || cliLogin.disabled))) return;
 		useUiStore.setState({ accountLogin: null });
 		if (account.device) cliLogin?.onSignIn();

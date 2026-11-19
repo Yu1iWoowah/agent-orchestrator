@@ -86,8 +86,16 @@ func TestContainedAccountHandoffProtectsProfilesAndPreservesNativeHistory(t *tes
 						if err := svc.Remove(ctx, id); !errors.Is(err, ports.ErrAgentAccountInUse) {
 							t.Errorf("in-flight %s profile remove: %v", id, err)
 						}
-						if _, err := svc.StartSignInAgain(ctx, id); !errors.Is(err, ports.ErrAgentAccountInUse) {
+						_, err := svc.StartSignInAgain(ctx, id)
+						var inUse *ports.AgentAccountInUseError
+						want := "profile_operation"
+						if mode == domain.SessionModeTUI && id == "B" {
+							want = "launch_in_progress"
+						}
+						if !errors.As(err, &inUse) {
 							t.Errorf("in-flight %s profile login-again: %v", id, err)
+						} else if inUse.Contention != want {
+							t.Errorf("in-flight %s profile contention = %q, want %q", id, inUse.Contention, want)
 						}
 					}
 				}

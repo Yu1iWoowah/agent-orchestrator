@@ -34185,6 +34185,10 @@ components:
       properties:
         capabilities:
           $ref: '#/components/schemas/SessionAgentSettingsCapabilities'
+        currentModelEfforts:
+          items:
+            type: string
+          type: array
         currentTurn:
           $ref: '#/components/schemas/AgentSettingsTurnSnapshot'
         effective:

@@ -29,7 +29,7 @@ export function AgentSettingsFailure({ snapshot, sessionId, hostId, terminated =
 	return <>
 		{failure && dismissed.data !== failure.id && <div role="alert" className="space-y-1 rounded-md border border-destructive/30 p-2 text-xs text-destructive [overflow-wrap:anywhere]">
 			<p className="font-medium">{t("agentSettings.failureTitle")}</p>
-			<p>{t(failure.errorCategory ? reasonKeys[failure.errorCategory] : "agentSettings.failureUnknown")}</p>
+			<p>{t(failure.errorCode === "AGENT_SETTINGS_READ_TIMEOUT" ? "agentSettings.failureReadTimeout" : failure.errorCategory ? reasonKeys[failure.errorCategory] : "agentSettings.failureUnknown")}</p>
 			<p>{t("agentSettings.preference")}: {failure.target.model || fallback} · {failure.target.effort || fallback} · {t("agentSettings.fast")} {failure.target.fastMode}</p>
 			<p className="font-mono">{failure.errorCode || "AGENT_SETTINGS_FAILED"} · {failure.id}{failure.requestId ? ` · ${failure.requestId}` : ""}</p>
 			<p className="text-muted-foreground">{t(canRetry ? "agentSettings.failureNext" : "agentSettings.failureKeepOnly")}</p>

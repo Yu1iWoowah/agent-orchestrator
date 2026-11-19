@@ -145,6 +145,17 @@ func (c *Controller) beginSettingsAttemptLocked(ctx context.Context, cold bool) 
 		if a.EffectPending {
 			return ports.ErrAgentSettingsConflict
 		}
+		if a.OperationID == op.ID && c.codexSettingsReadWaiting(a) && !a.Deadline.After(c.now()) && op.Phase == domain.AgentSettingsPending && op.StartedAt == nil {
+			if expirer, ok := c.store.(interface {
+				ExpireAgentSettingsRead(context.Context, domain.AgentSettingsReconciliation, int64, time.Time) error
+			}); ok {
+				if err := expirer.ExpireAgentSettingsRead(ctx, *a, op.Version, c.now()); err != nil {
+					return err
+				}
+				c.settingsAttempt = nil
+				return nil
+			}
+		}
 		if a.Phase == "blocked" && a.RetryCount >= 3 {
 			return ports.ErrAgentSettingsCapabilitiesUnavailable
 		}
@@ -273,17 +284,37 @@ func (c *Controller) retrySettingsAttemptLocked(ctx context.Context) error {
 
 func (c *Controller) settingsRetryDelayLocked() time.Duration {
 	a := c.settingsAttempt
-	if a == nil || a.EffectPending || a.Phase != "blocked" || a.RetryCount >= 3 {
+	if a == nil || a.EffectPending {
+		return 0
+	}
+	remaining := max(time.Nanosecond, a.Deadline.Sub(c.now()))
+	if c.codexSettingsReadWaiting(a) && a.Phase == "waiting_idle" {
+		return min(time.Second, remaining)
+	}
+	if a.Phase != "blocked" {
 		return 0
 	}
 	if a.SafeCause != "capabilities_unavailable" && a.SafeCause != "timeout" && a.ProviderErrorCode != "transport_unavailable" {
 		return 0
 	}
-	delay := [...]time.Duration{time.Second, 5 * time.Second, 15 * time.Second}[a.RetryCount]
-	if !a.Deadline.After(c.now().Add(delay)) {
-		return 0
+	if a.RetryCount < 3 {
+		delay := [...]time.Duration{time.Second, 5 * time.Second, 15 * time.Second}[a.RetryCount]
+		if delay < remaining {
+			return delay
+		}
 	}
-	return delay
+	if c.codexSettingsReadWaiting(a) {
+		return remaining
+	}
+	return 0
+}
+
+func (c *Controller) codexSettingsReadWaiting(a *domain.AgentSettingsReconciliation) bool {
+	if c.harness != domain.HarnessCodex || a == nil || a.EffectPending || a.HistoricalApplied != nil || a.ActionKey != "" {
+		return false
+	}
+	return a.Phase == "waiting_idle" && a.Step == "waiting_idle" ||
+		a.Phase == "blocked" && (a.SafeCause == "capabilities_unavailable" || a.SafeCause == "timeout" || a.ProviderErrorCode == "transport_unavailable")
 }
 
 func (c *Controller) waitSettingsRetry(delay time.Duration) bool {
@@ -319,15 +350,17 @@ func (c *Controller) runSettingsRechecks() {
 				continue
 			}
 			next := *c.settingsAttempt
-			next.RetryCount++
-			next.Phase = "observing"
-			next.LastProgressAt = c.now()
-			ctx, cancel := c.deadlineContext(context.Background(), 10*time.Second)
-			err := c.saveSettingsAttemptLocked(ctx, next)
-			cancel()
-			if err != nil {
-				c.sendMu.Unlock()
-				return
+			if next.Phase == "blocked" && next.Deadline.After(c.now()) && next.RetryCount < 3 {
+				next.RetryCount++
+				next.Phase = "observing"
+				next.LastProgressAt = c.now()
+				ctx, cancel := c.deadlineContext(context.Background(), 10*time.Second)
+				err := c.saveSettingsAttemptLocked(ctx, next)
+				cancel()
+				if err != nil {
+					c.sendMu.Unlock()
+					return
+				}
 			}
 		}
 		ctx, cancel := c.deadlineContext(context.Background(), 30*time.Second)
@@ -336,7 +369,7 @@ func (c *Controller) runSettingsRechecks() {
 			err = c.drainLocked(ctx, true)
 		}
 		cancel()
-		retry := err != nil && c.settingsRetryDelayLocked() > 0
+		retry := (blocked || err != nil) && c.settingsRetryDelayLocked() > 0
 		c.sendMu.Unlock()
 		if !retry {
 			return
@@ -404,6 +437,7 @@ func (c *Controller) settingsRPC(ctx context.Context, step string, effect bool, 
 		if next.EffectPending {
 			return ports.ErrAgentSettingsConflict
 		}
+		firstIdleProbe := next.Step == "observing" && next.LastSuccessfulStep == "" && next.Phase == "waiting_idle"
 		next.Step, next.EffectPending = step, effect
 		next.Phase = "observing"
 		if effect {
@@ -413,7 +447,7 @@ func (c *Controller) settingsRPC(ctx context.Context, step string, effect bool, 
 			next.Phase = "verifying"
 		} else if step == "waiting_idle" {
 			next.Phase = "waiting_idle"
-			if !next.Deadline.After(c.now()) {
+			if !next.Deadline.After(c.now()) && (c.harness != domain.HarnessCodex || firstIdleProbe) {
 				next.Deadline = c.now().Add(30 * time.Second)
 				next.ClaimUntil = next.Deadline
 			}
@@ -424,7 +458,7 @@ func (c *Controller) settingsRPC(ctx context.Context, step string, effect bool, 
 		}
 	}
 	limit := 10 * time.Second
-	if a := c.settingsAttempt; active && a.Phase != "waiting_idle" {
+	if a := c.settingsAttempt; active && (a.Phase != "waiting_idle" || c.harness == domain.HarnessCodex) {
 		limit = min(limit, a.Deadline.Sub(c.now()))
 	}
 	stepCtx, cancel := c.deadlineContext(ctx, limit)
@@ -462,18 +496,28 @@ func (c *Controller) settingsRPC(ctx context.Context, step string, effect bool, 
 	return err
 }
 
-func (c *Controller) qualifySettingsEvidenceLocked(ctx context.Context, target *domain.AgentSettings) error {
+func (c *Controller) qualifySettingsEvidenceLocked(ctx context.Context, target *domain.AgentSettings, plan ...domain.AgentSettingsProviderPlan) error {
 	if c.settingsAttempt == nil || !c.settingsAttemptRunning {
 		return nil
 	}
 	provider, ok := c.conv.(ports.ChatAgentSettingsReconciliationEvidence)
-	if !ok {
+	sticky, hasPlanEvidence := c.conv.(ports.ChatAgentSettingsPlanEvidence)
+	hasPlanEvidence = hasPlanEvidence && c.harness == domain.HarnessClaudeCode
+	if !ok && !hasPlanEvidence {
 		return ports.ErrAgentSettingsCapabilitiesUnavailable
 	}
 	var proof ports.AgentSettingsReconciliationEvidence
 	err := c.settingsRPC(ctx, "observing", false, func(ctx context.Context) error {
 		var err error
-		proof, err = provider.ReconciliationEvidence(ctx, c.settingsObservationOwner)
+		if hasPlanEvidence {
+			var expected *domain.AgentSettingsProviderPlan
+			if len(plan) > 0 {
+				expected = &plan[0]
+			}
+			proof, err = sticky.ReconciliationPlanEvidence(ctx, c.settingsObservationOwner, expected)
+		} else {
+			proof, err = provider.ReconciliationEvidence(ctx, c.settingsObservationOwner)
+		}
 		return err
 	})
 	if err != nil {
@@ -490,6 +534,16 @@ func (c *Controller) qualifySettingsEvidenceLocked(ctx context.Context, target *
 		next.ObservationAvailability = "unknown"
 		next.MissingEvidence = []string{}
 	case "provider_current":
+		if hasPlanEvidence && proof.Native != nil && proof.ProviderEpoch != "" && proof.Permission != "" {
+			if target != nil && len(plan) != 1 {
+				return ports.ErrAgentSettingsCapabilitiesUnavailable
+			}
+			next.ProviderEpoch = proof.ProviderEpoch
+			next.Observed = nil
+			next.ObservationAvailability = "unknown"
+			next.MissingEvidence = []string{}
+			break
+		}
 		if proof.ProviderEpoch == "" || proof.Settings == nil || proof.Settings.Validate() != nil {
 			return ports.ErrAgentSettingsCapabilitiesUnavailable
 		}

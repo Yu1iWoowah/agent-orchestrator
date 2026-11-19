@@ -45,6 +45,52 @@ func TestHostFromPreviousBootNeedsPositiveProof(t *testing.T) {
 	}
 }
 
+func TestProviderOwnershipRequiresConsistentPreviousBootRecords(t *testing.T) {
+	now := time.Date(2026, 11, 18, 9, 48, 13, 0, time.UTC)
+	stubBoot(t, "boot-now", now.Add(-time.Hour), nil)
+	const sessionID = "provider-ownership"
+	pid := os.Getpid() // A live PID may have been reused since the previous boot.
+	for _, tc := range []struct {
+		name, descriptorBoot, lock string
+		spawnPID                   int
+		want                       ProviderOwnership
+	}{
+		{name: "no records", want: ProviderOwnershipUnrecorded},
+		{name: "confirmed previous boot", descriptorBoot: "boot-old", lock: strconv.Itoa(pid) + " boot-old", want: ProviderOwnershipPreviousBoot},
+		{name: "same boot", descriptorBoot: "boot-now", want: ProviderOwnershipUncertain},
+		{name: "current lock", descriptorBoot: "boot-old", lock: strconv.Itoa(pid) + " boot-now", want: ProviderOwnershipUncertain},
+		{name: "current spawn", descriptorBoot: "boot-old", spawnPID: pid, want: ProviderOwnershipUncertain},
+		{name: "unattributed spawn", spawnPID: pid, want: ProviderOwnershipUncertain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.descriptorBoot != "" {
+				if err := writeDescriptor(root, Descriptor{Version: ProtocolVersion, SessionID: sessionID, Address: "127.0.0.1:1",
+					Token: "fixture", PID: pid, StartedAt: now, BootID: tc.descriptorBoot}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.lock != "" {
+				path, err := lockPath(root, sessionID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(tc.lock), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.spawnPID != 0 {
+				if err := recordSpawn(root, sessionID, tc.spawnPID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := ProbeProviderOwnership(root, sessionID); got != tc.want {
+				t.Fatalf("provider ownership = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A reboot leaves host.json and host.lock naming a PID that is now an
 // unrelated live process and an address that refuses: the records are proven
 // stale by boot identity, so the lock is reclaimed and a new host starts
