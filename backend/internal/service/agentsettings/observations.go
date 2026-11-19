@@ -54,7 +54,7 @@ func (s *Service) readObservations(ctx context.Context, snapshot *Snapshot) erro
 	}
 	owner := receipt.Owner
 	now := s.now()
-	if options := receipt.EffortOptions; snapshot.Settings.Model == "" && options != nil {
+	if options := receipt.EffortOptions; snapshot.Settings.Model == "" && effortEvidenceReason(options) == "" {
 		snapshot.CurrentModelEfforts = options.Efforts
 	}
 	if turn := receipt.CurrentTurn; turn != nil {
@@ -104,10 +104,20 @@ func (s *Service) qualifiedObservation(ctx context.Context, settings domain.Sess
 	if current != settings {
 		return receipt, "observation_owner_changed", nil
 	}
-	if options := receipt.EffortOptions; options != nil && (settings.Harness != domain.HarnessClaudeCode || settings.Mode != domain.SessionModeChat || options.Model == "" || options.Permission == "" || options.ObservedAt.IsZero() || options.ObservedAt.After(s.now())) {
+	if options := receipt.EffortOptions; options != nil && (settings.Harness != domain.HarnessClaudeCode || settings.Mode != domain.SessionModeChat || options.ObservedAt.IsZero() || options.ObservedAt.After(s.now())) {
 		receipt.EffortOptions = nil
 	}
 	return receipt, "", nil
+}
+
+func effortEvidenceReason(options *domain.AgentSettingsEffortOptions) string {
+	if options == nil || options.Model == "" {
+		return "effort_preimage_unverified"
+	}
+	if options.Permission == "" {
+		return "effort_permission_unverified"
+	}
+	return ""
 }
 
 func observationOwnerMatches(owner domain.AgentSettingsOwner, settings domain.SessionAgentSettings) bool {

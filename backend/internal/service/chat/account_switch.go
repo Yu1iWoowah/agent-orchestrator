@@ -33,10 +33,7 @@ func (s *Service) accountMoveAwaitingTarget(ctx context.Context, id domain.Sessi
 // committedAccountMove recognizes the durable account move across a restart
 // between binding commit and the first drain. The current account is supplied
 // by launch resolution, never inferred from the old transition.
-func (s *Service) committedAccountMove(ctx context.Context, id domain.SessionID, account string) (bool, error) {
-	if account == "" {
-		return false, nil
-	}
+func (s *Service) committedAccountMove(ctx context.Context, id domain.SessionID, account, providerConversationID string) (bool, error) {
 	reader, ok := s.store.(interface {
 		GetLatestSessionInterfaceTransition(context.Context, domain.SessionID) (domain.SessionInterfaceTransition, bool, error)
 	})
@@ -44,9 +41,14 @@ func (s *Service) committedAccountMove(ctx context.Context, id domain.SessionID,
 		return false, nil
 	}
 	move, found, err := reader.GetLatestSessionInterfaceTransition(ctx, id)
-	return found && move.AccountMove() && move.TargetAccountID == account &&
-		(move.Phase == domain.SessionInterfaceTransitionCompleted ||
-			move.Phase == domain.SessionInterfaceTransitionRecovery && move.ErrorCode == "DAEMON_RESTARTED"), err
+	if err != nil || !found || !move.AccountMove() || move.SourceMode != domain.SessionModeChat ||
+		move.TargetMode != domain.SessionModeChat || move.TargetAccountID != account ||
+		(move.NativeConversationID != "" && move.NativeConversationID != providerConversationID) {
+		return false, err
+	}
+	return move.Phase == domain.SessionInterfaceTransitionCompleted ||
+		move.Phase == domain.SessionInterfaceTransitionRecovery &&
+			(move.ErrorCode == "DAEMON_RESTARTED" || move.ErrorCode == "TRANSITION_STATE_FAILED"), nil
 }
 
 // MarkAccountSwitch records that the turn the session's account move stopped

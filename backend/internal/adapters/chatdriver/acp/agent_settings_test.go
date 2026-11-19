@@ -161,6 +161,15 @@ func TestInheritedClaudeEffortReceiptRequiresOfferedResetSelector(t *testing.T) 
 	}
 }
 
+func TestInheritedClaudeEffortReceiptDistinguishesUnverifiedPermission(t *testing.T) {
+	a := &settingsAgent{fakeAgent: &fakeAgent{}, model: "old", effort: "high", fast: "off", permission: "unadvertised"}
+	c := settingsConversation(t, a)
+	options := c.(ports.ChatAgentSettingsEffortObserver).AgentSettingsEffortOptions()
+	if options == nil || options.Model != "old" || options.Permission != "" || len(options.Efforts) != 0 || options.ResetSelector != "" {
+		t.Fatalf("unverified permission must not qualify any effort choice: %+v", options)
+	}
+}
+
 func TestJournalledACPSettingsUsesPostModelCatalogAndOrderedReceipts(t *testing.T) {
 	a := &settingsAgent{fakeAgent: &fakeAgent{}, model: "old", effort: "high", fast: "on", permission: "auto"}
 	c := settingsConversation(t, a)

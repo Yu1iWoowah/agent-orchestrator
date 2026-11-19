@@ -254,8 +254,23 @@ func (c *Control) effortSelectionProof(ctx context.Context, current domain.Sessi
 	if err != nil {
 		return "", err
 	}
-	if unavailable != "" || receipt.EffortOptions == nil {
-		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
+	reason := unavailable
+	if reason == "" {
+		reason = effortEvidenceReason(receipt.EffortOptions)
+	}
+	if reason != "" {
+		message := "The provider has not confirmed the current model and effort. Wait for live settings evidence or select a verified model."
+		switch reason {
+		case "observation_owner_mismatch", "observation_owner_changed":
+			message = "The live effort options belong to a different attachment. Confirm the running account or select a verified model."
+		case "effort_permission_unverified":
+			message = "The provider has not confirmed its permission mode. Wait for live settings evidence or select a verified model."
+		case "observation_unavailable":
+			message = "Live effort options are unavailable. Reconnect to the provider or select a verified model."
+		}
+		refusal := apierr.New(apierr.KindUnavailable, "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE", message, map[string]any{"reasonCode": reason})
+		refusal.Cause = ports.ErrAgentSettingsCapabilitiesUnavailable
+		return "", refusal
 	}
 	options := receipt.EffortOptions
 	selector := string(effort)

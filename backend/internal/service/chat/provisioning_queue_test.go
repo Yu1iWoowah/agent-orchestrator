@@ -298,8 +298,13 @@ func TestSendDuringAccountMoveQueuesForTheNewAgent(t *testing.T) {
 }
 
 func TestAccountMoveDrainsOnlyWithTheCommittedTargetOwner(t *testing.T) {
-	for _, restart := range []bool{false, true} {
-		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
+	for _, recoveryCode := range []string{"", "DAEMON_RESTARTED", "TRANSITION_STATE_FAILED"} {
+		name := recoveryCode
+		if name == "" {
+			name = "normal_activation"
+		}
+		t.Run(name, func(t *testing.T) {
+			restart := recoveryCode != ""
 			ctx := t.Context()
 			st, id := openProvisioningStore(t, domain.SessionProvisionReady)
 			now := time.Now()
@@ -317,6 +322,22 @@ func TestAccountMoveDrainsOnlyWithTheCommittedTargetOwner(t *testing.T) {
 			bind("old-account")
 			startAccountMove(t, st, id, domain.SessionInterfaceTransitionSourceStopped)
 			conversation := newFakeConversation()
+			var providerID string
+			if restart {
+				providerID = conversation.ProviderConversationID()
+				rec, found, err := st.GetSession(ctx, id)
+				if err != nil || !found {
+					t.Fatalf("read fixture session: %v, %v", found, err)
+				}
+				rec.Metadata.ProviderConversationID = providerID
+				rec.Metadata.ControllerGeneration = "target-before-reconnect"
+				if err := st.UpdateSession(ctx, rec); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := st.CreateConversation(ctx, "account-move-root", domain.ConversationScopeSession, testProject, id, now); err != nil {
+					t.Fatal(err)
+				}
+			}
 			svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Reader: fullSnapshotReader(st), Drivers: fakeRegistry{driver: fakeDriver{conv: conversation}}, Log: slog.New(slog.DiscardHandler), NewID: sequentialIDs("account-move")})
 			t.Cleanup(func() { _ = svc.Stop(context.Background(), id) })
 			queued, err := svc.Send(ctx, id, ports.ChatUserMessage{Text: "post-switch task", ClientMessageID: "during-move"})
@@ -325,7 +346,7 @@ func TestAccountMoveDrainsOnlyWithTheCommittedTargetOwner(t *testing.T) {
 			}
 			if restart {
 				bind("new-account")
-				moved, err := st.AdvanceSessionInterfaceTransition(ctx, "move-1", domain.SessionInterfaceTransitionSourceStopped, domain.SessionInterfaceTransitionRecovery, "", "DAEMON_RESTARTED", "", time.Now())
+				moved, err := st.AdvanceSessionInterfaceTransition(ctx, "move-1", domain.SessionInterfaceTransitionSourceStopped, domain.SessionInterfaceTransitionRecovery, providerID, recoveryCode, "", time.Now())
 				if err != nil || !moved {
 					t.Fatalf("persist restart recovery: %v, %v", moved, err)
 				}
@@ -333,6 +354,7 @@ func TestAccountMoveDrainsOnlyWithTheCommittedTargetOwner(t *testing.T) {
 			targetCtx := ports.WithAgentAccount(ctx, domain.ResolvedAgentAccount{AccountID: "new-account", Provider: domain.AgentAccountProviderCodex})
 			controller, err := svc.Start(targetCtx, chatsvc.StartConfig{
 				SessionID: id, ProjectID: testProject, Kind: domain.KindWorker, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+				ProviderConversationID: providerID,
 				ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
 					rec, _, err := st.GetSession(ctx, id)
 					if err != nil {
@@ -360,9 +382,12 @@ func TestAccountMoveDrainsOnlyWithTheCommittedTargetOwner(t *testing.T) {
 				t.Fatalf("provider did not receive the accepted input once: %+v", got)
 			}
 			sent, err := st.TurnByID(ctx, queued.ID)
-			if err != nil || sent.AgentSettings == nil || sent.AgentSettings.Owner == nil ||
+			if err != nil || sent.State != domain.TurnStateRunning || sent.AgentSettings == nil || sent.AgentSettings.Owner == nil ||
 				sent.AgentSettings.Owner.AccountID != "new-account" || sent.AgentSettings.Owner.ControllerGeneration != controller.Generation() || sent.AgentSettings.Revision == nil {
 				t.Fatalf("dispatched with an unqualified target owner: %+v, %v", sent.AgentSettings, err)
+			}
+			if restart && (sent.AgentSettings.Owner.ProviderConversationID != providerID || sent.AgentSettings.Owner.ControllerGeneration == "target-before-reconnect") {
+				t.Fatalf("reconnect did not dispatch from the new owner of the same conversation: %+v", sent.AgentSettings.Owner)
 			}
 		})
 	}

@@ -892,9 +892,14 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	}
 	waking := s.isWaking(cfg.SessionID)
 	committedAccountMove := false
-	if sessionFound && owner.Kind == domain.ConversationOwnerSession && settingsAccount == executionAccount {
+	if sessionFound && !sessionRecord.IsTerminated && owner.Kind == domain.ConversationOwnerSession &&
+		settingsAccount != "" && settingsAccount == executionAccount && sessionRecord.Metadata.ControllerGeneration != "" &&
+		cfg.ProviderSwitch == nil && cfg.ProviderHandoff == nil && providerHandleOwnedByActiveBranch &&
+		activeBranch.SessionID == cfg.SessionID && cfg.ProviderConversationID != "" &&
+		cfg.ProviderConversationID == sessionRecord.Metadata.ProviderConversationID &&
+		cfg.ProviderConversationID == activeBranch.ProviderConversationID {
 		var err error
-		committedAccountMove, err = s.committedAccountMove(ctx, cfg.SessionID, executionAccount)
+		committedAccountMove, err = s.committedAccountMove(ctx, cfg.SessionID, executionAccount, cfg.ProviderConversationID)
 		if err != nil {
 			return nil, fmt.Errorf("read account move before starting Chat: %w", err)
 		}
@@ -1064,9 +1069,9 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		// A target that has not answered yet still needs its standing context, though
 		// the source's turns come before it.
 		unanswered := s.branchUnanswered(ctx, cfg.SessionID, conversation.ID, activeBranch)
-		// Only replacement's one-shot continuity check forbids all fallback.
-		// Ordinary handoff/version recovery retains its proven fresh policy.
-		freshIfMissing = (freshIfMissing || unanswered) && !cfg.DisableFreshProviderFallback
+		// Replacement and a committed account move depend on continuing the
+		// same provider conversation. Other resumes keep their fresh policy.
+		freshIfMissing = (freshIfMissing || unanswered) && !cfg.DisableFreshProviderFallback && !committedAccountMove
 		conv, err = resume(ctx, ports.ChatResumeConfig{
 			SessionID:              hostID,
 			ProviderConversationID: cfg.ProviderConversationID,

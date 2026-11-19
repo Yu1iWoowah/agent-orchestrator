@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
@@ -137,11 +138,27 @@ func TestClaudeInheritedEffortRequiresOptionsFromTheCurrentAttachment(t *testing
 			}
 			high := domain.AgentEffortSelection("high")
 			change := Change{ExpectedRevision: &current.Revision, IdempotencyKey: "native-effort", Settings: domain.AgentSettingsPatch{Effort: &high}}
-			c.core.SetObservationSource(observationSource{receipt})
-			if _, err := c.Change(t.Context(), Caller{}, rec.ID, change); !hasCode(err, "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE") {
-				t.Fatalf("foreign options authorized admission: %v", err)
+			for _, tc := range []struct {
+				owner      domain.AgentSettingsOwner
+				permission string
+				reason     string
+				message    string
+			}{
+				{stale, "auto", "observation_owner_mismatch", "The live effort options belong to a different attachment. Confirm the running account or select a verified model."},
+				{owner, "", "effort_permission_unverified", "The provider has not confirmed its permission mode. Wait for live settings evidence or select a verified model."},
+			} {
+				receipt.Owner = tc.owner
+				receipt.EffortOptions.Permission = tc.permission
+				c.core.SetObservationSource(observationSource{receipt})
+				_, err := c.Change(t.Context(), Caller{}, rec.ID, change)
+				var envelope *apierr.Error
+				if !errors.As(err, &envelope) || envelope.Kind != apierr.KindUnavailable || envelope.Code != "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE" ||
+					envelope.Details["reasonCode"] != tc.reason || envelope.Message != tc.message {
+					t.Errorf("%s: got %#v, want an actionable refusal", tc.reason, err)
+				}
 			}
 			receipt.Owner = owner
+			receipt.EffortOptions.Permission = "auto"
 			c.core.SetObservationSource(observationSource{receipt})
 			op, err := c.Change(t.Context(), Caller{}, rec.ID, change)
 			if err != nil || op.Phase != domain.AgentSettingsPending || op.Target.Model != "" || op.Target.Effort != high {

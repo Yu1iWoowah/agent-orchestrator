@@ -12,15 +12,19 @@ import (
 )
 
 func (m *Manager) beginAccountUses(ctx context.Context, ids ...string) (func(), error) {
+	if guard, ok := m.agentAccounts.(ports.AgentAccountUseGuard); ok {
+		return guard.AcquireAccountUses(ctx, ids...)
+	}
+	return func() {}, nil
+}
+
+func (m *Manager) beginAccountLaunchUses(ctx context.Context, ids ...string) (func(), error) {
 	if guard, ok := m.agentAccounts.(interface {
 		AcquireAccountLaunchUses(context.Context, ...string) (func(), error)
 	}); ok {
 		return guard.AcquireAccountLaunchUses(ctx, ids...)
 	}
-	if guard, ok := m.agentAccounts.(ports.AgentAccountUseGuard); ok {
-		return guard.AcquireAccountUses(ctx, ids...)
-	}
-	return func() {}, nil
+	return m.beginAccountUses(ctx, ids...)
 }
 
 // Share ownership transfer with the existing harness guard, including async
@@ -30,7 +34,7 @@ func (m *Manager) beginHarnessAndAccountUse(ctx context.Context, harness domain.
 	if err != nil {
 		return nil, err
 	}
-	releaseAccount, err := m.beginAccountUses(ctx, accountID)
+	releaseAccount, err := m.beginAccountLaunchUses(ctx, accountID)
 	if err != nil {
 		releaseHarness()
 		return nil, err

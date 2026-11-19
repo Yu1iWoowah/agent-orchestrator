@@ -16,12 +16,15 @@ func (c *conversation) AgentSettingsEffortOptions() *domain.AgentSettingsEffortO
 		return nil
 	}
 	native, permission := nativeSettings(c.settingsReceipts)
-	if native.Model == "" || permission == "" || !offeredNativeSetting(c.settingsReceipts, "model", native.Model) || !offeredNativeSetting(c.settingsReceipts, "mode", permission) {
+	if native.Model == "" || !offeredNativeSetting(c.settingsReceipts, "model", native.Model) {
 		return nil
 	}
 	for _, option := range c.settingsReceipts {
 		if option.ID != "effort" || !choiceOffered(option.Choices, native.Effort) {
 			continue
+		}
+		if permission == "" || !offeredNativeSetting(c.settingsReceipts, "mode", permission) {
+			return &domain.AgentSettingsEffortOptions{ObservedAt: c.settingsObservedAt, Model: native.Model}
 		}
 		result := &domain.AgentSettingsEffortOptions{ObservedAt: c.settingsObservedAt, Model: native.Model, Permission: permission}
 		if reset := c.agentSettingsDefaults["effort"]; reset != "" && choiceOffered(option.Choices, reset) {

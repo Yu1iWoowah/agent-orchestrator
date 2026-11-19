@@ -4232,7 +4232,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	if accountErr != nil {
 		return RestoreResult{}, accountErr
 	}
-	releaseAccount, accountErr := m.beginAccountUses(ctx, accountID)
+	releaseAccount, accountErr := m.beginAccountLaunchUses(ctx, accountID)
 	if accountErr != nil {
 		return RestoreResult{}, accountErr
 	}
