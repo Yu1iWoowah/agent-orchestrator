@@ -1597,6 +1597,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		}
 		controller.strictReplacementReplay = &replacementReplayProof{owner: current.ControllerOwner(), capabilityVerifier: launchVerifier}
 	}
+	s.bindControllerAdapter(controller)
 	s.mu.Lock()
 	s.publishControllerLocked(owner, controller)
 	// A committed reservation is consumed. Internal controller restarts must
@@ -1671,16 +1672,21 @@ func cleanupUnpublishedConversation(conv ports.ChatConversation, fresh bool) err
 	return conv.Close()
 }
 
-// publishControllerLocked installs both controller indexes and binds session
-// adapter identity to the durable generation before making it visible.
+// Bind the adapter after committing the controller's generation and before
+// consuming its stream or dispatching input on that generation.
+func (s *Service) bindControllerAdapter(controller *Controller) {
+	epoch, ok := controller.conv.(ports.ChatDeliveryEpochReporter)
+	if !ok || controller.owner().Kind != domain.ConversationOwnerSession || s.bindAdapterOwner == nil {
+		return
+	}
+	conversation := controller.conversation
+	if err := s.bindAdapterOwner(controller.sessionID, epoch.OutboundProviderEpoch(), conversation.ID, conversation.ActiveBranchID, controller.Generation()); err != nil {
+		s.log.Warn("chat adapter lifetime ownership unavailable", "session", controller.sessionID)
+	}
+}
+
 func (s *Service) publishControllerLocked(owner domain.ConversationOwner, controller *Controller) {
 	if owner.Kind == domain.ConversationOwnerSession {
-		if epoch, ok := controller.conv.(ports.ChatDeliveryEpochReporter); ok && s.bindAdapterOwner != nil {
-			conversation := controller.conversation
-			if err := s.bindAdapterOwner(controller.sessionID, epoch.OutboundProviderEpoch(), conversation.ID, conversation.ActiveBranchID, controller.Generation()); err != nil {
-				s.log.Warn("chat adapter lifetime ownership unavailable", "session", controller.sessionID)
-			}
-		}
 		s.controllers[controller.sessionID] = controller
 	}
 	s.ownerControllers[owner] = controller

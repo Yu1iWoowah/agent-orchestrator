@@ -323,12 +323,55 @@ func TestColdShutdownRecoversAcceptedReceiptBeforeProviderBinding(t *testing.T) 
 		t.Fatalf("accepted receipt missing before reboot: %+v, %v", original, err)
 	}
 
-	cold := chatsvc.New(chatsvc.Options{Store: h.st, Sessions: h.st, PreviousBootEpoch: persistenthost.EpochFromPreviousBoot, Now: clock.Now})
-	if err := cold.ReconcilePreviousBootDeliveries(ctx); err != nil {
-		t.Fatalf("cold reconciliation of accepted, unbound turn: %v", err)
+	stale := original
+	stale.Version--
+	if err := h.st.SettlePreviousBootAcceptance(ctx, stale, original.Owner, clock.Now()); !errors.Is(err, ports.ErrAgentSettingsConflict) {
+		t.Fatalf("settlement with a stale version: %v", err)
 	}
-	if err := cold.PreflightShutdown(ctx); err != nil {
+	staleOwner := original.Owner
+	staleOwner.ControllerGeneration = "stale-controller"
+	if err := h.st.SettlePreviousBootAcceptance(ctx, original, staleOwner, clock.Now()); !errors.Is(err, ports.ErrAgentSettingsConflict) {
+		t.Fatalf("settlement with a stale owner: %v", err)
+	}
+	held, err := h.st.TurnByID(ctx, turn.ID)
+	if err != nil || held.ProviderTurnID != "" || held.State != domain.TurnStateRunning {
+		t.Fatalf("a rejected settlement changed the unbound turn: %s/%q, %v", held.State, held.ProviderTurnID, err)
+	}
+	const conflictingProviderID = "other-provider-turn"
+	if err := h.st.BindTurnToProvider(ctx, turn.ID, conflictingProviderID, clock.Now()); err != nil {
 		t.Fatal(err)
+	}
+	if err := h.st.SettlePreviousBootAcceptance(ctx, original, original.Owner, clock.Now()); !errors.Is(err, ports.ErrAgentSettingsConflict) {
+		t.Fatalf("settlement overwrote an existing provider binding: %v", err)
+	}
+	conflicting, err := h.st.TurnByID(ctx, turn.ID)
+	if err != nil || conflicting.ProviderTurnID != conflictingProviderID || conflicting.State != domain.TurnStateRunning {
+		t.Fatalf("a conflicting settlement changed the turn: %s/%q, %v", conflicting.State, conflicting.ProviderTurnID, err)
+	}
+	if err := h.st.BindTurnToProvider(ctx, turn.ID, "", clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := h.st.PendingChatDeliveries(ctx, testSession)
+	if err != nil || len(pending) != 1 || pending[0].ID != original.ID {
+		t.Fatalf("the rejected settlements changed the original hold: %+v, %v", pending, err)
+	}
+
+	cold := chatsvc.New(chatsvc.Options{Store: h.st, Sessions: h.st, PreviousBootEpoch: persistenthost.EpochFromPreviousBoot, Now: clock.Now})
+	requested := make(chan struct{})
+	router := httpd.NewRouterWithControl(config.Config{}, slog.New(slog.DiscardHandler), nil, httpd.APIDeps{}, httpd.ControlDeps{
+		RequestShutdown: func() { close(requested) }, ShutdownPreflight: cold.PreflightShutdown,
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/shutdown", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("cold POST /shutdown = %d %s; want 202", response.Code, response.Body.String())
+	}
+	select {
+	case <-requested:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cold POST /shutdown did not request shutdown")
 	}
 	saved, err := h.st.ChatDeliveryAttempt(ctx, testSession, original.ID)
 	if err != nil || !saved.ExecutionSettled || saved.ErrorCode != "CHAT_DELIVERY_HOST_GONE_INTERRUPTED" ||
@@ -338,6 +381,9 @@ func TestColdShutdownRecoversAcceptedReceiptBeforeProviderBinding(t *testing.T) 
 	after, err := h.st.TurnByID(ctx, turn.ID)
 	if err != nil || after.State != domain.TurnStateInterrupted || after.ProviderTurnID != original.Receipt.ProviderTurnID {
 		t.Fatalf("recovered turn = %s/%q, %v", after.State, after.ProviderTurnID, err)
+	}
+	if pending, err := h.st.PendingChatDeliveries(ctx, testSession); err != nil || len(pending) != 0 {
+		t.Fatalf("cold settlement left pending delivery: %+v, %v", pending, err)
 	}
 	if calls := conv.sendCallCount(); calls != 1 || cold.HasLiveChatController(testSession) {
 		t.Fatalf("cold settlement resumed the provider or sent again: %d sends", calls)

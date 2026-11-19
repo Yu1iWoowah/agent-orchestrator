@@ -85,6 +85,17 @@ func TestEditedBranchAdapterSettlesAfterDelayedExit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(hostDir, "adapter.json"), raw, 0600); err != nil {
 		t.Fatal(err)
 	}
+	replacement.onSend = func(string) {
+		owner, err := h.st.SessionAgentSettings(ctx, testSession)
+		if err != nil {
+			t.Errorf("read durable Edit owner before dispatch: %v", err)
+			return
+		}
+		record := filepath.Join(hostDir, "adapter-owner-"+owner.OwnerGeneration+".json")
+		if _, err := os.Stat(record); err != nil {
+			t.Errorf("adapter owner was not recorded before private Edit dispatch: %v", err)
+		}
+	}
 	edited, err := h.svc.EditMessage(ctx, testSession, original, ports.ChatUserMessage{Text: "edited", ClientMessageID: "edit-adapter"})
 	if err != nil {
 		t.Fatal(err)
@@ -125,6 +136,13 @@ func TestEditedBranchAdapterSettlesAfterDelayedExit(t *testing.T) {
 		snap, err := h.st.LoadConversationSnapshot(ctx, edited.Turn.ConversationID)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if snap.ActiveBranch.ID != edited.ActiveBranchID {
+			t.Fatalf("adapter sweep changed the active branch to %q", snap.ActiveBranch.ID)
+		}
+		oldTurn, err := h.st.TurnByID(ctx, original)
+		if err != nil || oldTurn.State != domain.TurnStateCompleted || oldTurn.ProviderTurnID != "provider-turn-1" {
+			t.Fatalf("adapter sweep changed the original branch's turn: %s/%q, %v", oldTurn.State, oldTurn.ProviderTurnID, err)
 		}
 		if got := findActivity(t, snap, approvalItem).Status; got != wantApproval {
 			t.Fatalf("edited approval after sweep = %s, want %s", got, wantApproval)
