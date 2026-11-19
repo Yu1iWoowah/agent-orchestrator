@@ -1663,10 +1663,7 @@ func Run(buildVersion string) (retErr error) {
 	var replacementReconcileDone <-chan struct{}
 	var retryPreviousBootDeliveries atomic.Bool
 	reconcileExitedAdapters := func(ctx context.Context) {
-		err := persistenthost.ReconcileExitedAdapters(ctx, cfg.DataDir, func(id domain.SessionID, generation string) bool {
-			c, err := chatSvc.Controller(id)
-			return err != nil || c.Generation() != generation || c.State() == ports.ChatControllerStopped
-		}, func(ctx context.Context, id domain.SessionID, conversation, branch, generation string) error {
+		err := persistenthost.ReconcileExitedAdapters(ctx, cfg.DataDir, chatSvc.AdapterGenerationStopped, func(ctx context.Context, id domain.SessionID, conversation, branch, generation string) error {
 			return store.SettleExitedChatAdapter(ctx, id, conversation, branch, generation, time.Now().UTC())
 		})
 		if err != nil && ctx.Err() == nil {

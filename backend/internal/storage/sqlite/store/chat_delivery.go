@@ -193,28 +193,33 @@ func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domai
 				continue
 			}
 			providerTurn := original.Receipt.ProviderTurnID
-			if turn.ProviderTurnID != providerTurn && (turn.ProviderTurnID != "" || turn.State != domain.TurnStateRunning) {
+			running := turn.State == domain.TurnStateRunning
+			reconnectFailed := turn.State == domain.TurnStateFailed && turn.CompletedAt.Valid && turn.ErrorMessage == reconnectUnconfirmedDelivery
+			needsBinding := turn.ProviderTurnID == "" && (running || reconnectFailed)
+			if turn.ProviderTurnID != providerTurn && !needsBinding {
 				return ports.ErrAgentSettingsConflict
 			}
 			if turn.State != domain.TurnStateCompleted {
 				code = "CHAT_DELIVERY_HOST_GONE_INTERRUPTED"
 			}
-			if turn.State == domain.TurnStateRunning {
+			if running || needsBinding {
 				if turn.ControllerGeneration != original.Owner.ControllerGeneration || turn.HandledBySessionID != original.SessionID || turn.BranchID != actor.BranchID {
 					return ports.ErrAgentSettingsConflict
 				}
-				if turn.ProviderTurnID == "" {
-					// Codex can persist acceptance before binding the primary turn.
-					if original.PreparedTurnID != "" && original.PreparedTurnID != providerTurn {
-						return ports.ErrAgentSettingsConflict
-					}
-					if err := q.BindConversationTurnProviderID(ctx, gen.BindConversationTurnProviderIDParams{
-						ID: turn.ID, ProviderTurnID: providerTurn,
-						StartedAt: sql.NullTime{Time: original.Receipt.ObservedAt, Valid: true},
-					}); err != nil {
-						return err
-					}
+			}
+			if needsBinding {
+				// Acceptance can precede the binding and survive live reconnect cleanup.
+				if original.PreparedTurnID != "" && original.PreparedTurnID != providerTurn {
+					return ports.ErrAgentSettingsConflict
 				}
+				if err := q.BindConversationTurnProviderID(ctx, gen.BindConversationTurnProviderIDParams{
+					ID: turn.ID, ProviderTurnID: providerTurn,
+					StartedAt: sql.NullTime{Time: original.Receipt.ObservedAt, Valid: running},
+				}); err != nil {
+					return err
+				}
+			}
+			if running {
 				if err := settleLostChatTurn(ctx, q, turn, at); err != nil {
 					return err
 				}

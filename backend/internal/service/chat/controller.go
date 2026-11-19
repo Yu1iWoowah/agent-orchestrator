@@ -2195,6 +2195,11 @@ func (c *Controller) dispatch(
 	claimed bool,
 	followers []string,
 ) (domain.ConversationTurn, error) {
+	select {
+	case <-c.stopped:
+		return c.preserveBeforeProviderIO(ctx, turnID, followers, requestedAt)
+	default:
+	}
 	if c.outboundQuiescing() {
 		return c.queuedDispatchReceipt(turnID, requestedAt), nil
 	}

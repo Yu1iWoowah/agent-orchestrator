@@ -21,6 +21,20 @@ import (
 )
 
 func TestEditedBranchAdapterSettlesAfterDelayedExit(t *testing.T) {
+	testEditedBranchAdapterSettlement(t, false)
+}
+
+func TestEditedBranchAdapterSweepWaitsForPrivateDispatch(t *testing.T) {
+	testEditedBranchAdapterSettlement(t, true)
+}
+
+type deferredBranchAdapterConversation struct{ *terminatingConversation }
+
+func (*deferredBranchAdapterConversation) StartDeferredTurn(string) error { return nil }
+func (*deferredBranchAdapterConversation) DiscardDeferredTurn(string)     {}
+
+func testEditedBranchAdapterSettlement(t *testing.T, exitBeforePublish bool) {
+	t.Helper()
 	const epoch = "replacement-adapter"
 	dataDir := t.TempDir()
 	source := newFakeConversation()
@@ -33,6 +47,10 @@ func TestEditedBranchAdapterSettlesAfterDelayedExit(t *testing.T) {
 	replacement.turnSeq = 100
 	replacement.outboundEpoch, replacement.deliveryEpoch = epoch, epoch
 	replacement.setCapabilities(caps)
+	var replacementDriver ports.ChatConversation = replacement
+	if exitBeforePublish {
+		replacementDriver = &deferredBranchAdapterConversation{replacement}
+	}
 	started := false
 	h := newHarnessWithConversationAndStoreForHarness(t, source, func(st *store.Store) chatsvc.Store { return st },
 		domain.HarnessClaudeCode, func(opts *chatsvc.Options) {
@@ -41,7 +59,7 @@ func TestEditedBranchAdapterSettlesAfterDelayedExit(t *testing.T) {
 					started = true
 					return source, nil
 				}
-				return replacement, nil
+				return replacementDriver, nil
 			}}}
 			opts.BindAdapterOwner = func(id domain.SessionID, epoch, conversation, branch, generation string) error {
 				return persistenthost.BindAdapterOwner(dataDir, id, epoch, conversation, branch, generation)
@@ -85,15 +103,46 @@ func TestEditedBranchAdapterSettlesAfterDelayedExit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(hostDir, "adapter.json"), raw, 0600); err != nil {
 		t.Fatal(err)
 	}
+	exitAdapter := func() {
+		t.Helper()
+		if err := release.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := adapter.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweep := func() error {
+		return persistenthost.ReconcileExitedAdapters(ctx, dataDir, h.svc.AdapterGenerationStopped,
+			func(ctx context.Context, id domain.SessionID, conversation, branch, generation string) error {
+				return h.st.SettleExitedChatAdapter(ctx, id, conversation, branch, generation, h.now())
+			})
+	}
+	var record string
 	replacement.onSend = func(string) {
 		owner, err := h.st.SessionAgentSettings(ctx, testSession)
 		if err != nil {
 			t.Errorf("read durable Edit owner before dispatch: %v", err)
 			return
 		}
-		record := filepath.Join(hostDir, "adapter-owner-"+owner.OwnerGeneration+".json")
+		record = filepath.Join(hostDir, "adapter-owner-"+owner.OwnerGeneration+".json")
 		if _, err := os.Stat(record); err != nil {
 			t.Errorf("adapter owner was not recorded before private Edit dispatch: %v", err)
+		}
+		if exitBeforePublish {
+			current, err := h.svc.Controller(testSession)
+			if err != nil || current.Generation() == owner.OwnerGeneration {
+				t.Fatalf("replacement was already published during its private dispatch: %v", err)
+			}
+			exitAdapter()
+			swept := make(chan error, 1)
+			go func() { swept <- sweep() }()
+			if err := <-swept; err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(record); err != nil {
+				t.Errorf("sweep consumed the owner during private Edit dispatch: %v", err)
+			}
 		}
 	}
 	edited, err := h.svc.EditMessage(ctx, testSession, original, ports.ChatUserMessage{Text: "edited", ClientMessageID: "edit-adapter"})
@@ -112,21 +161,9 @@ func TestEditedBranchAdapterSettlesAfterDelayedExit(t *testing.T) {
 		return len(s.Activities) == 1 && s.Activities[0].Status == domain.ActivityStatusPending
 	})
 	approvalItem := pending.Activities[0].ProviderItemID
-	replacement.emit(ports.ChatEvent{
-		Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerStopped, Err: ports.ErrChatRecoveryInconclusive,
-	})
-	if err := replacement.Close(); err != nil {
-		t.Fatal(err)
-	}
-	controller.Wait()
-
-	sweep := func(wantTurn domain.TurnState, wantApproval domain.ActivityStatus) {
+	sweepAndCheck := func(wantTurn domain.TurnState, wantApproval domain.ActivityStatus) {
 		t.Helper()
-		if err := persistenthost.ReconcileExitedAdapters(ctx, dataDir, func(domain.SessionID, string) bool {
-			return !h.svc.HasLiveChatController(testSession)
-		}, func(ctx context.Context, id domain.SessionID, conversation, branch, generation string) error {
-			return h.st.SettleExitedChatAdapter(ctx, id, conversation, branch, generation, h.now())
-		}); err != nil {
+		if err := sweep(); err != nil {
 			t.Fatal(err)
 		}
 		row, err := h.st.TurnByID(ctx, edited.Turn.ID)
@@ -148,14 +185,43 @@ func TestEditedBranchAdapterSettlesAfterDelayedExit(t *testing.T) {
 			t.Fatalf("edited approval after sweep = %s, want %s", got, wantApproval)
 		}
 	}
-	sweep(domain.TurnStateRunning, domain.ActivityStatusPending)
-	if err := release.Close(); err != nil {
+	replacement.emit(ports.ChatEvent{
+		Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerStopped, Err: ports.ErrChatRecoveryInconclusive,
+	})
+	waitFor := func(predicate func() bool, failure string) {
+		t.Helper()
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for !predicate() {
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				t.Fatal(failure)
+			}
+		}
+	}
+	if exitBeforePublish {
+		waitFor(func() bool { return controller.State() == ports.ChatControllerStopped }, "controller did not observe the stop event")
+		sweepAndCheck(domain.TurnStateRunning, domain.ActivityStatusPending)
+		if _, err := os.Stat(record); err != nil {
+			t.Errorf("sweep consumed the owner while the projector could still write: %v", err)
+		}
+	}
+	if err := replacement.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.Wait(); err != nil {
-		t.Fatal(err)
+	controller.Wait()
+	waitFor(func() bool {
+		return h.svc.AdapterGenerationStopped(testSession, controller.Generation())
+	}, "adapter generation did not retire after dispatch and projection")
+	if !exitBeforePublish {
+		sweepAndCheck(domain.TurnStateRunning, domain.ActivityStatusPending)
+		exitAdapter()
 	}
-	sweep(domain.TurnStateInterrupted, domain.ActivityStatusFailed)
+	sweepAndCheck(domain.TurnStateInterrupted, domain.ActivityStatusFailed)
+	if _, err := os.Stat(record); !os.IsNotExist(err) {
+		t.Fatalf("settled adapter owner record was not consumed: %v", err)
+	}
 	if calls := replacement.sendCallCount(); calls != 1 {
 		t.Fatalf("original edit sent %d times, want once", calls)
 	}

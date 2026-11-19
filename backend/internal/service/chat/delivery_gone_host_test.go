@@ -301,6 +301,12 @@ func (*cancelledBindingStore) BindTurnToProvider(context.Context, string, string
 }
 
 func TestColdShutdownRecoversAcceptedReceiptBeforeProviderBinding(t *testing.T) {
+	t.Run("running", func(t *testing.T) { testColdShutdownRecoversUnboundAcceptance(t, false) })
+	t.Run("after live reconnect", func(t *testing.T) { testColdShutdownRecoversUnboundAcceptance(t, true) })
+}
+
+func testColdShutdownRecoversUnboundAcceptance(t *testing.T, reconnect bool) {
+	t.Helper()
 	requireBootIdentity(t)
 	ctx := t.Context()
 	clock := newSettingsTestClock()
@@ -323,37 +329,83 @@ func TestColdShutdownRecoversAcceptedReceiptBeforeProviderBinding(t *testing.T) 
 		t.Fatalf("accepted receipt missing before reboot: %+v, %v", original, err)
 	}
 
-	stale := original
-	stale.Version--
-	if err := h.st.SettlePreviousBootAcceptance(ctx, stale, original.Owner, clock.Now()); !errors.Is(err, ports.ErrAgentSettingsConflict) {
-		t.Fatalf("settlement with a stale version: %v", err)
-	}
-	staleOwner := original.Owner
-	staleOwner.ControllerGeneration = "stale-controller"
-	if err := h.st.SettlePreviousBootAcceptance(ctx, original, staleOwner, clock.Now()); !errors.Is(err, ports.ErrAgentSettingsConflict) {
-		t.Fatalf("settlement with a stale owner: %v", err)
-	}
-	held, err := h.st.TurnByID(ctx, turn.ID)
-	if err != nil || held.ProviderTurnID != "" || held.State != domain.TurnStateRunning {
-		t.Fatalf("a rejected settlement changed the unbound turn: %s/%q, %v", held.State, held.ProviderTurnID, err)
-	}
-	const conflictingProviderID = "other-provider-turn"
-	if err := h.st.BindTurnToProvider(ctx, turn.ID, conflictingProviderID, clock.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.st.SettlePreviousBootAcceptance(ctx, original, original.Owner, clock.Now()); !errors.Is(err, ports.ErrAgentSettingsConflict) {
-		t.Fatalf("settlement overwrote an existing provider binding: %v", err)
-	}
-	conflicting, err := h.st.TurnByID(ctx, turn.ID)
-	if err != nil || conflicting.ProviderTurnID != conflictingProviderID || conflicting.State != domain.TurnStateRunning {
-		t.Fatalf("a conflicting settlement changed the turn: %s/%q, %v", conflicting.State, conflicting.ProviderTurnID, err)
-	}
-	if err := h.st.BindTurnToProvider(ctx, turn.ID, "", clock.Now()); err != nil {
-		t.Fatal(err)
+	if !reconnect {
+		stale := original
+		stale.Version--
+		if err := h.st.SettlePreviousBootAcceptance(ctx, stale, original.Owner, clock.Now()); !errors.Is(err, ports.ErrAgentSettingsConflict) {
+			t.Fatalf("settlement with a stale version: %v", err)
+		}
+		staleOwner := original.Owner
+		staleOwner.ControllerGeneration = "stale-controller"
+		if err := h.st.SettlePreviousBootAcceptance(ctx, original, staleOwner, clock.Now()); !errors.Is(err, ports.ErrAgentSettingsConflict) {
+			t.Fatalf("settlement with a stale owner: %v", err)
+		}
+		held, err := h.st.TurnByID(ctx, turn.ID)
+		if err != nil || held.ProviderTurnID != "" || held.State != domain.TurnStateRunning {
+			t.Fatalf("a rejected settlement changed the unbound turn: %s/%q, %v", held.State, held.ProviderTurnID, err)
+		}
+		const conflictingProviderID = "other-provider-turn"
+		if err := h.st.BindTurnToProvider(ctx, turn.ID, conflictingProviderID, clock.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.st.SettlePreviousBootAcceptance(ctx, original, original.Owner, clock.Now()); !errors.Is(err, ports.ErrAgentSettingsConflict) {
+			t.Fatalf("settlement overwrote an existing provider binding: %v", err)
+		}
+		conflicting, err := h.st.TurnByID(ctx, turn.ID)
+		if err != nil || conflicting.ProviderTurnID != conflictingProviderID || conflicting.State != domain.TurnStateRunning {
+			t.Fatalf("a conflicting settlement changed the turn: %s/%q, %v", conflicting.State, conflicting.ProviderTurnID, err)
+		}
+		if err := h.st.BindTurnToProvider(ctx, turn.ID, "", clock.Now()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	pending, err := h.st.PendingChatDeliveries(ctx, testSession)
 	if err != nil || len(pending) != 1 || pending[0].ID != original.ID {
 		t.Fatalf("the rejected settlements changed the original hold: %+v, %v", pending, err)
+	}
+
+	wantState := domain.TurnStateInterrupted
+	var reconnectProvider *reconnectedReceiptConversation
+	var reconnectTurn domain.ConversationTurn
+	if reconnect {
+		// Close the old daemon's attachment without letting ordinary projector
+		// cleanup settle its work. The first reconnect is still on the same boot.
+		conv.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerStopped, Err: ports.ErrChatRecoveryInconclusive})
+		if err := conv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		h.ctrl.Wait()
+		reconnectProvider = &reconnectedReceiptConversation{receiptConversation: &receiptConversation{
+			terminatingConversation: &terminatingConversation{fakeConversation: newFakeConversation()},
+		}}
+		reconnectProvider.outboundEpoch = previousBootEpoch
+		reconnected := chatsvc.New(chatsvc.Options{
+			Store: h.st, Sessions: h.st, Reader: fullSnapshotReader(h.st),
+			Drivers: fakeRegistry{driver: fakeDriver{conv: reconnectProvider}},
+			Now:     clock.Now, After: clock.After, NewID: func() string { return "same-boot-reconnect" },
+		})
+		controller, err := reconnected.Start(ctx, chatsvc.StartConfig{
+			SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+			WorkspacePath: t.TempDir(), ProviderConversationID: conv.ProviderConversationID(),
+		})
+		if err != nil {
+			t.Fatalf("same-boot live reconnect: %v", err)
+		}
+		t.Cleanup(func() { _ = reconnectProvider.Close(); controller.Wait() })
+		reconnectTurn, err = h.st.TurnByID(ctx, turn.ID)
+		if err != nil || reconnectTurn.State != domain.TurnStateFailed || reconnectTurn.ProviderTurnID != "" || reconnectTurn.StartedAt != nil || reconnectTurn.CompletedAt == nil {
+			t.Fatalf("reconnect cleanup turn = %+v, %v; want failed without a binding", reconnectTurn, err)
+		}
+		stillHeld, err := h.st.ChatDeliveryAttempt(ctx, testSession, original.ID)
+		if err != nil || stillHeld.ExecutionSettled || stillHeld.Receipt == nil || *stillHeld.Receipt != *original.Receipt {
+			t.Fatalf("same-boot reconnect changed the receipt or hold: %+v, %v", stillHeld, err)
+		}
+		reconnectProvider.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerStopped, Err: ports.ErrChatRecoveryInconclusive})
+		if err := reconnectProvider.Close(); err != nil {
+			t.Fatal(err)
+		}
+		controller.Wait()
+		wantState = domain.TurnStateFailed
 	}
 
 	cold := chatsvc.New(chatsvc.Options{Store: h.st, Sessions: h.st, PreviousBootEpoch: persistenthost.EpochFromPreviousBoot, Now: clock.Now})
@@ -379,14 +431,20 @@ func TestColdShutdownRecoversAcceptedReceiptBeforeProviderBinding(t *testing.T) 
 		t.Fatalf("cold settlement changed the original receipt: %+v, %v", saved, err)
 	}
 	after, err := h.st.TurnByID(ctx, turn.ID)
-	if err != nil || after.State != domain.TurnStateInterrupted || after.ProviderTurnID != original.Receipt.ProviderTurnID {
+	if err != nil || after.State != wantState || after.ProviderTurnID != original.Receipt.ProviderTurnID {
 		t.Fatalf("recovered turn = %s/%q, %v", after.State, after.ProviderTurnID, err)
+	}
+	if reconnect && (after.ErrorMessage != reconnectTurn.ErrorMessage || after.StartedAt != nil || after.CompletedAt == nil || !reconnectTurn.CompletedAt.Equal(*after.CompletedAt)) {
+		t.Fatalf("cold settlement rewrote the reconnect terminal result: %+v", after)
 	}
 	if pending, err := h.st.PendingChatDeliveries(ctx, testSession); err != nil || len(pending) != 0 {
 		t.Fatalf("cold settlement left pending delivery: %+v, %v", pending, err)
 	}
 	if calls := conv.sendCallCount(); calls != 1 || cold.HasLiveChatController(testSession) {
 		t.Fatalf("cold settlement resumed the provider or sent again: %d sends", calls)
+	}
+	if reconnect && reconnectProvider.sendCallCount() != 0 {
+		t.Fatal("same-boot reconnect dispatched the original input again")
 	}
 }
 

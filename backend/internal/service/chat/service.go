@@ -140,11 +140,12 @@ type Service struct {
 	runPromptSuggestion   func(context.Context, domain.SessionID, string, string, string) (string, error)
 	promptSuggestionSlots chan struct{}
 
-	mu               sync.RWMutex
-	controllers      map[domain.SessionID]*Controller
-	ownerControllers map[domain.ConversationOwner]*Controller
-	startConfigs     map[domain.ConversationOwner]StartConfig
-	awakeInterrupted map[domain.ConversationOwner]domain.AwakeAgentTarget
+	mu                 sync.RWMutex
+	controllers        map[domain.SessionID]*Controller
+	ownerControllers   map[domain.ConversationOwner]*Controller
+	adapterControllers map[adapterGeneration]*Controller
+	startConfigs       map[domain.ConversationOwner]StartConfig
+	awakeInterrupted   map[domain.ConversationOwner]domain.AwakeAgentTarget
 	// starting counts Start calls in progress per owner. Requests for a session
 	// whose controller is still starting answer at once instead of waiting on
 	// its gate. Memory only: a daemon restart has no start in progress.
@@ -180,6 +181,11 @@ func (s *Service) SetReportCoordinator(coordinator *reportsvc.Coordinator) {
 // controllerGate serializes start/stop for one session without making provider
 // I/O for that session block lookups or commands for every other Chat session.
 type controllerGate chan struct{}
+
+type adapterGeneration struct {
+	session    domain.SessionID
+	generation string
+}
 
 type startWindow struct {
 	count int
@@ -301,6 +307,7 @@ func New(opts Options) *Service {
 		hibernationEnabled:     opts.HibernationEnabled,
 		versionRefresh:         opts.VersionRefresh,
 		controllers:            make(map[domain.SessionID]*Controller),
+		adapterControllers:     make(map[adapterGeneration]*Controller),
 		handoffInterrupted:     make(map[domain.SessionID]string),
 		ownerControllers:       make(map[domain.ConversationOwner]*Controller),
 		startConfigs:           make(map[domain.ConversationOwner]StartConfig),
@@ -1676,9 +1683,30 @@ func cleanupUnpublishedConversation(conv ports.ChatConversation, fresh bool) err
 // consuming its stream or dispatching input on that generation.
 func (s *Service) bindControllerAdapter(controller *Controller) {
 	epoch, ok := controller.conv.(ports.ChatDeliveryEpochReporter)
-	if !ok || controller.owner().Kind != domain.ConversationOwnerSession || s.bindAdapterOwner == nil {
+	owner := controller.owner()
+	if !ok || owner.Kind != domain.ConversationOwnerSession || s.bindAdapterOwner == nil {
 		return
 	}
+	key := adapterGeneration{controller.sessionID, controller.Generation()}
+	s.mu.Lock()
+	s.adapterControllers[key] = controller
+	s.mu.Unlock()
+	go func() {
+		controller.Wait()
+		// Start and branch replacement hold this gate through initialization,
+		// private dispatch, and publication or rollback, even after stream EOF.
+		gate := s.controllerGate(owner)
+		gate <- struct{}{}
+		gate.unlock()
+		// Any dispatch that entered before the projector stopped can still bind a turn.
+		controller.sendMu.Lock()
+		defer controller.sendMu.Unlock()
+		s.mu.Lock()
+		if s.adapterControllers[key] == controller {
+			delete(s.adapterControllers, key)
+		}
+		s.mu.Unlock()
+	}()
 	conversation := controller.conversation
 	if err := s.bindAdapterOwner(controller.sessionID, epoch.OutboundProviderEpoch(), conversation.ID, conversation.ActiveBranchID, controller.Generation()); err != nil {
 		s.log.Warn("chat adapter lifetime ownership unavailable", "session", controller.sessionID)
@@ -1723,6 +1751,14 @@ func (s *Service) HasLiveChatController(sessionID domain.SessionID) bool {
 	controller := s.controllers[sessionID]
 	s.mu.RUnlock()
 	return controller != nil && controller.State() != ports.ChatControllerStopped
+}
+
+// AdapterGenerationStopped reports whether this generation can no longer
+// start or project work for the bound adapter.
+func (s *Service) AdapterGenerationStopped(id domain.SessionID, generation string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.adapterControllers[adapterGeneration{id, generation}] == nil
 }
 
 // HasLiveControllerForOwner is the typed-owner form used by reviewer chats.

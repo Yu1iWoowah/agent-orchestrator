@@ -1987,6 +1987,8 @@ func (s *Store) SettleOrphanedTurnsBefore(ctx context.Context, session domain.Se
 	return nil
 }
 
+const reconnectUnconfirmedDelivery = "provider delivery unconfirmed after reconnect"
+
 // SettleUnboundRunningTurn closes an ambiguous dispatch after live reconnect.
 // Recheck under the writer lock so a bound or queued turn is never settled.
 func (s *Store) SettleUnboundRunningTurn(ctx context.Context, conversationID string, session domain.SessionID, turnID string, now time.Time) error {
@@ -2003,7 +2005,7 @@ func (s *Store) SettleUnboundRunningTurn(ctx context.Context, conversationID str
 		return nil
 	}
 	if err := q.SettleConversationTurn(ctx, gen.SettleConversationTurnParams{
-		State: domain.TurnStateFailed, ErrorMessage: "provider delivery unconfirmed after reconnect",
+		State: domain.TurnStateFailed, ErrorMessage: reconnectUnconfirmedDelivery,
 		CompletedAt: sql.NullTime{Time: now, Valid: true}, ID: turnID,
 	}); err != nil {
 		return fmt.Errorf("settle unbound running turn %s: %w", turnID, err)
