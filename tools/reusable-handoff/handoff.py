@@ -4022,7 +4022,30 @@ def verify_partial_snapshots(current):
             no_symlinks(path)
             require(path.is_dir(), "partial snapshot object metadata UNKNOWN")
 
-def retirement_preconditions(cli, state, request, controls, authorization, current):
+def worker_control_has_dispatch_record(control):
+    return any(no_symlinks(control / name).exists() for name in ("sent.json", "result.json"))
+
+
+def worker_control_not_started(facts, run_id, old, sid, argv):
+    handle = run_id + ":worker-stop:" + sid
+    if argv[5] != handle:
+        return False
+    attempts = [fact for fact in facts if fact.get("effect_id") in (handle, "worker-stop-" + sid)]
+    payload_sha256 = digest(argv[-1].encode())
+    for fact in attempts:
+        result = fact.get("result") or {}
+        original = fact.get("parameters", {}).get("argv") or []
+        if not (fact.get("origin") == "native-intent" and fact.get("run_id") == run_id and
+                fact.get("kind") == "worker-control" and fact.get("effect_id") == handle and fact.get("actor") == old and
+                fact.get("target") == {"project_id": PROJECT, "session_id": sid} and
+                fact.get("terminal") == result.get("terminal") == "not-started" and
+                all(field in result and result[field] is None for field in ("returncode", "dispatched_monotonic", "received_monotonic")) and
+                original and original[:-1] == argv[:-1] and isinstance(original[-1], dict) and original[-1].get("sha256") == payload_sha256):
+            return False
+    return bool(attempts)
+
+
+def retirement_preconditions(cli, state, request, controls, authorization, current, *, facts=()):
     old = request["old_id"]
     snap = cli.session(old)
     require(snap["session"].get("id") == old and snap["session"].get("kind") == "orchestrator" and
@@ -4038,8 +4061,10 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
     live = [x for x in cli.sessions() if x["projectId"] == PROJECT and not x["isTerminated"]]
     require([x["id"] for x in live if x["role"] == "orchestrator"] == [old], "actor membership/responsibility changed")
     require(not state.get("new_id"), "new ownership responsibility not proven for retirement")
+    effects = state.get("effects", {})
     # No worker ever received this run's control: no dispatch, hold or preservation is left to close.
-    if not controls and not any((d / "sent.json").exists() for d in (current / "control").glob("worker-stop-*")):
+    if not controls and not any(worker_control_has_dispatch_record(d) or effects.get(d.name) not in (None, "not-dispatched")
+                                for d in (current / "control").glob("worker-stop-*")):
         return []
     require({x["id"] for x in live if x["role"] == "worker"} == set(workers), "actor membership/responsibility changed")
     closed, remaining = [], set(controls)
@@ -4061,14 +4086,22 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
             require(all(row["sha256"] == item["sha256"] for row, item in zip(verified, declared)), "authorized material changed")
         key = "worker-stop-" + sid
         control = current / "control" / key
+        matched = []
         if control.exists():
             payload_raw = private_read(control / "payload.json")
             payload = decode(payload_raw)
             intent = decode(private_read(control / "intent.json"))
             argv = intent["argv"]
-            handle = argv[argv.index("--client-message-id") + 1]
+            require(isinstance(argv, list) and len(argv) == 8 and isinstance(argv[5], str), "worker original intent/payload changed")
+            handle = argv[5]
+            require(payload.get("run_id") == state["run_id"] and payload.get("recipient") == sid and payload.get("old_id") == old and
+                    argv == ["send", "--session", sid, "--steer", "--client-message-id", handle, "--message", payload_raw.decode()], "worker original intent/payload changed")
             matched = [effect_id for effect_id, rows in controls.items() if any(
                 row.get("target", {}).get("session_id") == sid and effect_id in (key, handle) for row in rows)]
+            if not matched:
+                require(not worker_control_has_dispatch_record(control) and effects.get(key) in (None, "not-dispatched") and
+                        worker_control_not_started(facts, state["run_id"], old, sid, argv), "worker dispatch not in call facts")
+        if matched:
             require(len(matched) == 1, "worker dispatch not in call facts")
             remaining.discard(matched[0])
             message_hashes = []
@@ -4080,8 +4113,6 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
                     if "--message" in original:
                         message_hashes.append(original[original.index("--message") + 1]["sha256"])
             require(digest(payload_raw) in message_hashes, "worker payload not bound to original canonical call")
-            require(payload.get("run_id") == state["run_id"] and payload.get("recipient") == sid and payload.get("old_id") == old and
-                    argv == ["send", "--session", sid, "--steer", "--client-message-id", handle, "--message", payload_raw.decode()], "worker original intent/payload changed")
             message = directive_entry(snap, handle, old, payload_raw.decode())
             turns = {x["id"]: x for x in snap["transcript"].get("turns", [])}
             turn = turns.get(message["dispatch_turn_id"], {})
@@ -4262,7 +4293,7 @@ def retire_run(root, run_id, initial=None):
                 require(cli.base == state["daemon_base"], "retirement daemon location changed")
                 cli.execution = execution
                 try:
-                    closed = retirement_preconditions(cli, state, request, controls, authorization, current)
+                    closed = retirement_preconditions(cli, state, request, controls, authorization, current, facts=facts)
                     closed.extend(dict(effect_id=effect_id, kind=rows[-1]["kind"], terminal="attempt-terminal", delivery="UNKNOWN",
                                        call_ids=[x["call_id"] for x in rows])
                                   for effect_id in sorted(effect_ids - set(controls))
