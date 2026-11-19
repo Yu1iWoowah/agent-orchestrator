@@ -44,6 +44,7 @@ func (s *Service) AcquireAccountUses(ctx context.Context, ids ...string) (func()
 	return s.acquireAccountUses(ctx, false, ids)
 }
 
+// AcquireAccountLaunchUses identifies a lease held while starting a provider.
 func (s *Service) AcquireAccountLaunchUses(ctx context.Context, ids ...string) (func(), error) {
 	return s.acquireAccountUses(ctx, true, ids)
 }

@@ -25,10 +25,12 @@ type ChatAgentSettingsEffortObserver interface {
 
 type agentSettingsObservationKey struct{}
 
+// WithAgentSettingsObservation supplies a live receipt while a controller is qualifying its settings.
 func WithAgentSettingsObservation(ctx context.Context, observation domain.AgentSettingsObservation) context.Context {
 	return context.WithValue(ctx, agentSettingsObservationKey{}, observation)
 }
 
+// AgentSettingsObservationFromContext returns the receipt supplied by the settings controller.
 func AgentSettingsObservationFromContext(ctx context.Context) (domain.AgentSettingsObservation, bool) {
 	observation, ok := ctx.Value(agentSettingsObservationKey{}).(domain.AgentSettingsObservation)
 	return observation, ok
