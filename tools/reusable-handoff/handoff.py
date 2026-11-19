@@ -33,10 +33,16 @@ SENSITIVE_SOURCE = re.compile(r"(^|/)(\.env(?:\..*)?|credentials(?:\.json)?|auth
 LIMITS = dict(read=30, notify=60, kill=60, exit=60, spawn=180, resume=180, prepare=600,
               workers=1800, old_2a=600, export=600, native=120, bootstrap=900,
               old_idle=900, new_idle=900, nonce=600, final=600)
+ADMISSION_LIMIT = 5
+TERMINAL_TURNS = ("completed", "failed", "cancelled", "interrupted", "recovered")
 OUTBOX = "尚未送達的report outbox不在本次conversation cut/delta範圍內，接手後才由AO既有持久outbox送達；不宣稱已匯出、已讀或已整合。"
 
 
 class Stop(Exception):
+    pass
+
+
+class AdmissionBusy(Stop):
     pass
 
 
@@ -438,7 +444,7 @@ def completed_old_helper(run, snapshot):
     receipt = decode(private_read(run.root / "old/phase-2a.json"))
     turn = control["dispatch_turn_id"]
     require(receipt.get("evidence_turn_id") == turn, "old result differs from original directive turn")
-    if not completed(snapshot, turn):
+    if not completed(snapshot, turn) or phase_projection_pending(snapshot, turn):
         return None
     matches = [entry for entry in entries(snapshot) if entry.get("turnId") == turn and
                entry.get("kind") == "activity" and entry.get("activityKind") == "command" and
@@ -467,14 +473,34 @@ def projection_settled(snapshot, run=None):
         for item in transcript["incomplete"])
 
 
-def operation_handles(entry):
+def operation_handles(entry, *, include_truncated_stdout=False):
     """Only tool-result envelopes; never command/input/read contents or JSON descendants."""
     detail = entry.get("detail") or {}
     if detail.get("toolKind") == "read" or detail.get("toolName") in ("Read", "read_file"):
         return []
-    result = detail.get("result")
-    if result is None:
-        result = detail.get("output")
+    result, output = detail.get("result"), detail.get("output")
+    name = detail.get("toolName", "").rsplit(".", 1)[-1]
+    if include_truncated_stdout and result is not None:
+        handles = result_handles(result, name, True) + result_handles(output, name, True)
+    else:
+        handles = result_handles(result if result is not None else output, name, include_truncated_stdout, output)
+    content = detail.get("content")
+    if detail.get("protocol") == "acp" and isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "content":
+                continue
+            payload = block.get("content")
+            if isinstance(payload, dict) and payload.get("type") == "text" and isinstance(payload.get("text"), str):
+                handles.extend(result_handles(payload["text"], name, True))
+        terminal_states = ("completed", "cancelled", "failed")
+        terminal = {(handle["reference"], bool(handle.get("local"))) for handle in handles
+                    if handle["reference"] != "UNKNOWN" and handle["state"] in terminal_states}
+        handles = [handle for handle in handles if handle["state"] in terminal_states or
+                   (handle["reference"], bool(handle.get("local"))) not in terminal]
+    return handles
+
+
+def result_handles(result, name, recognize_partial, fallback_output=None):
     if isinstance(result, dict) and isinstance(result.get("content"), list):
         result = "\n".join(x.get("text", "") for x in result["content"] if x.get("type") == "text")
     if isinstance(result, str):
@@ -484,16 +510,21 @@ def operation_handles(entry):
             pass
     if isinstance(result, dict) and result.get("truncated") is True:
         return [{"reference": "UNKNOWN", "state": "UNKNOWN"}]
-    name = detail.get("toolName", "").rsplit(".", 1)[-1]
     if name in ("exec_command", "write_stdin") and isinstance(result, dict) and result.get("session_id") is not None:
         return [{"reference": str(result["session_id"]), "state": "running" if result.get("exit_code") is None else "completed", "local": True}]
     if isinstance(result, dict) and (result.get("type") in ("async-operation", "job") or "job_id" in result):
         reference = result.get("reference") or result.get("job_id")
         return [{"reference": str(reference or "UNKNOWN"), "state": result.get("state", "UNKNOWN") if reference else "UNKNOWN"}]
     # A transport-level textual continuation is not a normal JSON key or an input quotation.
-    text = result if isinstance(result, str) else detail.get("output", "")
-    match = re.match(r"^(Script running with (?:cell|session) ID|Process running with session ID|Job running with ID)\s+([A-Za-z0-9._:-]+)", text)
-    return [{"reference": match[2], "state": "UNKNOWN", "local": not match[1].startswith("Job")}] if match else []
+    text = result if isinstance(result, str) else fallback_output
+    match = isinstance(text, str) and re.match(
+        r"^(Script running with (?:cell|session) ID|Process running with session ID|Job running with ID)\s+([A-Za-z0-9._:-]+)", text)
+    if match:
+        return [{"reference": match[2], "state": "UNKNOWN", "local": not match[1].startswith("Job")}]
+    if recognize_partial and isinstance(text, str) and re.match(
+            r'^\s*(?:Job running with ID\b|\{\s*"job_id"\s*:|\{\s*"type"\s*:\s*"(?:job|async-operation)")', text):
+        return [{"reference": "UNKNOWN", "state": "UNKNOWN"}]
+    return []
 
 
 def operation_terminal(entry, handle, receipts):
@@ -522,19 +553,44 @@ def quiescent(snapshot, settled_receipts=(), run=None, worker=False):
                for entry in transcript.get("entries", []))
 
 
+def truncated_command_blocker(entry, run=None, sid=None, worker=False):
+    detail = entry.get("detail") or {}
+    if entry.get("activityKind") != "command" or not detail.get("outputTruncated"):
+        return None
+    if not worker or (run and helper_identity(detail.get("rawCommand") or detail.get("command", ""), run.root, sid)):
+        return "command output truncated"
+    handles = operation_handles(entry, include_truncated_stdout=True)
+    if any(handle["reference"] == "UNKNOWN" for handle in handles):
+        return "remote operation evidence truncated"
+    if entry.get("status") != "completed" or type(detail.get("exitCode")) is not int:
+        return "truncated command lacks completed integer exit code"
+    # Q1=B: an opaque suffix with no surviving remote evidence is equivalent
+    # to ordinary stdout. Recognizable handles still go through receipt checks.
+    return None
+
+
+def require_usable_command_outputs(snapshot, run, *, worker=False):
+    sid = snapshot["session"]["id"]
+    for entry in entries(snapshot):
+        if entry.get("status") in ("completed", "resolved", "cancelled", "failed", "recovered"):
+            problem = truncated_command_blocker(entry, run, sid, worker)
+            require(not problem, f"{problem}: {sid} activity {entry.get('id')}")
+
+
 def activity_quiescent(entry, receipts=(), run=None, sid=None, worker=False):
     if entry.get("kind") != "activity":
         return True
     if entry.get("status") not in ("completed", "resolved", "cancelled", "failed", "recovered"):
         return False
     detail = entry.get("detail") or {}
-    if entry.get("activityKind") == "command" and detail.get("outputTruncated"):
+    if truncated_command_blocker(entry, run, sid, worker):
         return False
     if run and known_helper(run, sid, entry):
         return True
     # A worker's local processes (exec sessions, running scripts, exit-less commands) are judged by the OS-level
     # process check instead (q1=b); remote jobs still need receipts, and old/new keep every receipt rule.
-    handles = [x for x in operation_handles(entry) if not (worker and x.get("local"))]
+    include_stdout = worker and entry.get("activityKind") == "command" and bool(detail.get("outputTruncated"))
+    handles = [x for x in operation_handles(entry, include_truncated_stdout=include_stdout) if not (worker and x.get("local"))]
     if not worker and entry.get("activityKind") == "command" and detail.get("exitCode") is None:
         # A reconnectable process (Codex PTY, ACP terminal) without an exit needs a terminal receipt of that same
         # operation: AO and the ACP driver settle leftovers themselves, so neither status nor turn proves it ended.
@@ -750,13 +806,26 @@ class Journal:
             self.state()
 
     @contextlib.contextmanager
-    def mutex(self):
+    def mutex(self, deadline=None):
         path = no_symlinks(self.root / "admission.lock")
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "r+b") as handle:
             info = os.fstat(handle.fileno())
             require(info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600, "admission lock identity invalid")
-            fcntl.flock(handle, fcntl.LOCK_EX)
+            limit = time.monotonic() + ADMISSION_LIMIT
+            if deadline is not None:
+                limit = min(limit, deadline)
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    remaining = limit - time.monotonic()
+                    if remaining <= 0:
+                        raise AdmissionBusy(f"admission lock busy: {self.run_id}; this attempt not dispatched") from exc
+                    time.sleep(min(0.05, remaining))
+                    if time.monotonic() >= limit:
+                        raise AdmissionBusy(f"admission lock busy: {self.run_id}; this attempt not dispatched") from exc
             yield
 
     def state(self):
@@ -1047,7 +1116,17 @@ class Execution:
         journal = self.journal
         call_id = str(uuid.uuid4())
         lease = None
-        with journal.mutex():
+        phase_deadline = getattr(self, "admission_deadline", None)
+        phase_first = phase_deadline is not None and (deadline is None or phase_deadline <= deadline)
+        limit = phase_deadline if phase_first else deadline
+        phase_timeout = f"phase admission deadline reached: {journal.run_id}; this attempt not dispatched"
+        expired_at_start = limit is not None and time.monotonic() >= limit
+        if phase_first and expired_at_start:
+            raise AdmissionBusy(phase_timeout)
+        with journal.mutex(limit):
+            expired_on_admission = expired_at_start or (limit is not None and time.monotonic() >= limit)
+            if phase_first and expired_on_admission:
+                raise AdmissionBusy(phase_timeout)
             require(self._active_operation is None, "execution transport already active")
             state = journal.state()
             require(descriptor["script_sha256"] == self.registration["script_sha256"], "execution script bytes changed")
@@ -1091,18 +1170,18 @@ class Execution:
             lease = open(directory / "lease.lock", "a+b")
             os.chmod(directory / "lease.lock", 0o600)
             fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            expired = deadline is not None and time.monotonic() > deadline
+            expired = expired_on_admission or (limit is not None and time.monotonic() >= limit)
             if not expired:
                 publish(directory / "attempt.json", canonical(dict(call_id=call_id, intent_sha256=digest(canonical(intent)), at=now())))
             self.last_call_id = call_id
             self._active_operation, self._transport_claimed = descriptor, False
         raw, stderr, terminal, code = b"", b"", "not-started", None
         try:
-            if expired:
+            if expired or (limit is not None and time.monotonic() >= limit):
                 raise WindowElapsed()
             if on_dispatch:
                 on_dispatch()
-            if deadline is not None and time.monotonic() > deadline:
+            if limit is not None and time.monotonic() >= limit:
                 raise WindowElapsed()
             fixed = decode(private_read(directory / "intent.json"))["parameters"]
             materialized = dict(fixed)
@@ -1117,11 +1196,13 @@ class Execution:
             require(materialized == descriptor["parameters"], "materialized operation differs from intent")
             if fixed.get("file_source"):
                 hash_reference(fixed["file_source"])
-            raw, stderr, code = _CLI._transport(cli, descriptor, materialized, deadline)
+            raw, stderr, code = _CLI._transport(cli, descriptor, materialized, limit)
             terminal = "returned"
             return raw, stderr, code
         except WindowElapsed:
             terminal = "not-started"
+            if phase_first:
+                raise AdmissionBusy(phase_timeout) from None
             raise
         except subprocess.TimeoutExpired as exc:
             raw, stderr, terminal = exc.stdout or b"", exc.stderr or b"", "timeout"
@@ -1238,7 +1319,7 @@ class CLI:
         require(self.sha256 == operation["cli_sha256"], "AO CLI binding changed before dispatch")
         self.unchanged()
         self.last_dispatched = time.monotonic()
-        if deadline is not None and self.last_dispatched > deadline:
+        if deadline is not None and self.last_dispatched >= deadline:
             self.last_dispatched = None
             raise WindowElapsed()
         if operation["transport"] == "cli":
@@ -1742,7 +1823,19 @@ class Run:
         require(start["boot_id"] == boot_id() and self.clock() >= start["monotonic"], "UNKNOWN elapsed clock: " + phase)
         while True:
             self.check_deadline(phase, start)
-            result = predicate()
+            execution = getattr(self.cli, "execution", None)
+            prior = getattr(execution, "admission_deadline", None)
+            if execution:
+                remaining = start["limit"] - (self.clock() - start["monotonic"])
+                limit = time.monotonic() + remaining
+                execution.admission_deadline = min(prior, limit) if prior is not None else limit
+            try:
+                result = predicate()
+            except AdmissionBusy as exc:
+                raise AdmissionBusy(f"{phase}: {exc}") from exc
+            finally:
+                if execution:
+                    execution.admission_deadline = prior
             self.check_deadline(phase, start)
             if result:
                 start["completed_at"] = now()
@@ -1758,6 +1851,7 @@ class Run:
         require(self.clock() - start["monotonic"] < start["limit"], "wait deadline reached: " + phase + named)
 
     def quiescent_worker(self, sid, snap, receipts=()):
+        require_usable_command_outputs(snap, self, worker=True)
         if quiescent(snap, receipts, self, worker=True):
             self.unsettled.pop(sid, None)
             return True
@@ -1832,23 +1926,40 @@ class Run:
         self.state.setdefault("effects", {})[key] = "not-dispatched"
         self.save()
         sent_path = directory / "sent.json"
+
         def dispatched():
+            nonlocal callback_ran, wrote_sent
+            callback_ran = True
             if not sent_path.exists():
                 publish(sent_path, canonical({"at": now(), "monotonic": self.clock()}))
+                wrote_sent = True
             self.state["effects"][key] = "UNKNOWN"
             self.save()
         while True:
             deadline = before_call() if before_call else None
+            callback_ran = wrote_sent = False
             try:
                 raw = self.cli.call(args, timeout, deadline=deadline, on_dispatch=dispatched, effect_id=key)
                 break
-            except WindowElapsed:
-                # The adapter proved no subprocess was started. Reobserve S1/S2,
-                # retaining the original bounded idle wait and mutation intent.
+            except (AdmissionBusy, WindowElapsed) as exc:
+                if callback_ran and execution:
+                    # The callback runs before transport. Only its own marker can
+                    # be rolled back, after the journal proves no attempt started.
+                    recorded = execution.effect_attempts(effect_id)
+                    if not any(intent["call_id"] == execution.last_call_id for intent, _, _ in recorded) or not all(
+                            result and result["terminal"] == "not-started" and result.get("dispatched_monotonic") is None
+                            for _, result, _ in recorded):
+                        raise
+                    if wrote_sent:
+                        sent_path.unlink()
+                        sync_directory(directory)
+                if callback_ran or isinstance(exc, WindowElapsed):
+                    self.state["effects"][key] = "not-dispatched"
+                    self.save()
+                if isinstance(exc, AdmissionBusy):
+                    raise
+                # Reobserve S1/S2 within the original bounded idle wait.
                 self.evidence("not-dispatched-" + key, {"at": now(), "reason": "idle window elapsed before subprocess"})
-                self.state["effects"][key] = "not-dispatched"
-                self.save()
-                continue
         result = {"stdout": raw.decode(), "stderr": getattr(self.cli, "last_stderr", ""), "sha256": digest(raw), "accepted_at": now(),
                   "call_id": getattr(getattr(self.cli, "execution", None), "last_call_id", None)}
         publish(result_path, canonical(result))
@@ -1944,17 +2055,25 @@ class Run:
         directory = mkdir(self.root / "workers" / sid)
         path = directory / "stop.json"
         snap = self.snapshot(sid)
+        control = self.root / "control" / ("worker-stop-" + sid) / "result.json"
+        dispatched = None
+        if control.exists():
+            snap, dispatched = observed_dispatch(self, sid, "worker-stop", snap)
         if path.exists():
             stop = decode(private_read(path))
             validate_stop(stop, self.run_id, sid, directory)
             if stop["state"] != "safe":
-                self.unsettled[sid] = [stop["state"] + ": " + str(stop.get("block_reason"))]
-                return False
+                raise Stop(f"workers: {sid} stop.json {stop['state']}: {stop.get('block_reason')}")
             if stop["source_type"] == "worker-self":
                 require(rules and rules["reserved_stop_d"], "self stop lacks original reserved directive")
                 require(stop["stop_directive"]["last_ack_d"] == rules["reserved_stop_d"], "worker stop D does not match reserved directive")
-                if not completed(snap, stop["evidence_turn_id"]):
-                    self.unsettled[sid] = ["evidence turn not completed: " + stop["evidence_turn_id"]]
+                require(control.exists(), f"workers: {sid} receipt lacks accepted original dispatch")
+                if not dispatched:
+                    self.unsettled[sid] = ["original worker-stop dispatch not projected"]
+                    return False
+                require(stop["evidence_turn_id"] == dispatched, f"workers: {sid} receipt evidence turn differs from original dispatch")
+                if not require_productive_turn(snap, sid, "workers", dispatched):
+                    self.unsettled[sid] = ["evidence turn or projection unsettled: " + dispatched]
                     return False
             if not self.quiescent_worker(sid, snap, stop["settled"]["in_flight"]):
                 return False
@@ -1967,8 +2086,14 @@ class Run:
             work = self.work(sid)
             require(not work, "worker processes still running: " + sid + ": " + processes_text(work))
             return stop
+        require_productive_turn(snap, sid, "workers", dispatched, "stop.json")
+        if phase_projection_pending(snap, dispatched):
+            require_usable_command_outputs(snap, self, worker=True)
+            self.unsettled[sid] = ["worker-stop projection unsettled: " + dispatched]
+            return False
+        quiet = self.quiescent_worker(sid, snap)
         work = self.work(sid)
-        if not work and self.quiescent_worker(sid, snap):
+        if not work and quiet and not control.exists():
             workspace = self.workspace(sid)
             before = git_snapshot(workspace, directory / ("before-" + uuid.uuid4().hex))
             self.sleep(2)
@@ -1995,6 +2120,12 @@ class Run:
                         os.path.realpath(row["argv"][3]) == os.path.realpath(self.cli.data_dir) for row in proc_table().values()),
                     "worker processes running without an agent to stop them: " + sid + ": " + processes_text(work))
             self.unsettled[sid] = ["work processes: " + processes_text(work)]
+        elif not control.exists() and not (rules and rules["reserved_stop_d"]) and not quiet:
+            transcript = snap["transcript"]
+            if (snap["session"]["activity"]["state"] in ("idle", "exited") and projection_settled(snap, self) and
+                    not any(t.get("state") in ("queued", "running") for t in transcript.get("turns", []))):
+                raise Stop(f"workers: {sid} has unresolved activity {', '.join(map(str, self.unsettled[sid]))}"
+                           " without an authorized stop directive")
         if rules and rules["reserved_stop_d"]:
             # The first observed list is kept so a recovery resend carries the identical payload.
             listed = self.state.setdefault("worker_stop_processes", {}).get(sid)
@@ -2003,6 +2134,8 @@ class Run:
                 self.save()
             self.send(sid, "worker-stop", dict(directive=rules["reserved_stop_d"], output=str(path),
                       schema="rh-worker-stop/2", rules=rules, processes=listed, **producer_description(self, "worker-receipt", sid)))
+            if not work and quiet:
+                self.unsettled[sid] = ["original worker-stop receipt not observed"]
         return False
 
     def workers(self):
@@ -2150,7 +2283,7 @@ def save_sources(directory, rows, subdirectory="saved"):
     return refs, provenance
 
 
-def directive_entry(snapshot, handle, old, payload):
+def directive_entry(snapshot, handle, old, payload, *, pending=False):
     controls = []
     for entry in entries(snapshot):
         steer = entry.get("kind") == "activity" and entry.get("activityKind") == "system" and entry.get("detail", {}).get("event") == "steer"
@@ -2165,17 +2298,78 @@ def directive_entry(snapshot, handle, old, payload):
         turn = entry.get("consumedByTurnId") or entry.get("turnId")
         require(turn and type(entry.get("sequence")) is int, "directive turn/sequence missing")
         controls.append(dict(entry, dispatch_turn_id=turn))
-    require(len(controls) == 1, "producer directive provenance mismatch")
-    return controls[0]
+    require(len(controls) == 1 or (pending and not controls), "producer directive provenance mismatch")
+    return controls[0] if controls else None
 
 
-def producer_control(run, sid, phase, snapshot):
+def producer_control(run, sid, phase, snapshot, *, pending=False):
     directory = run.root / "control" / (phase + "-" + sid)
     payload = private_read(directory / "payload.json").decode()
     intent = decode(private_read(directory / "intent.json"))
     expected = ["send", "--session", sid, "--steer", "--client-message-id", run.run_id + ":" + phase + ":" + sid, "--message", payload]
     require(intent.get("argv") == expected and (directory / "result.json").is_file(), "producer lacks accepted original directive")
-    return directive_entry(snapshot, expected[5], run.old, payload), decode(payload)
+    return directive_entry(snapshot, expected[5], run.old, payload, pending=pending), decode(payload)
+
+
+def phase_history(run, sid, snap, find):
+    """Extend an observation only as far as needed to reach its bound dispatch."""
+    observed = find(snap)
+    transcript = snap["transcript"]
+    page, cursor = transcript, None
+    while observed is None and page.get("hasMoreBefore"):
+        before = page.get("next", {}).get("before")
+        require(type(before) is int and (cursor is None or before < cursor), "phase projection cursor stalled")
+        cursor = before
+        older = run.cli.read(["session", "get", sid, "--transcript", "500", "--cap", "0", "--before", str(cursor)])
+        page = older["transcript"]
+        require(all(page[field] == transcript[field] for field in ("conversationId", "activeBranchId")) and
+                not page.get("truncatedFields"), "phase projection scope changed or truncated")
+        turns = {turn["id"]: turn for turn in page.get("turns", [])}
+        turns.update((turn["id"], turn) for turn in transcript.get("turns", []))
+        transcript = dict(transcript, entries=page["entries"] + transcript["entries"], turns=list(turns.values()),
+                          incomplete=(page.get("incomplete") or []) + (transcript.get("incomplete") or []),
+                          hasMoreBefore=page["hasMoreBefore"], next=page.get("next"))
+        snap = dict(snap, transcript=transcript)
+        observed = find(snap)
+    return snap, observed
+
+
+def observed_dispatch(run, sid, phase, snap):
+    require(not snap["session"].get("isTerminated"), f"{phase}: {sid} terminated before dispatch evidence settled")
+    snap, control = phase_history(run, sid, snap, lambda view: producer_control(run, sid, phase, view, pending=True)[0])
+    return snap, control and control["dispatch_turn_id"]
+
+
+def terminal_turn(snapshot, turn_id):
+    return next((turn for turn in snapshot["transcript"].get("turns", [])
+                 if turn["id"] == turn_id and turn.get("state") in TERMINAL_TURNS), None)
+
+
+def phase_projection_pending(snapshot, turn_id):
+    if not turn_id:
+        return False
+    incomplete = {(item.get("sequence"), item.get("reason")) for item in snapshot["transcript"].get("incomplete") or []
+                  if item.get("type") == "entry" and type(item.get("sequence")) is int}
+    return any((entry.get("consumedByTurnId") or entry.get("turnId")) == turn_id and
+               ((entry.get("streaming") is True and (entry.get("sequence"), "streaming") in incomplete) or
+                (entry.get("status") == "running" and (entry.get("sequence"), "running") in incomplete))
+               for entry in entries(snapshot))
+
+
+def require_productive_turn(snapshot, sid, phase, turn_id, missing=None):
+    turn = terminal_turn(snapshot, turn_id)
+    if not turn:
+        return False
+    if turn.get("state") == "interrupted" and phase in ("bootstrap", "nonce"):
+        report_interruption(snapshot, turn_id)  # Refuse human cancellation and actual tool failure before waiting.
+        if phase_projection_pending(snapshot, turn_id):
+            return False
+    require(completed(snapshot, turn_id),
+            f"{phase}: {sid} turn {turn_id} ended {turn['state']} without completed evidence")
+    if phase_projection_pending(snapshot, turn_id):
+        return False
+    require(not missing, f"{phase}: {sid} turn {turn_id} completed without {missing}")
+    return True
 
 
 def producer_observation(run, sid, action, directory):
@@ -2557,7 +2751,9 @@ def phase_2a(run):
                        **producer_description(run, "old-receipt", run.old))
     run.send(run.old, "2a", instruction)
     def ready():
+        snap, turn_id = observed_dispatch(run, run.old, "2a", run.snapshot(run.old))
         if not path.exists():
+            require_productive_turn(snap, run.old, "old_2a", turn_id, "phase-2a.json")
             return False
         receipt = decode(private_read(path))
         require(Path(receipt.get("managed_reply", {}).get("path", "")).is_relative_to(run.root / "old"), "2a reply outside fixed directory")
@@ -2566,15 +2762,18 @@ def phase_2a(run):
         require(receipt.get("worker_index_sha256") == run.state["stop_index_sha256"] and
                 receipt.get("user_status_instruction") == status_command(run.root, run.run_id) and
                 isinstance(receipt.get("pending_question_refs"), list) and isinstance(receipt.get("created_at"), str), "2a receipt fields")
-        snap = run.snapshot(run.old)
+        if not turn_id:
+            return False
+        if not require_productive_turn(snap, run.old, "old_2a", turn_id):
+            return False
         helper = completed_old_helper(run, snap)
         if helper is None:
             return False
         finished_turn = helper["turnId"]
+        require_usable_command_outputs(snap, run)
         if not quiescent(snap, run=run):
             return False
-        payload = private_read(run.root / "control" / ("2a-" + run.old) / "payload.json").decode()
-        control = directive_entry(snap, run.run_id + ":2a:" + run.old, run.old, payload)
+        control, _ = producer_control(run, run.old, "2a", snap)
         run.state["old_control_sequence"] = control["sequence"]
         documents = run.cli.documents()
         require(documents.get("lease", {}).get("sessionId") == run.old, "old not managed owner")
@@ -2601,16 +2800,17 @@ BOOTSTRAP_CALLS = "每個工具呼叫都只能是一個shell指令，且必須�
 
 def continue_phase(run, sid, phase, turn, snapshot):
     if not report_interruption(snapshot, turn):
-        return
+        return False
     key = phase + ":" + turn
     recovered = run.state.setdefault("phase_continuations", {})
     if key in recovered:
         continuation = continuation_turn(run, sid, phase, snapshot)
         if continuation and report_interruption(snapshot, continuation):
             raise Stop("second report interruption requires recovery")
-        return
+        require_productive_turn(snapshot, sid, phase, continuation)
+        return True
     if not quiescent(snapshot, run=run):
-        return
+        return True
     requirements = ("本續接回合仍在bootstrap稽核範圍內，read_command與helper_command見原bootstrap prompt。" + BOOTSTRAP_CALLS
                     + "核對既有結果時只重跑helper_command（已有receipt會原樣回傳）或用read_command讀bootstrap/new/receipt.json，不另行計算hash；只補未完成回報，不重寫已提交效果。人類取消／UNKNOWN或真失敗即停。"
                     if phase == "bootstrap" else "核原已成功檔與managed hash；只補未完成回報，不重寫已提交效果，不重發nonce。人類取消／UNKNOWN或真失敗即停。")
@@ -2619,21 +2819,20 @@ def continue_phase(run, sid, phase, turn, snapshot):
              "nonce": run.state.get("nonce"), "requirements": requirements})
     recovered[key] = {"interrupted_turn": turn, "sent_at": now()}
     run.save()
+    return True
 
 
 def continuation_turn(run, sid, phase, snapshot):
-    key = run.run_id + ":" + phase + "-continue:" + sid
-    matches = [e for e in entries(snapshot) if e.get("clientMessageId") == key and e.get("origin") == "automation"]
-    require(len(matches) <= 1, "continuation handle ambiguous")
-    return matches[0].get("consumedByTurnId", matches[0].get("turnId")) if matches else None
+    _, turn_id = observed_dispatch(run, sid, phase + "-continue", snapshot)
+    return turn_id
 
 
 def phase_completed(run, sid, phase, original, snapshot):
-    if completed(snapshot, original):
+    if completed(snapshot, original) and not phase_projection_pending(snapshot, original):
         return original
     if phase + ":" + original in run.state.get("phase_continuations", {}):
         turn = continuation_turn(run, sid, phase, snapshot)
-        if turn and completed(snapshot, turn):
+        if turn and completed(snapshot, turn) and not phase_projection_pending(snapshot, turn):
             return turn
     return None
 
@@ -2641,18 +2840,16 @@ def phase_completed(run, sid, phase, original, snapshot):
 def export_material(run, delta=False):
     snap = run.snapshot(run.old)
     transcript = snap["transcript"]
-    if not projection_settled(snap, run):
-        return False
     conversation, branch = transcript["conversationId"], transcript["activeBranchId"]
     pages, cursor = [], None
-    directory = mkdir(run.root / ("delta" if delta else "cut") / uuid.uuid4().hex)
+    directory = run.root / ("delta" if delta else "cut") / uuid.uuid4().hex
     while True:
+        require_usable_command_outputs(snap, run)
         if not projection_settled(snap, run):
             return False
         require(snap["transcript"]["conversationId"] == conversation and snap["transcript"]["activeBranchId"] == branch,
                 "projection branch/scope changed")
-        require(projection_settled(snap, run) and
-                snap["transcript"]["latestSequence"] == transcript["latestSequence"], "projection changed/truncated")
+        require(snap["transcript"]["latestSequence"] == transcript["latestSequence"], "projection changed/truncated")
         page_raw = getattr(run.cli, "last_raw", canonical(snap))
         path = directory / ("page-" + str(len(pages)) + ".json")
         publish(path, page_raw)
@@ -2670,6 +2867,7 @@ def export_material(run, delta=False):
     after = run.snapshot(run.old)
     require(after["transcript"]["conversationId"] == conversation and after["transcript"]["activeBranchId"] == branch and
             after["transcript"]["latestSequence"] == transcript["latestSequence"], "conversation changed during export; retain partial evidence")
+    require_usable_command_outputs(after, run)
     if not projection_settled(after, run):
         return False
     publish(directory / "conversation.json", canonical(raw))
@@ -2777,7 +2975,15 @@ def idle_window(run, sid, phase):
         first = run.snapshot(sid)
         second = run.snapshot(sid)
         observed = getattr(run.cli, "last_received", run.clock())
+        binding = run.state.get("old_control_sequence" if sid == run.old else "bootstrap_sequence")
+        if binding is not None:
+            reject_new_human(second, binding)
+        require(not second["session"].get("isTerminated"), f"{phase}: {sid} terminated before idle observation")
+        require_usable_command_outputs(second, run)
         if not same_idle(first, second, run):
+            if second["session"]["activity"]["state"] in ("idle", "exited") and not any(
+                    turn.get("state") in ("queued", "running") for turn in second["transcript"].get("turns", [])):
+                require_productive_turn(second, sid, phase, selected_turn(second).get("id"))
             return False
         # All observation persistence was completed before starting this timer.
         if run.clock() - observed > 1:
@@ -2844,28 +3050,44 @@ def spawn_new(run):
     token = "RH3[" + run.run_id + "]"
     name = token + " orchestrator"
     require(len(name) <= 100, "spawn display name too long")
-    intent_path = run.root / "control" / "spawn" / "intent.json"
-    if intent_path.exists():
-        intent = decode(private_read(intent_path))
-        sid = match_spawn(run.cli.sessions(), token, intent["created_at"])
-    else:
-        require(not any(token in s.get("displayName", "") for s in run.cli.sessions()), "spawn token collision")
-        prompt = bootstrap_prompt(run)
-        args = ["spawn", "--project", PROJECT, "--kind", "orchestrator", "--agent", run.target["harness"],
-                "--account", run.target["account"], "--mode", "chat", "--model", run.target["model"],
-                "--effort", run.target["effort"], "--approval-mode", run.target["approval_mode"], "--name", name, "--prompt", prompt]
+    directory = run.root / "control" / "spawn"
+    intent_path = no_symlinks(directory / "intent.json")
+    intent = decode(private_read(intent_path)) if intent_path.exists() else None
+    sessions = run.cli.sessions()
+    token_seen = any(token in s.get("displayName", "") for s in sessions)
+    execution = getattr(run.cli, "execution", None)
+    # Admission can time out after the business intent is saved and before the journal records a dispatch.
+    undispatched = (intent is not None and execution is not None and not token_seen and not run.state.get("new_id") and
+                    run.state.get("effects", {}).get("spawn") == "not-dispatched" and
+                    not no_symlinks(directory / "sent.json").exists() and
+                    not no_symlinks(directory / "result.json").exists() and not execution.effect_attempts("spawn"))
+    if intent is None or undispatched:
+        require(not token_seen, "spawn token collision")
+        if intent is None:
+            args = ["spawn", "--project", PROJECT, "--kind", "orchestrator", "--agent", run.target["harness"],
+                    "--account", run.target["account"], "--mode", "chat", "--model", run.target["model"],
+                    "--effort", run.target["effort"], "--approval-mode", run.target["approval_mode"], "--name", name,
+                    "--prompt", bootstrap_prompt(run)]
+        else:
+            args = intent["argv"]
+            require(args[:1] == ["spawn"] and "--name" in args, "invalid spawn intent argv")
+            name_index = args.index("--name") + 1
+            require(args[name_index:name_index + 1] == [name], "spawn intent token changed")
         try:
             run.effect("spawn", args, LIMITS["spawn"])
+        except AdmissionBusy:
+            raise
         except (Stop, subprocess.TimeoutExpired):
             # Only look up the original effect. Never submit a second spawn.
             pass
         intent = decode(private_read(intent_path))
-        sid = match_spawn(run.cli.sessions(), token, intent["created_at"])
-    if getattr(run.cli, "execution", None):
-        run.cli.execution.bindings.add(sid)
-        run.cli.execution.new_id = sid
+        sessions = run.cli.sessions()
+    sid = match_spawn(sessions, token, intent["created_at"])
+    if execution:
+        execution.bindings.add(sid)
+        execution.new_id = sid
     actual = run.cli.get("sessions/" + identifier(sid))["session"]
-    require(not actual.get("isTerminated") and actual.get("status") != "failed", "original new provision failed")
+    require(not actual.get("isTerminated") and actual.get("provisionState") != "failed", "original new provision failed")
     require(actual.get("harness") == run.target["harness"] and actual.get("mode") == "chat", "spawn target identity mismatch")
     binding = run.cli.get("agents/accounts/sessions/" + sid)
     require(binding.get(provider(run.target)) == run.target["account"], "spawn original account mismatch")
@@ -2924,16 +3146,21 @@ def audit_bootstrap(snapshot, root, turn_ids=None):
     require(observed, "bootstrap helper activity missing")
 
 
-def bootstrap_origin(run, snapshot):
-    intent = decode(private_read(run.root / "control/spawn/intent.json"))
-    argv = intent["argv"]
-    expected = argv[argv.index("--prompt") + 1]
+def bootstrap_entry(snapshot, expected, *, pending=False):
     initial = [e for e in entries(snapshot) if e.get("kind") == "message" and e.get("role") == "user" and e.get("text") == expected]
+    if pending and not initial:
+        return None
     require(len(initial) == 1 and initial[0].get("origin") == "human" and not initial[0].get("senderSessionId"),
             "initial bootstrap does not match the sole spawn intent / narrow human-origin exception")
-    message = initial[0]
+    return initial[0]
+
+
+def bootstrap_origin(run, snapshot, message=None):
+    if message is None:
+        argv = decode(private_read(run.root / "control/spawn/intent.json"))["argv"]
+        message = bootstrap_entry(snapshot, argv[argv.index("--prompt") + 1])
     run.state["bootstrap_origin_exception"] = {"message_id": message["id"], "turn_id": message.get("turnId"),
-        "origin": "human", "prompt_sha256": digest(expected.encode()), "grants_authority": False,
+        "origin": "human", "prompt_sha256": digest(message["text"].encode()), "grants_authority": False,
         "authorization_source": str(run.root / "start.json"), "start_sha256": run.state["start_sha256"]}
     require(type(message.get("sequence")) is int, "initial bootstrap sequence missing")
     run.state["bootstrap_sequence"] = message["sequence"]
@@ -2947,7 +3174,18 @@ def bootstrap_origin(run, snapshot):
 
 def new_receipt(run):
     path = run.root / "bootstrap/new/receipt.json"
+    sid = run.state["new_id"]
+    snap = run.snapshot(sid)
+    require(not snap["session"].get("isTerminated"), f"bootstrap: {sid} terminated before receipt settled")
+    argv = decode(private_read(run.root / "control/spawn/intent.json"))["argv"]
+    expected = argv[argv.index("--prompt") + 1]
+    snap, opening = phase_history(run, sid, snap, lambda view: bootstrap_entry(view, expected, pending=True))
+    if not opening:
+        return False
+    original = opening.get("turnId")
+    owned_turns = bootstrap_origin(run, snap, opening)
     if not path.exists():
+        require_productive_turn(snap, sid, "bootstrap", original, "receipt.json")
         return False
     receipt = decode(private_read(path))
     require(Path(receipt.get("managed_reply", {}).get("path", "")).is_relative_to(run.root / "bootstrap/new"), "new reply outside fixed directory")
@@ -2962,13 +3200,13 @@ def new_receipt(run):
     for item in receipt["diagnostics"]:
         require(all(key in item for key in ("code", "source", "stage", "classification", "required", "effect")), "diagnostic schema")
         require(item["classification"] in ("recorded-diagnostic", "historical") and item["effect"] != "unknown", "required error/WAIT/UNKNOWN")
-    sid = run.state["new_id"]
-    snap = run.snapshot(sid)
-    owned_turns = bootstrap_origin(run, snap)
     require(receipt["evidence_turn_id"] in owned_turns, "new receipt borrows an earlier controller's turn")
-    finished_turn = phase_completed(run, sid, "bootstrap", receipt["evidence_turn_id"], snap)
+    require(receipt["evidence_turn_id"] == original, "bootstrap receipt evidence turn differs from spawn dispatch")
+    finished_turn = phase_completed(run, sid, "bootstrap", original, snap)
+    require_usable_command_outputs(snap, run)
     if not finished_turn:
-        continue_phase(run, sid, "bootstrap", receipt["evidence_turn_id"], snap)
+        if not continue_phase(run, sid, "bootstrap", original, snap):
+            require_productive_turn(snap, sid, "bootstrap", original)
         return False
     if not quiescent(snap, run=run):
         return False
@@ -2991,27 +3229,50 @@ def nonce_completed(run):
     snap = run.snapshot(sid)
     reject_new_human(snap, run.state["bootstrap_sequence"])
     nonce = run.state["nonce"]
-    control = run.run_id + ":nonce:" + sid
-    prompts = [e for e in entries(snap) if e.get("clientMessageId") == control]
-    require(len(prompts) <= 1, "nonce prompt ambiguous")
-    if not prompts:
+    snap, turn_id = observed_dispatch(run, sid, "nonce", snap)
+    if not turn_id:
         return False
-    turn_id = prompts[0]["turnId"]
-    turns = {t["id"]: t for t in snap["transcript"].get("turns", [])}
+    finished = phase_completed(run, sid, "nonce", turn_id, snap)
+    if not finished:
+        if not continue_phase(run, sid, "nonce", turn_id, snap):
+            require_productive_turn(snap, sid, "nonce", turn_id)
+        return False
+    turn = terminal_turn(snap, finished)
+    require(known_turn(turn, run.target), f"nonce: {sid} turn {finished} settings UNKNOWN")
     for entry in entries(snap):
-        turn = turns.get(entry.get("turnId"), {})
-        if (entry.get("role") == "assistant" and nonce in entry.get("text", "") and
-                turn.get("state") == "completed" and turn.get("completedAt") and known_turn(turn, run.target)):
-            require(entry.get("turnId") == turn_id or (run.state.get("phase_continuations", {}).get("nonce:" + turn_id) and
-                    entry.get("turnId") == continuation_turn(run, sid, "nonce", snap)),
-                    "nonce answer not tied to original challenge")
+        if entry.get("turnId") == finished and entry.get("role") == "assistant" and nonce in entry.get("text", ""):
             actual = verify_target(run.cli, sid, run.target, snap, run.cli.data_dir / "ao.db")
             require(actual == run.state["new_binding"], "native/target/account drift after resume")
             run.state["nonce_completed"] = {"turn_id": turn["id"], "provider_turn_id": turn["providerTurnId"],
                                               "message_id": entry["id"], "observed_at": now()}
             run.save()
             return True
-    continue_phase(run, sid, "nonce", turn_id, snap)
+    raise Stop(f"nonce: {sid} turn {finished} completed without verified answer")
+
+
+def final_ready(run):
+    sid = run.state["new_id"]
+    snap, turn_id = observed_dispatch(run, sid, "final", run.snapshot(sid))
+    if not turn_id:
+        return False
+    path = run.root / "bootstrap/new/final.json"
+    if not path.exists():
+        require_productive_turn(snap, sid, "final", turn_id, "final.json")
+        return False
+    receipt = decode(private_read(path))
+    require(receipt.get("run_id") == run.run_id and receipt.get("new_id") == sid, "final receipt identity")
+    require(receipt.get("evidence_turn_id") == turn_id, f"final: {sid} receipt evidence turn differs from original dispatch {turn_id}")
+    return require_productive_turn(snap, sid, "final", turn_id)
+
+
+def native_ready(run):
+    sid = run.state["new_id"]
+    native = native_identity(run.cli.data_dir / "ao.db", sid, run.target["harness"])
+    if native:
+        return native
+    session = run.cli.get("sessions/" + identifier(sid))["session"]
+    require(not session.get("isTerminated"), f"native: {sid} terminated without native identity")
+    require(session.get("provisionState") != "failed", f"native: {sid} provisioning failed without native identity")
     return False
 
 
@@ -3055,10 +3316,7 @@ def run_protocol(run):
     # Even a resumed run with retire already marked complete cannot bypass Q3.
     verify_old(run, postkill=True)
     stage("spawn", lambda: spawn_new(run))
-    def native_ready():
-        native = native_identity(run.cli.data_dir / "ao.db", state["new_id"], run.target["harness"])
-        return native or False
-    stage("native", lambda: run.wait("native", native_ready))
+    stage("native", lambda: run.wait("native", lambda: native_ready(run)))
     stage("bootstrap", lambda: run.wait("bootstrap", lambda: new_receipt(run)))
 
     def resume():
@@ -3093,14 +3351,7 @@ def run_protocol(run):
     def finish():
         run.send(state["new_id"], "final", {"command": producer_command(run.root, "finalize"),
                  "requirements": "用自己的身份執行固定helper，只對當下本專案存活worker依start原授權送具名D或不帶D的FYI；既有hold不解除。保存接受/未讀/未執行，不等ACK。最後向使用者回報完成與待決，然後completed。"})
-        def ready():
-            path = run.root / "bootstrap/new/final.json"
-            if not path.exists():
-                return False
-            receipt = decode(private_read(path))
-            require(receipt.get("run_id") == run.run_id and receipt.get("new_id") == state["new_id"], "final receipt identity")
-            return completed(run.snapshot(state["new_id"]), receipt["evidence_turn_id"])
-        run.wait("final", ready)
+        run.wait("final", lambda: final_ready(run))
     stage("final", finish)
     state.update(stage="complete", outcome="complete", finished_at=now())
     run.save()
@@ -3192,6 +3443,8 @@ def producer(run, action):
         publish(path, canonical(receipt))
         return receipt
     require(action == "finalize", "unsupported producer action")
+    control, _ = producer_control(run, sid, "final", snap)
+    require(turn == control["dispatch_turn_id"], "finalize producer turn differs from original dispatch")
     require(run.state.get("nonce_completed"), "cannot notify workers before native nonce verification")
     notifications = []
     for worker in acting.sessions():
@@ -3301,17 +3554,19 @@ def control_block(text):
 
 
 def transcript_pages(cli, sid, wanted):
-    """Original response pages, newest first, until every wanted message id has been seen."""
+    """Read original pages newest first. None asks for the complete active branch."""
     page = cli.session(sid)
     pages = [(getattr(cli, "last_raw", canonical(page)), page)]
+    scope = page["transcript"]["conversationId"], page["transcript"]["activeBranchId"]
     seen = {e.get("id") for e in entries(page)}
     cursor = None
-    while not set(wanted) <= seen and page["transcript"]["hasMoreBefore"]:
+    while (wanted is None or not set(wanted) <= seen) and page["transcript"]["hasMoreBefore"]:
         before = page["transcript"]["next"]["before"]
         require(type(before) is int and (cursor is None or before < cursor), "authority cursor did not advance")
         cursor = before
         page = cli.read(["session", "get", sid, "--transcript", "500", "--cap", "0", "--before", str(before)])
-        require(page["transcript"]["conversationId"] == pages[0][1]["transcript"]["conversationId"], "authority conversation changed")
+        require((page["transcript"]["conversationId"], page["transcript"]["activeBranchId"]) == scope,
+                "authority conversation or branch changed")
         pages.append((getattr(cli, "last_raw", canonical(page)), page))
         seen |= {e.get("id") for e in entries(page)}
     return pages
@@ -3342,7 +3597,7 @@ def validate_sources_live(req, cli):
     return snap
 
 
-def prepare_request(root, initial, old, human_id, control_id, run_id):
+def prepare_request(root, initial, old, control_id, run_id):
     """Old's fixed packaging helper: reads original bytes and its control block; it decides no authority."""
     require(os.environ.get("AO_SESSION_ID") == old, "prepare-request must run as old")
     with lock(root / (".old-" + identifier(old) + ".lock")):
@@ -3351,26 +3606,39 @@ def prepare_request(root, initial, old, human_id, control_id, run_id):
         mkdir(slot / "evidence")
         cli = path_cli(old, initial, slot)
         cli.execution.bindings = {old}
-        pages = transcript_pages(cli, old, {human_id, control_id})
+        pages = transcript_pages(cli, old, None)
         session = pages[0][1]["session"]
         require(session["id"] == old and session["projectId"] == PROJECT and session["kind"] == "orchestrator" and
                 session["mode"] == "chat" and not session["isTerminated"], "old identity invalid")
-        found = {}
-        for raw, page in pages:
-            for entry in entries(page):
-                if entry.get("id") in (human_id, control_id):
-                    require(entry["id"] not in found, "source message ambiguous")
-                    found[entry["id"]] = (raw, page, entry)
-        require(set(found) == {human_id, control_id}, "human or control message not in old transcript")
-        human, control = found[human_id][2], found[control_id][2]
-        # A batched follower input keeps its own turnId; the turn that actually handled it is consumedByTurnId.
-        handled_by = human.get("consumedByTurnId") or human.get("turnId")
-        require(control.get("turnId") and control["turnId"] == handled_by, "control record not from the turn handling the human instruction")
+        require(all(page["session"]["id"] == old and not page["transcript"].get("truncatedFields") for _, page in pages),
+                "preparation transcript scope changed or was truncated")
+        records = [(raw, page, entry) for raw, page in pages for entry in entries(page)]
+        controls = [record for record in records if record[2].get("id") == control_id]
+        require(len(controls) == 1, "control message missing or ambiguous in old transcript")
+        control = controls[0][2]
+        require(control.get("kind") == "message" and control.get("role") == "assistant" and control.get("turnId") and
+                type(control.get("sequence")) is int, "control lacks assistant turn provenance")
+        running = [turn["id"] for turn in pages[0][1]["transcript"]["turns"] if turn.get("state") == "running"]
+        require(running == [control["turnId"]], "control does not belong to the unique running preparation turn")
         block = control_block(control.get("text"))
+        for _, _, entry in records:
+            if entry is control or (entry.get("kind"), entry.get("role"), entry.get("turnId")) != ("message", "assistant", running[0]):
+                continue
+            try:
+                control_block(entry.get("text"))
+            except Stop:
+                continue
+            raise Stop("expected a unique control in the running preparation turn")
+        humans = [record for record in records if (entry := record[2]).get("kind") == "message" and
+                  entry.get("role") == "user" and entry.get("origin") == "human" and not entry.get("senderSessionId") and
+                  (entry.get("consumedByTurnId") or entry.get("turnId")) == control["turnId"] and
+                  type(entry.get("sequence")) is int and entry["sequence"] < control["sequence"]]
+        require(len(humans) == 1, "human source missing or ambiguous in control turn " + control["turnId"])
+        human = humans[0][2]
         require(block.get("stop") == "無具名停", "old named a stop; request not published")
         sources = []
-        for ref, kind, message_id in (("human", "human-message", human_id), ("control", "old-control-record", control_id)):
-            raw, page, entry = found[message_id]
+        for ref, kind, (raw, page, entry) in (("human", "human-message", humans[0]), ("control", "old-control-record", controls[0])):
+            message_id = entry["id"]
             source = dict(ref=ref, kind=kind, conversation_id=page["transcript"]["conversationId"], branch_id=page["transcript"]["activeBranchId"],
                           message_id=message_id, revision=entry.get("revision"), raw_relpath="evidence/" + run_id + "-" + ref + ".json",
                           raw_sha256=digest(raw), message_text_sha256=digest(entry.get("text", "").encode()))
@@ -3754,7 +4022,30 @@ def verify_partial_snapshots(current):
             no_symlinks(path)
             require(path.is_dir(), "partial snapshot object metadata UNKNOWN")
 
-def retirement_preconditions(cli, state, request, controls, authorization, current):
+def worker_control_has_dispatch_record(control):
+    return any(no_symlinks(control / name).exists() for name in ("sent.json", "result.json"))
+
+
+def worker_control_not_started(facts, run_id, old, sid, argv):
+    handle = run_id + ":worker-stop:" + sid
+    if argv[5] != handle:
+        return False
+    attempts = [fact for fact in facts if fact.get("effect_id") in (handle, "worker-stop-" + sid)]
+    payload_sha256 = digest(argv[-1].encode())
+    for fact in attempts:
+        result = fact.get("result") or {}
+        original = fact.get("parameters", {}).get("argv") or []
+        if not (fact.get("origin") == "native-intent" and fact.get("run_id") == run_id and
+                fact.get("kind") == "worker-control" and fact.get("effect_id") == handle and fact.get("actor") == old and
+                fact.get("target") == {"project_id": PROJECT, "session_id": sid} and
+                fact.get("terminal") == result.get("terminal") == "not-started" and
+                all(field in result and result[field] is None for field in ("returncode", "dispatched_monotonic", "received_monotonic")) and
+                original and original[:-1] == argv[:-1] and isinstance(original[-1], dict) and original[-1].get("sha256") == payload_sha256):
+            return False
+    return bool(attempts)
+
+
+def retirement_preconditions(cli, state, request, controls, authorization, current, *, facts=()):
     old = request["old_id"]
     snap = cli.session(old)
     require(snap["session"].get("id") == old and snap["session"].get("kind") == "orchestrator" and
@@ -3770,8 +4061,10 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
     live = [x for x in cli.sessions() if x["projectId"] == PROJECT and not x["isTerminated"]]
     require([x["id"] for x in live if x["role"] == "orchestrator"] == [old], "actor membership/responsibility changed")
     require(not state.get("new_id"), "new ownership responsibility not proven for retirement")
+    effects = state.get("effects", {})
     # No worker ever received this run's control: no dispatch, hold or preservation is left to close.
-    if not controls and not any((d / "sent.json").exists() for d in (current / "control").glob("worker-stop-*")):
+    if not controls and not any(worker_control_has_dispatch_record(d) or effects.get(d.name) not in (None, "not-dispatched")
+                                for d in (current / "control").glob("worker-stop-*")):
         return []
     require({x["id"] for x in live if x["role"] == "worker"} == set(workers), "actor membership/responsibility changed")
     closed, remaining = [], set(controls)
@@ -3793,14 +4086,22 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
             require(all(row["sha256"] == item["sha256"] for row, item in zip(verified, declared)), "authorized material changed")
         key = "worker-stop-" + sid
         control = current / "control" / key
+        matched = []
         if control.exists():
             payload_raw = private_read(control / "payload.json")
             payload = decode(payload_raw)
             intent = decode(private_read(control / "intent.json"))
             argv = intent["argv"]
-            handle = argv[argv.index("--client-message-id") + 1]
+            require(isinstance(argv, list) and len(argv) == 8 and isinstance(argv[5], str), "worker original intent/payload changed")
+            handle = argv[5]
+            require(payload.get("run_id") == state["run_id"] and payload.get("recipient") == sid and payload.get("old_id") == old and
+                    argv == ["send", "--session", sid, "--steer", "--client-message-id", handle, "--message", payload_raw.decode()], "worker original intent/payload changed")
             matched = [effect_id for effect_id, rows in controls.items() if any(
                 row.get("target", {}).get("session_id") == sid and effect_id in (key, handle) for row in rows)]
+            if not matched:
+                require(not worker_control_has_dispatch_record(control) and effects.get(key) in (None, "not-dispatched") and
+                        worker_control_not_started(facts, state["run_id"], old, sid, argv), "worker dispatch not in call facts")
+        if matched:
             require(len(matched) == 1, "worker dispatch not in call facts")
             remaining.discard(matched[0])
             message_hashes = []
@@ -3812,8 +4113,6 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
                     if "--message" in original:
                         message_hashes.append(original[original.index("--message") + 1]["sha256"])
             require(digest(payload_raw) in message_hashes, "worker payload not bound to original canonical call")
-            require(payload.get("run_id") == state["run_id"] and payload.get("recipient") == sid and payload.get("old_id") == old and
-                    argv == ["send", "--session", sid, "--steer", "--client-message-id", handle, "--message", payload_raw.decode()], "worker original intent/payload changed")
             message = directive_entry(snap, handle, old, payload_raw.decode())
             turns = {x["id"]: x for x in snap["transcript"].get("turns", [])}
             turn = turns.get(message["dispatch_turn_id"], {})
@@ -3994,7 +4293,7 @@ def retire_run(root, run_id, initial=None):
                 require(cli.base == state["daemon_base"], "retirement daemon location changed")
                 cli.execution = execution
                 try:
-                    closed = retirement_preconditions(cli, state, request, controls, authorization, current)
+                    closed = retirement_preconditions(cli, state, request, controls, authorization, current, facts=facts)
                     closed.extend(dict(effect_id=effect_id, kind=rows[-1]["kind"], terminal="attempt-terminal", delivery="UNKNOWN",
                                        call_ids=[x["call_id"] for x in rows])
                                   for effect_id in sorted(effect_ids - set(controls))
@@ -4169,7 +4468,7 @@ def main(argv=None):
     for action in ("status", "continue", "_run", "bootstrap", "finalize", "worker-receipt", "old-receipt", "retire"):
         sub.add_parser(action).add_argument("--run", required=True)
     packaging = sub.add_parser("prepare-request")
-    for key in ("old", "human", "control"):
+    for key in ("old", "control"):
         packaging.add_argument("--" + key, required=True)
     inspect = sub.add_parser("inspect")
     inspect.add_argument("--run", required=True)
@@ -4225,7 +4524,7 @@ def main(argv=None):
             else:
                 root, initial = locate(getattr(args, "old", None), create=args.action in ("start", "prepare-request"), execution=execution)
         if args.action == "prepare-request":
-            result = prepare_request(root, initial, args.old, args.human, args.control, args.run)
+            result = prepare_request(root, initial, args.old, args.control, args.run)
         elif args.action == "start":
             target = {k: getattr(args, k) for k in ("harness", "account", "model", "effort", "approval_mode")}
             target["mode"] = "chat"

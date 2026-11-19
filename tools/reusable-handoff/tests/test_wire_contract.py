@@ -72,6 +72,232 @@ class WireContractTests(unittest.TestCase):
     def http_transport(self, document):
         return patch.object(h.urllib.request.OpenerDirector, "open", side_effect=lambda *a, **kw: io.BytesIO(h.canonical(document)))
 
+    def final_snapshot(self, run):
+        snap = wire("active")
+        running = next(turn["id"] for turn in snap["transcript"]["turns"] if turn["state"] == "running")
+        handle = run.run_id + ":final:old"
+        payload = h.canonical({"phase": "final"}).decode()
+        directory = run.root / "control/final-old"
+        h.publish(directory / "payload.json", payload.encode())
+        h.publish(directory / "intent.json", h.canonical({"argv": ["send", "--session", "old", "--steer",
+                  "--client-message-id", handle, "--message", payload]}))
+        h.publish(directory / "result.json", b"{}")
+        snap["transcript"]["entries"].append(dict(kind="message", role="user", origin="automation", id="dispatch",
+                senderSessionId="old", senderProjectId=h.PROJECT, turnId=running, sequence=4,
+                clientMessageId=handle, text="[from old] " + payload))
+        return h.canonical(snap)
+
+    def test_admission_contention_proves_no_dispatch_and_releases_to_one_attempt(self):
+        execution = self.cli.execution
+        execution.phase = "retire"
+        journal = execution.journal
+        argv = ["session", "kill", "old", "--project", h.PROJECT]
+        effect = journal.run_id + ":kill"
+        delivered = []
+        flock = h.fcntl.flock
+        def nonblocking(fd, operation):
+            self.assertEqual(operation, h.fcntl.LOCK_EX | h.fcntl.LOCK_NB)
+            return flock(fd, operation)
+
+        with (journal.root / "admission.lock").open("r+b") as held, self.transport("kill") as transport:
+            flock(held, h.fcntl.LOCK_EX)
+            with patch.object(h.fcntl, "flock", side_effect=nonblocking), patch.object(h, "ADMISSION_LIMIT", 0.02):
+                with self.assertRaisesRegex(h.AdmissionBusy, "this attempt not dispatched"):
+                    self.cli.call(argv, effect_id=effect, on_dispatch=lambda: delivered.append(effect))
+                with self.assertRaises(h.AdmissionBusy):
+                    self.cli.call(argv, deadline=h.time.monotonic(), effect_id=effect, on_dispatch=lambda: delivered.append(effect))
+            self.assertEqual(execution.effect_attempts(effect), [])
+            self.assertEqual(delivered, [])
+            transport.assert_not_called()
+            with patch.object(h.time, "sleep", side_effect=lambda _: flock(held, h.fcntl.LOCK_UN)):
+                self.cli.call(argv, effect_id=effect, on_dispatch=lambda: delivered.append(effect))
+            with self.assertRaisesRegex(h.Stop, "effect already attempted"):
+                self.cli.call(argv, effect_id=effect, on_dispatch=lambda: delivered.append(effect))
+            self.assertEqual(delivered, [effect])
+            self.assertEqual(len(execution.effect_attempts(effect)), 1)
+            transport.assert_called_once()
+
+    def test_phase_admission_proves_no_dispatch_before_lock_and_callback(self):
+        execution = self.cli.execution
+        execution.phase = "retire"
+        argv = ["session", "kill", "old", "--project", h.PROJECT]
+        flock = h.fcntl.flock
+        publish = h.publish
+        for location in ("before-lock", "after-lock", "before-attempt", "after-attempt"):
+            with self.subTest(location=location), self.transport("kill") as transport:
+                effect = execution.journal.run_id + ":" + location
+                clock = [2 if location == "before-lock" else 0]
+                execution.admission_deadline = 1
+                delivered = []
+
+                def acquire(fd, flags):
+                    result = flock(fd, flags)
+                    if location == "after-lock":
+                        clock[0] = 2
+                    return result
+
+                def record(path, raw):
+                    publish(path, raw)
+                    if path.name == {"before-attempt": "intent.json", "after-attempt": "attempt.json"}.get(location):
+                        clock[0] = 2
+
+                with patch.object(h.time, "monotonic", side_effect=lambda: clock[0]), \
+                     patch.object(h.fcntl, "flock", side_effect=acquire) as lock, patch.object(h, "publish", side_effect=record):
+                    with self.assertRaisesRegex(h.AdmissionBusy, "phase admission deadline.*not dispatched"):
+                        self.cli.call(argv, deadline=3, effect_id=effect, on_dispatch=lambda: delivered.append(effect))
+                    if location == "before-lock":
+                        lock.assert_not_called()
+                self.assertEqual(delivered, [])
+                transport.assert_not_called()
+                attempts = execution.effect_attempts(effect)
+                if location in ("before-lock", "after-lock"):
+                    self.assertEqual(attempts, [])
+                else:
+                    self.assertEqual(len(attempts), 1)
+                    self.assertEqual(attempts[0][1]["terminal"], "not-started")
+                    self.assertEqual((attempts[0][2] / "attempt.json").exists(), location == "after-attempt")
+
+    def test_acp_remote_terminal_result_settles_only_its_own_launch_marker(self):
+        detail = dict(protocol="acp", toolKind="execute", exitCode=0,
+                      output=h.canonical(dict(type="job", reference="remote-fixture", state="completed")).decode())
+        entry = dict(id="command", kind="activity", activityKind="command", status="completed", detail=detail)
+
+        def retained(text):
+            detail["content"] = [dict(type="content", content=dict(type="text", text=text))]
+
+        retained("Job running with ID remote-fixture")
+        self.assertTrue(h.activity_quiescent(entry, worker=True))
+        retained("Job running with ID other-reference")
+        self.assertFalse(h.activity_quiescent(entry, worker=True))
+        retained("Job running with ID")
+        self.assertFalse(h.activity_quiescent(entry, worker=True))
+        detail.update(output="ordinary stdout", outputTruncated=True)
+        self.assertEqual(h.truncated_command_blocker(entry, worker=True), "remote operation evidence truncated")
+        retained("Job running with ID remote-fixture")
+        self.assertFalse(h.activity_quiescent(entry, worker=True))
+
+    def test_worker_callback_deadline_keeps_retirement_dispatch_evidence_accurate(self):
+        execution = self.cli.execution
+        journal = execution.journal
+        key = "worker-stop-worker"
+        handle = journal.run_id + ":worker-stop:worker"
+        request = h.canonical(dict(request_id=journal.run_id, old_id="old", workers=[dict(worker_id="worker")],
+                                   target=execution.request_target, authority={"source_refs": ["human"]}))
+        h.publish(self.root / "start.json", request)
+        h.publish(self.root / "state.json", h.canonical(dict(start_sha256=h.digest(request), stage="workers")))
+        run = h.Run(self.root, self.cli)
+        control = self.root / "control" / key
+        sent_path = control / "sent.json"
+        directive = {"directive": "D-7"}
+        publish = h.publish
+        clock = [0]
+
+        def expire_on(filename):
+            def record(path, raw):
+                publish(path, raw)
+                if path.name == filename:
+                    clock[0] = 2
+            return record
+
+        execution.admission_deadline = 1
+        with patch.object(h.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(h, "publish", side_effect=expire_on("sent.json")), patch.object(h.subprocess, "run") as transport:
+            with self.assertRaisesRegex(h.AdmissionBusy, "this attempt not dispatched"):
+                run.send("worker", "worker-stop", directive)
+            transport.assert_not_called()
+        intent = h.private_read(control / "intent.json")
+        self.assertEqual(h.decode(intent)["argv"][-4:-1], ["--client-message-id", handle, "--message"])
+        self.assertEqual(h.decode(h.private_read(self.root / "state.json"))["effects"][key], "not-dispatched")
+        self.assertFalse(sent_path.exists())
+
+        execution.close()
+        facts = journal.facts()
+        self.assertEqual([(row["effect_id"], row["terminal"]) for row in facts], [(handle, "not-started")])
+        controls = h.effect_closure(facts)
+        self.assertEqual(controls, {})
+        old = dict(session=dict(id="old", kind="orchestrator", projectId=h.PROJECT, activity=dict(state="idle")),
+                   transcript=dict(entries=[], turns=[]))
+        observer = SimpleNamespace(session=lambda actor: old, documents=lambda: dict(lease=dict(sessionId="old")),
+                                   sessions=lambda: [dict(id="old", projectId=h.PROJECT, role="orchestrator", isTerminated=False)])
+        self.assertEqual(h.retirement_preconditions(observer, run.state, run.request, controls, {}, self.root), [])
+
+        # A transport timeout leaves the original dispatch unresolved. A later
+        # recover-only call that misses admission must keep that evidence.
+        self.cli.execution = journal.register("_run", "old")
+        self.addCleanup(self.cli.execution.close)
+        run = h.Run(self.root, self.cli)
+        with patch.object(h.subprocess, "run", side_effect=h.subprocess.TimeoutExpired("send", 1)) as transport:
+            with self.assertRaises(h.subprocess.TimeoutExpired):
+                run.send("worker", "worker-stop", directive)
+            transport.assert_called_once()
+        original_sent = h.private_read(sent_path)
+        clock[0] = 0
+        self.cli.execution.admission_deadline = 1
+        with patch.object(h.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(h, "publish", side_effect=expire_on("attempt.json")), patch.object(h.subprocess, "run") as transport:
+            with self.assertRaises(h.AdmissionBusy):
+                run.send("worker", "worker-stop", directive)
+            transport.assert_not_called()
+        self.assertEqual(h.private_read(sent_path), original_sent)
+        self.assertEqual(h.private_read(control / "intent.json"), intent)
+        self.assertEqual(h.decode(h.private_read(self.root / "state.json"))["effects"][key], "UNKNOWN")
+
+    def test_spawn_after_admission_timeout_reloads_the_original_intent_once(self):
+        journal = self.cli.execution.journal
+        request = h.canonical(dict(request_id=journal.run_id, old_id="old", workers=[],
+                                   target=dict(self.cli.execution.request_target, mode="chat"),
+                                   authority={"source_refs": ["human"]}))
+        h.publish(self.root / "start.json", request)
+        h.publish(self.root / "state.json", h.canonical(dict(start_sha256=h.digest(request), stage="spawn",
+                  handoff={"path": "handoff.md"}, manifest={"path": "manifest.json"})))
+        run = h.Run(self.root, self.cli)
+        directory = self.root / "control/spawn"
+        sessions = []
+        sent = []
+
+        def spawn(argv, **kwargs):
+            self.assertEqual(argv[1:], original["argv"])
+            sent.append(argv)
+            name = argv[argv.index("--name") + 1]
+            sessions.append(dict(id="new", projectId=h.PROJECT, role="orchestrator", displayName=name, createdAt=h.now()))
+            return SimpleNamespace(returncode=0, stdout=b"spawned session new", stderr=b"")
+
+        provision = {"provisionState": "ready", "status": "idle"}
+
+        def get(path):
+            if path == "sessions/new":
+                return {"session": dict(provision, harness="codex", mode="chat", isTerminated=False)}
+            self.assertEqual(path, "agents/accounts/sessions/new")
+            return {h.provider(run.target): "acct"}
+
+        with patch.object(self.cli, "sessions", side_effect=lambda: list(sessions)), patch.object(self.cli, "get", side_effect=get), \
+             patch.object(h.subprocess, "run", side_effect=spawn):
+            with (journal.root / "admission.lock").open("r+b") as held, patch.object(h, "ADMISSION_LIMIT", 0.01):
+                h.fcntl.flock(held, h.fcntl.LOCK_EX)
+                with self.assertRaises(h.AdmissionBusy):
+                    h.spawn_new(run)
+            raw = h.private_read(directory / "intent.json")
+            original = h.decode(raw)
+            self.assertEqual(run.state["effects"]["spawn"], "not-dispatched")
+            self.assertFalse((directory / "sent.json").exists())
+            self.assertEqual(self.cli.execution.effect_attempts("spawn"), [])
+            self.assertEqual(sent, [])
+            self.cli.execution.close()
+            self.cli.execution = journal.register("_run", "old")
+            self.addCleanup(self.cli.execution.close)
+            resumed = h.Run(self.root, self.cli)
+            self.assertEqual(h.spawn_new(resumed), "new")
+            self.assertEqual(h.spawn_new(h.Run(self.root, self.cli)), "new")
+            provision["provisionState"] = "failed"
+            with self.assertRaisesRegex(h.Stop, "original new provision failed"):
+                h.spawn_new(h.Run(self.root, self.cli))
+            sessions.clear()
+            with self.assertRaisesRegex(h.Stop, "UNKNOWN spawn"):
+                h.spawn_new(h.Run(self.root, self.cli))
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(h.private_read(directory / "intent.json"), raw)
+            self.assertEqual(len(self.cli.execution.effect_attempts("spawn")), 1)
+
     def test_true_cli_list_and_all_role_callers(self):
         with self.transport("list"):
             rows = self.cli.sessions()
@@ -122,11 +348,12 @@ class WireContractTests(unittest.TestCase):
         run = SimpleNamespace(cli=self.cli, root=self.root, run_id="wire", old="old",
                               state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3, "cli_sha256": self.cli.sha256},
                               request={"workers": []})
+        active = self.final_snapshot(run)
         calls = []
         def transport(args, **kwargs):
             calls.append(args[1:])
             name = "list" if args[1:3] == ["session", "ls"] else "active" if args[1:3] == ["session", "get"] else "send"
-            return SimpleNamespace(returncode=0, stdout=wire_bytes(name), stderr=b"")
+            return SimpleNamespace(returncode=0, stdout=active if name == "active" else wire_bytes(name), stderr=b"")
         with patch.object(h, "CLI", return_value=self.cli), patch.object(h.subprocess, "run", side_effect=transport), \
              patch.dict(os.environ, AO_SESSION_ID="old", TMPDIR=str(self.root / "bootstrap/new/draft")):
             result = h.producer(run, "finalize")
@@ -148,13 +375,14 @@ class WireContractTests(unittest.TestCase):
                 root = h.mkdir(self.root / case)
                 run = SimpleNamespace(cli=self.cli, root=root, run_id="wire-" + case, old="old",
                                       state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3, "cli_sha256": self.cli.sha256}, request={"workers": []})
+                active = self.final_snapshot(run)
                 sends = []
                 def transport(args, **kwargs):
                     if args[1] == "send":
                         sends.append(args)
                         return SimpleNamespace(returncode=outcome[0], stdout=b"", stderr=outcome[1])
                     name = "list" if args[1:3] == ["session", "ls"] else "active"
-                    return SimpleNamespace(returncode=0, stdout=wire_bytes(name), stderr=b"")
+                    return SimpleNamespace(returncode=0, stdout=active if name == "active" else wire_bytes(name), stderr=b"")
                 original = execution.dispatch
                 def dispatch(cli, descriptor, *args, **kwargs):
                     if outcome is None and descriptor["parameters"]["argv"][0] == "send":
@@ -182,13 +410,14 @@ class WireContractTests(unittest.TestCase):
         self.cli.execution.close()
         run = SimpleNamespace(cli=self.cli, root=self.root, run_id="wire", old="old", request={"workers": []},
                               state={"new_id": "old", "nonce_completed": True, "bootstrap_sequence": 3, "cli_sha256": self.cli.sha256})
+        active = self.final_snapshot(run)
         result = self.root / "bootstrap/new/notifications/worker/result.json"
         sends = []
         def transport(args, **kwargs):
             if args[1] == "send":
                 sends.append(args)
                 return SimpleNamespace(returncode=1, stdout=b"", stderr=refused)
-            return SimpleNamespace(returncode=0, stdout=wire_bytes("list" if args[1:3] == ["session", "ls"] else "active"), stderr=b"")
+            return SimpleNamespace(returncode=0, stdout=wire_bytes("list") if args[1:3] == ["session", "ls"] else active, stderr=b"")
         original = h.publish
         def crash(path, raw):
             if Path(path) == result:

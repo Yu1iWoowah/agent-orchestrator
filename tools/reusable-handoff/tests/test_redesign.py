@@ -247,7 +247,7 @@ class PrepareRequestEntryTests(unittest.TestCase):
                 patch.object(h.subprocess, "run", side_effect=self.cli_transport), \
                 patch.object(h.urllib.request.OpenerDirector, "open", side_effect=self.http_transport), \
                 patch("sys.stdout", new_callable=io.StringIO) as output, patch("sys.stderr", new_callable=io.StringIO) as errors:
-            code = h.main(["prepare-request", "--old", "old", "--human", "human", "--control", "control"])
+            code = h.main(["prepare-request", "--old", "old", "--control", "control"])
         return code, output.getvalue(), errors.getvalue()
 
     def test_first_prepare_request_creates_the_private_run_root(self):
@@ -259,6 +259,12 @@ class PrepareRequestEntryTests(unittest.TestCase):
         self.assertEqual(Path(result["request"]), self.root / ".start/old/request.json")
         self.assertTrue(Path(result["request"]).is_file())
         self.assertIn("start --run " + result["run_id"], result["start_command"])
+
+    def test_prepare_request_rejects_legacy_human_argument(self):
+        with patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as stopped:
+            h.main(["prepare-request", "--old", "old", "--control", "control", "--human", "human"])
+        self.assertEqual(stopped.exception.code, 2)
+        self.assertFalse(self.root.exists())
 
     def test_existing_run_root_that_is_not_0700_stops_without_publishing(self):
         self.root.mkdir()
@@ -1189,6 +1195,89 @@ c.call(json.loads(sys.argv[7]));e.close()
         del self.snaps[self.request["workers"][1]["worker_id"]]
         self.rebind_inputs(holds={})
         self.assertEqual(self.retire()["closed_effects"], [])
+
+    def test_three_workers_retire_with_dispatched_not_started_and_original_hold(self):
+        self.dispatch_control(0)
+        delivered, unsent, held = (worker["worker_id"] for worker in self.request["workers"])
+        delivered_control = self.run / "control" / ("worker-stop-" + delivered)
+        delivered_handle = self.run_id + ":worker-stop:" + delivered
+        accepted, = [fact for fact in self.journal.facts(require_ended=True) if fact.get("effect_id") == delivered_handle]
+        h.publish(delivered_control / "result.json", h.canonical(dict(stdout="", stderr="", sha256=h.digest(b""),
+                  accepted_at=accepted["result"]["completed_at"], call_id=accepted["call_id"])))
+        original_dispatch = h.private_manifest(delivered_control)
+        original_stop = h.private_read(self.run / "workers" / delivered / "stop.json")
+        code = """import importlib.util,pathlib,sys
+from unittest.mock import patch
+s=importlib.util.spec_from_file_location('h',sys.argv[1]);h=importlib.util.module_from_spec(s);s.loader.exec_module(h)
+d,root=map(pathlib.Path,sys.argv[2:4]);j=h.Journal(d,root.name);e=j.register('_run','old')
+c=h.CLI(pathlib.Path(sys.argv[4]),'old',d,d/'running.json',d);c.execution=e
+run=h.Run(root,c);e.phase='workers';e.admission_deadline=1
+h.publish(root/'runner-intent.json',h.canonical(dict(run_id=root.name)))
+h.publish(root/'runner.json',h.canonical(dict(process=h.process_identity())))
+clock=[0];publish=h.publish
+def record(path,raw):
+    publish(path,raw)
+    if path.name=='sent.json':
+        clock[0]=2
+try:
+    with patch.object(h.time,'monotonic',side_effect=lambda:clock[0]),patch.object(h,'publish',side_effect=record),patch.object(h.subprocess,'run') as transport:
+        try:
+            run.send(sys.argv[5],'worker-stop',dict(directive='D-78'))
+        except h.AdmissionBusy:
+            pass
+        else:
+            raise AssertionError('the fixture did not reach the deadline')
+        transport.assert_not_called()
+finally:
+    e.close()
+"""
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", code, h.__file__, str(self.data), str(self.run),
+                                 self.state["cli_path"], unsent], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        unsent_control = self.run / "control" / ("worker-stop-" + unsent)
+        original_unsent = h.private_manifest(unsent_control)
+        self.assertEqual([row["path"] for row in original_unsent if not row["directory"]], ["intent.json", "payload.json"])
+        handle = self.run_id + ":worker-stop:" + unsent
+        facts = self.journal.facts(require_ended=True)
+        attempt, = [fact for fact in facts if fact.get("effect_id") == handle]
+        self.assertEqual(attempt["terminal"], "not-started")
+        self.assertIsNone(attempt["result"]["dispatched_monotonic"])
+        observer = SimpleNamespace(session=lambda actor: self.snaps[actor], documents=lambda: dict(lease=dict(sessionId="old")),
+                                   sessions=lambda: [self.list_row(snap["session"]) for snap in self.snaps.values()])
+        state = h.decode(h.private_read(self.run / "state.json"))
+        controls = h.effect_closure(facts)
+        with patch.object(h, "proc_table", return_value={}):
+            with self.assertRaisesRegex(h.Stop, "worker dispatch not in call facts"):
+                h.retirement_preconditions(observer, state, self.request, controls, self.authorization, self.run)
+            for name in ("sent.json", "result.json"):
+                with self.subTest(conflicting_marker=name):
+                    marker = unsent_control / name
+                    h.publish(marker, b"{}")
+                    try:
+                        with self.assertRaisesRegex(h.Stop, "worker dispatch not in call facts"):
+                            h.retirement_preconditions(observer, state, self.request, controls, self.authorization, self.run, facts=facts)
+                    finally:
+                        marker.unlink()
+        self.authorization["expected_effect_ids"].append(handle)
+        self.rebind_inputs()
+        original_run = h.private_manifest(self.run)
+        original_holds = h.private_manifest(self.directory / "holds")
+
+        with patch.object(h, "proc_table", return_value={}):
+            receipt = self.retire()
+        closed = {row["worker_id"]: row for row in receipt["closed_effects"] if "worker_id" in row}
+        self.assertEqual(set(closed), {delivered, unsent, held})
+        self.assertEqual(closed[delivered]["effect_id"], delivered_handle)
+        self.assertEqual(closed[delivered]["stop_sha256"], h.digest(original_stop))
+        for sid in (unsent, held):
+            self.assertEqual(closed[sid]["source"], "continuing-original-hold")
+            self.assertEqual(closed[sid]["anchor"], self.authorization["hold_evidence"][sid]["snapshot"])
+        archive = self.root / ".retired" / self.run_id
+        self.assertEqual([row for row in h.private_manifest(archive) if not row["path"].startswith("retired-start-slot")], original_run)
+        self.assertEqual(h.private_manifest(archive / "control" / ("worker-stop-" + delivered)), original_dispatch)
+        self.assertEqual(h.private_manifest(archive / "control" / ("worker-stop-" + unsent)), original_unsent)
+        self.assertFalse((archive / "control" / ("worker-stop-" + held)).exists())
+        self.assertEqual(h.private_manifest(self.directory / "holds"), original_holds)
 
     def test_three_workers_dispatched_or_controlled_run_still_closes_every_worker(self):
         sid = self.request["workers"][0]["worker_id"]
