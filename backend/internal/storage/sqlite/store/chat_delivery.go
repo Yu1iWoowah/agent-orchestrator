@@ -212,11 +212,40 @@ func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domai
 				if original.PreparedTurnID != "" && original.PreparedTurnID != providerTurn {
 					return ports.ErrAgentSettingsConflict
 				}
-				if err := q.BindConversationTurnProviderID(ctx, gen.BindConversationTurnProviderIDParams{
-					ID: turn.ID, ProviderTurnID: providerTurn,
-					StartedAt: sql.NullTime{Time: original.Receipt.ObservedAt, Valid: running},
-				}); err != nil {
+				projected, err := q.SelectConversationTurnByProviderID(ctx, gen.SelectConversationTurnByProviderIDParams{
+					ConversationID: turn.ConversationID, ProviderTurnID: providerTurn,
+				})
+				switch {
+				case errors.Is(err, sql.ErrNoRows):
+					if err := q.BindConversationTurnProviderID(ctx, gen.BindConversationTurnProviderIDParams{
+						ID: turn.ID, ProviderTurnID: providerTurn,
+						StartedAt: sql.NullTime{Time: original.Receipt.ObservedAt, Valid: running},
+					}); err != nil {
+						return err
+					}
+				case err != nil:
 					return err
+				default:
+					// TurnStarted can adopt the native ID under a later reconnect
+					// generation. Its branch and session still identify the receipt's
+					// provider thread. Keep the existing event-to-turn correlation.
+					if projected.BranchID != turn.BranchID || projected.HandledBySessionID != turn.HandledBySessionID ||
+						projected.HandledByReviewID.Valid || projected.RolledBackAt.Valid || projected.ControllerGeneration == "" ||
+						(projected.State != domain.TurnStateRunning && !projected.State.Terminal()) {
+						return ports.ErrAgentSettingsConflict
+					}
+					hasDelivery, err := q.HasUnresolvedChatDelivery(ctx, projected.ID)
+					if err != nil {
+						return err
+					}
+					if hasDelivery {
+						return ports.ErrAgentSettingsConflict
+					}
+					if projected.State == domain.TurnStateRunning {
+						if err := settleLostChatTurn(ctx, q, projected, at); err != nil {
+							return err
+						}
+					}
 				}
 			}
 			if running {

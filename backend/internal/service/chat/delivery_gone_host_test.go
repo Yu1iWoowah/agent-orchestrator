@@ -301,11 +301,23 @@ func (*cancelledBindingStore) BindTurnToProvider(context.Context, string, string
 }
 
 func TestColdShutdownRecoversAcceptedReceiptBeforeProviderBinding(t *testing.T) {
-	t.Run("running", func(t *testing.T) { testColdShutdownRecoversUnboundAcceptance(t, false) })
-	t.Run("after live reconnect", func(t *testing.T) { testColdShutdownRecoversUnboundAcceptance(t, true) })
+	for _, tc := range []struct {
+		name           string
+		reconnect      bool
+		projectStarted bool
+	}{
+		{name: "running"},
+		{name: "after live reconnect", reconnect: true},
+		{name: "after TurnStarted", projectStarted: true},
+		{name: "after reconnect replay", reconnect: true, projectStarted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testColdShutdownRecoversUnboundAcceptance(t, tc.reconnect, tc.projectStarted)
+		})
+	}
 }
 
-func testColdShutdownRecoversUnboundAcceptance(t *testing.T, reconnect bool) {
+func testColdShutdownRecoversUnboundAcceptance(t *testing.T, reconnect, projectStarted bool) {
 	t.Helper()
 	requireBootIdentity(t)
 	ctx := t.Context()
@@ -329,7 +341,7 @@ func testColdShutdownRecoversUnboundAcceptance(t *testing.T, reconnect bool) {
 		t.Fatalf("accepted receipt missing before reboot: %+v, %v", original, err)
 	}
 
-	if !reconnect {
+	if !reconnect && !projectStarted {
 		stale := original
 		stale.Version--
 		if err := h.st.SettlePreviousBootAcceptance(ctx, stale, original.Owner, clock.Now()); !errors.Is(err, ports.ErrAgentSettingsConflict) {
@@ -367,6 +379,34 @@ func testColdShutdownRecoversUnboundAcceptance(t *testing.T, reconnect bool) {
 	wantState := domain.TurnStateInterrupted
 	var reconnectProvider *reconnectedReceiptConversation
 	var reconnectTurn domain.ConversationTurn
+	var adoptedID string
+	const approvalItem = "adopted-approval"
+	projectProviderTurn := func(provider *fakeConversation) {
+		providerTurn := original.Receipt.ProviderTurnID
+		provider.emit(
+			ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: providerTurn, ProviderEventID: "adopted-start"},
+			ports.ChatEvent{Kind: ports.ChatEventApprovalRequested, ProviderTurnID: providerTurn, ProviderEventID: "adopted-approval-request",
+				ProviderItemID: approvalItem, RequestID: approvalItem, ActivityStatus: domain.ActivityStatusPending},
+		)
+		h.awaitSnapshot(t, func(snapshot store.ConversationSnapshot) bool {
+			for _, projected := range snapshot.Turns {
+				if projected.ID != turn.ID && projected.ProviderTurnID == providerTurn && projected.State == domain.TurnStateRunning {
+					adoptedID = projected.ID
+					break
+				}
+			}
+			return adoptedID != "" && len(snapshot.Activities) == 1 &&
+				snapshot.Activities[0].TurnID == adoptedID && snapshot.Activities[0].Status == domain.ActivityStatusPending
+		})
+	}
+	if projectStarted && !reconnect {
+		projectProviderTurn(conv.fakeConversation)
+		conv.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerStopped, Err: ports.ErrChatRecoveryInconclusive})
+		if err := conv.Close(); err != nil {
+			t.Fatal(err)
+		}
+		h.ctrl.Wait()
+	}
 	if reconnect {
 		// Close the old daemon's attachment without letting ordinary projector
 		// cleanup settle its work. The first reconnect is still on the same boot.
@@ -377,12 +417,14 @@ func testColdShutdownRecoversUnboundAcceptance(t *testing.T, reconnect bool) {
 		h.ctrl.Wait()
 		reconnectProvider = &reconnectedReceiptConversation{receiptConversation: &receiptConversation{
 			terminatingConversation: &terminatingConversation{fakeConversation: newFakeConversation()},
+			ack:                     func(string) error { return nil },
 		}}
 		reconnectProvider.outboundEpoch = previousBootEpoch
+		var ids atomic.Int64
 		reconnected := chatsvc.New(chatsvc.Options{
 			Store: h.st, Sessions: h.st, Reader: fullSnapshotReader(h.st),
 			Drivers: fakeRegistry{driver: fakeDriver{conv: reconnectProvider}},
-			Now:     clock.Now, After: clock.After, NewID: func() string { return "same-boot-reconnect" },
+			Now:     clock.Now, After: clock.After, NewID: func() string { return fmt.Sprintf("same-boot-reconnect-%d", ids.Add(1)) },
 		})
 		controller, err := reconnected.Start(ctx, chatsvc.StartConfig{
 			SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
@@ -399,6 +441,9 @@ func testColdShutdownRecoversUnboundAcceptance(t *testing.T, reconnect bool) {
 		stillHeld, err := h.st.ChatDeliveryAttempt(ctx, testSession, original.ID)
 		if err != nil || stillHeld.ExecutionSettled || stillHeld.Receipt == nil || *stillHeld.Receipt != *original.Receipt {
 			t.Fatalf("same-boot reconnect changed the receipt or hold: %+v, %v", stillHeld, err)
+		}
+		if projectStarted {
+			projectProviderTurn(reconnectProvider.fakeConversation)
 		}
 		reconnectProvider.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerStopped, Err: ports.ErrChatRecoveryInconclusive})
 		if err := reconnectProvider.Close(); err != nil {
@@ -431,11 +476,29 @@ func testColdShutdownRecoversUnboundAcceptance(t *testing.T, reconnect bool) {
 		t.Fatalf("cold settlement changed the original receipt: %+v, %v", saved, err)
 	}
 	after, err := h.st.TurnByID(ctx, turn.ID)
-	if err != nil || after.State != wantState || after.ProviderTurnID != original.Receipt.ProviderTurnID {
+	wantProviderID := original.Receipt.ProviderTurnID
+	if projectStarted {
+		wantProviderID = ""
+	}
+	if err != nil || after.State != wantState || after.ProviderTurnID != wantProviderID {
 		t.Fatalf("recovered turn = %s/%q, %v", after.State, after.ProviderTurnID, err)
 	}
 	if reconnect && (after.ErrorMessage != reconnectTurn.ErrorMessage || after.StartedAt != nil || after.CompletedAt == nil || !reconnectTurn.CompletedAt.Equal(*after.CompletedAt)) {
 		t.Fatalf("cold settlement rewrote the reconnect terminal result: %+v", after)
+	}
+	if projectStarted {
+		adopted, err := h.st.TurnByID(ctx, adoptedID)
+		if err != nil || adopted.State != domain.TurnStateInterrupted || adopted.ProviderTurnID != original.Receipt.ProviderTurnID {
+			t.Fatalf("adopted turn after cold settlement = %s/%q, %v", adopted.State, adopted.ProviderTurnID, err)
+		}
+		snapshot, err := h.st.LoadConversationSnapshot(ctx, h.ctrl.ConversationID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		approval := findActivity(t, snapshot, approvalItem)
+		if approval.TurnID != adoptedID || approval.Status != domain.ActivityStatusFailed {
+			t.Fatalf("adopted approval after cold settlement = %+v", approval)
+		}
 	}
 	if pending, err := h.st.PendingChatDeliveries(ctx, testSession); err != nil || len(pending) != 0 {
 		t.Fatalf("cold settlement left pending delivery: %+v, %v", pending, err)
