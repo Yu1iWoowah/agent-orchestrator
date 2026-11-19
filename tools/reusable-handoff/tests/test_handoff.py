@@ -1217,19 +1217,22 @@ finally:
         snap["transcript"]["turns"].append(interrupted)
         snap["transcript"]["entries"] += [
             projected(run.cli.calls[-1], "nonce", "original", 2),
+            dict(kind="message", role="assistant", id="interrupted-answer", turnId="original", sequence=3,
+                 createdAt="2026-11-08T01:00:00Z", text=run.state["nonce"]),
             dict(kind="message", role="user", origin="automation", clientMessageId="report-batch:123",
-                 createdAt="2026-11-08T01:00:02Z", text="Reports [worker](ao://sessions/agent-orchestrator/worker)", sequence=3)]
+                 createdAt="2026-11-08T01:00:02Z", text="Reports [worker](ao://sessions/agent-orchestrator/worker)", sequence=4)]
         self.assertFalse(h.nonce_completed(run))
         self.assertFalse(h.nonce_completed(run))
         self.assertEqual(len(run.cli.calls), 2)
         snap["transcript"]["turns"].append(dict(id="continuation", state="completed", completedAt=h.now(),
                   providerTurnId="native-turn", agentSettings={"state": "known", "settings": {"model": "model", "effort": "high"}}))
         snap["transcript"]["entries"] += [
-            projected(run.cli.calls[-1], "nonce-continue", "continuation", 4),
-            dict(kind="message", role="assistant", id="answer", turnId="continuation", sequence=5, text=run.state["nonce"])]
+            projected(run.cli.calls[-1], "nonce-continue", "continuation", 5),
+            dict(kind="message", role="assistant", id="answer", turnId="continuation", sequence=6, text=run.state["nonce"])]
         with patch.object(h, "verify_target", return_value={"native": "new"}):
             self.assertTrue(h.nonce_completed(run))
         self.assertEqual(run.state["nonce_completed"]["turn_id"], "continuation")
+        self.assertEqual(run.state["nonce_completed"]["message_id"], "answer")
         snap["transcript"]["entries"].pop()
         with self.assertRaisesRegex(h.Stop, "completed without verified answer"):
             h.nonce_completed(run)

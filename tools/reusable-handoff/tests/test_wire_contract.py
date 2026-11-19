@@ -117,6 +117,57 @@ class WireContractTests(unittest.TestCase):
             self.assertEqual(len(execution.effect_attempts(effect)), 1)
             transport.assert_called_once()
 
+    def test_spawn_after_admission_timeout_reloads_the_original_intent_once(self):
+        journal = self.cli.execution.journal
+        request = h.canonical(dict(request_id=journal.run_id, old_id="old", workers=[],
+                                   target=dict(self.cli.execution.request_target, mode="chat"),
+                                   authority={"source_refs": ["human"]}))
+        h.publish(self.root / "start.json", request)
+        h.publish(self.root / "state.json", h.canonical(dict(start_sha256=h.digest(request), stage="spawn",
+                  handoff={"path": "handoff.md"}, manifest={"path": "manifest.json"})))
+        run = h.Run(self.root, self.cli)
+        directory = self.root / "control/spawn"
+        sessions = []
+        sent = []
+
+        def spawn(argv, **kwargs):
+            self.assertEqual(argv[1:], original["argv"])
+            sent.append(argv)
+            name = argv[argv.index("--name") + 1]
+            sessions.append(dict(id="new", projectId=h.PROJECT, role="orchestrator", displayName=name, createdAt=h.now()))
+            return SimpleNamespace(returncode=0, stdout=b"spawned session new", stderr=b"")
+
+        def get(path):
+            if path == "sessions/new":
+                return {"session": dict(harness="codex", mode="chat", isTerminated=False)}
+            self.assertEqual(path, "agents/accounts/sessions/new")
+            return {h.provider(run.target): "acct"}
+
+        with patch.object(self.cli, "sessions", side_effect=lambda: list(sessions)), patch.object(self.cli, "get", side_effect=get), \
+             patch.object(h.subprocess, "run", side_effect=spawn):
+            with (journal.root / "admission.lock").open("r+b") as held, patch.object(h, "ADMISSION_LIMIT", 0.01):
+                h.fcntl.flock(held, h.fcntl.LOCK_EX)
+                with self.assertRaises(h.AdmissionBusy):
+                    h.spawn_new(run)
+            raw = h.private_read(directory / "intent.json")
+            original = h.decode(raw)
+            self.assertEqual(run.state["effects"]["spawn"], "not-dispatched")
+            self.assertFalse((directory / "sent.json").exists())
+            self.assertEqual(self.cli.execution.effect_attempts("spawn"), [])
+            self.assertEqual(sent, [])
+            self.cli.execution.close()
+            self.cli.execution = journal.register("_run", "old")
+            self.addCleanup(self.cli.execution.close)
+            resumed = h.Run(self.root, self.cli)
+            self.assertEqual(h.spawn_new(resumed), "new")
+            self.assertEqual(h.spawn_new(h.Run(self.root, self.cli)), "new")
+            sessions.clear()
+            with self.assertRaisesRegex(h.Stop, "UNKNOWN spawn"):
+                h.spawn_new(h.Run(self.root, self.cli))
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(h.private_read(directory / "intent.json"), raw)
+            self.assertEqual(len(self.cli.execution.effect_attempts("spawn")), 1)
+
     def test_true_cli_list_and_all_role_callers(self):
         with self.transport("list"):
             rows = self.cli.sessions()

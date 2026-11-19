@@ -2990,16 +2990,29 @@ def spawn_new(run):
     token = "RH3[" + run.run_id + "]"
     name = token + " orchestrator"
     require(len(name) <= 100, "spawn display name too long")
-    intent_path = run.root / "control" / "spawn" / "intent.json"
-    if intent_path.exists():
-        intent = decode(private_read(intent_path))
-        sid = match_spawn(run.cli.sessions(), token, intent["created_at"])
-    else:
-        require(not any(token in s.get("displayName", "") for s in run.cli.sessions()), "spawn token collision")
-        prompt = bootstrap_prompt(run)
-        args = ["spawn", "--project", PROJECT, "--kind", "orchestrator", "--agent", run.target["harness"],
-                "--account", run.target["account"], "--mode", "chat", "--model", run.target["model"],
-                "--effort", run.target["effort"], "--approval-mode", run.target["approval_mode"], "--name", name, "--prompt", prompt]
+    directory = run.root / "control" / "spawn"
+    intent_path = no_symlinks(directory / "intent.json")
+    intent = decode(private_read(intent_path)) if intent_path.exists() else None
+    sessions = run.cli.sessions()
+    token_seen = any(token in s.get("displayName", "") for s in sessions)
+    execution = getattr(run.cli, "execution", None)
+    # Admission can time out after the business intent is saved and before the journal records a dispatch.
+    undispatched = (intent is not None and execution is not None and not token_seen and not run.state.get("new_id") and
+                    run.state.get("effects", {}).get("spawn") == "not-dispatched" and
+                    not no_symlinks(directory / "sent.json").exists() and
+                    not no_symlinks(directory / "result.json").exists() and not execution.effect_attempts("spawn"))
+    if intent is None or undispatched:
+        require(not token_seen, "spawn token collision")
+        if intent is None:
+            args = ["spawn", "--project", PROJECT, "--kind", "orchestrator", "--agent", run.target["harness"],
+                    "--account", run.target["account"], "--mode", "chat", "--model", run.target["model"],
+                    "--effort", run.target["effort"], "--approval-mode", run.target["approval_mode"], "--name", name,
+                    "--prompt", bootstrap_prompt(run)]
+        else:
+            args = intent["argv"]
+            require(args[:1] == ["spawn"] and "--name" in args, "invalid spawn intent argv")
+            name_index = args.index("--name") + 1
+            require(args[name_index:name_index + 1] == [name], "spawn intent token changed")
         try:
             run.effect("spawn", args, LIMITS["spawn"])
         except AdmissionBusy:
@@ -3008,10 +3021,11 @@ def spawn_new(run):
             # Only look up the original effect. Never submit a second spawn.
             pass
         intent = decode(private_read(intent_path))
-        sid = match_spawn(run.cli.sessions(), token, intent["created_at"])
-    if getattr(run.cli, "execution", None):
-        run.cli.execution.bindings.add(sid)
-        run.cli.execution.new_id = sid
+        sessions = run.cli.sessions()
+    sid = match_spawn(sessions, token, intent["created_at"])
+    if execution:
+        execution.bindings.add(sid)
+        execution.new_id = sid
     actual = run.cli.get("sessions/" + identifier(sid))["session"]
     require(not actual.get("isTerminated") and actual.get("status") != "failed", "original new provision failed")
     require(actual.get("harness") == run.target["harness"] and actual.get("mode") == "chat", "spawn target identity mismatch")
@@ -3166,8 +3180,7 @@ def nonce_completed(run):
     turn = terminal_turn(snap, finished)
     require(known_turn(turn, run.target), f"nonce: {sid} turn {finished} settings UNKNOWN")
     for entry in entries(snap):
-        if entry.get("role") == "assistant" and nonce in entry.get("text", ""):
-            require(entry.get("turnId") == finished, "nonce answer not tied to original challenge")
+        if entry.get("turnId") == finished and entry.get("role") == "assistant" and nonce in entry.get("text", ""):
             actual = verify_target(run.cli, sid, run.target, snap, run.cli.data_dir / "ao.db")
             require(actual == run.state["new_binding"], "native/target/account drift after resume")
             run.state["nonce_completed"] = {"turn_id": turn["id"], "provider_turn_id": turn["providerTurnId"],
