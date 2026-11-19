@@ -883,7 +883,28 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	// survive a failed first drain.
 	queuedBeforeFirstController := false
 	preserveUndispatchedQueue := false
+	settingsAccount := s.settingsAccountBeforeLaunch(ctx, cfg.SessionID, cfg.Harness)
+	executionAccount := settingsAccount
+	if selected, ok := ports.AgentAccountFromContext(ctx); ok {
+		if provider, managed := domain.AgentAccountProviderFor(cfg.Harness); managed && selected.Provider == provider && selected.AccountID != "" {
+			executionAccount = selected.AccountID
+		}
+	}
 	waking := s.isWaking(cfg.SessionID)
+	committedAccountMove := false
+	if sessionFound && owner.Kind == domain.ConversationOwnerSession && settingsAccount == executionAccount {
+		var err error
+		committedAccountMove, err = s.committedAccountMove(ctx, cfg.SessionID, executionAccount)
+		if err != nil {
+			return nil, fmt.Errorf("read account move before starting Chat: %w", err)
+		}
+	}
+	if committedAccountMove {
+		waking = true
+		// The durable binding survived even if the daemon died before the
+		// transition's first drain. Let Start wake that same durable queue.
+		s.markStartIntake(cfg.SessionID)
+	}
 	// A session whose move to a new harness release failed kept its queued
 	// messages for this start, the way a wake does (see versionSwitchFailed).
 	if sessionFound && sessionRecord.StaleBinary != nil && sessionRecord.StaleBinary.SwitchFailedAt != nil {
@@ -1036,7 +1057,6 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	}
 	providerSystemPrompt := withHandoffNote(cfg.SystemPrompt, handoffNote)
 
-	settingsAccount := s.settingsAccountBeforeLaunch(ctx, cfg.SessionID, cfg.Harness)
 	var conv ports.ChatConversation
 	hostID := providerHostID(cfg)
 	freshIfMissing := cfg.FreshIfProviderConversationMissing
@@ -1498,9 +1518,17 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		cfg.ExpectedControllerOwner.ProviderConversationID = controller.ProviderConversationID()
 		cfg.ExpectedControllerOwner.ControllerGeneration = controller.Generation()
 	}
-	controller.settingsObservationOwner = controller.observationOwner(settingsAccount)
+	controller.settingsObservationOwner = controller.observationOwner(executionAccount)
 	s.configureAgentSettingsController(controller)
-	controller.initializeAgentSettings(ctx)
+	tentativeAccount := owner.Kind == domain.ConversationOwnerSession && executionAccount != settingsAccount
+	controller.settingsAwaitingAccountCommit = tentativeAccount || committedAccountMove
+	if tentativeAccount {
+		// A tentative target owns its actual provider account, but must not
+		// touch preferences or inputs until the durable binding matches it.
+		controller.settingsInitializationError = ports.ErrAgentSettingsConflict
+	} else {
+		controller.initializeAgentSettings(ctx)
+	}
 	if replacementReplay {
 		current, err := s.requireChatSession(ctx, cfg.SessionID)
 		if err != nil || current.Metadata.BrowserCapabilityVerifier != launchVerifier || current.ControllerOwner() != cfg.ExpectedControllerOwner {

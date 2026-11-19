@@ -1356,7 +1356,7 @@ describe("ProjectSettingsForm", () => {
         await waitFor(() => expect(postMock).toHaveBeenCalledTimes(3));
         for (const role of ["worker", "orchestrator", "reviewer"]) {
             expect(postMock).toHaveBeenCalledWith("/api/v1/agents/{agent}/models/refresh", {
-                params: { path: {agent:"codex"}, query: { projectId:"proj-1", role, agentAccountId:undefined, revalidate:true } },
+                params: { path: {agent:"codex"}, query: { projectId: role === "orchestrator" ? "proj-1" : undefined, role, agentAccountId:undefined, revalidate:true } },
             });
         }
     });

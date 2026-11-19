@@ -115,3 +115,45 @@ func TestControlDoesNotBorrowDeviceCatalogForManagedAccount(t *testing.T) {
 		})
 	}
 }
+
+func TestClaudeInheritedEffortRequiresOptionsFromTheCurrentAttachment(t *testing.T) {
+	for _, model := range []string{"native", "default"} {
+		t.Run(model, func(t *testing.T) {
+			c, st, rec, _, _ := scopedControlFixture(t, domain.HarnessClaudeCode, true, false)
+			rec.Metadata.Model = ""
+			if err := st.UpdateSession(t.Context(), rec); err != nil {
+				t.Fatal(err)
+			}
+			current, err := st.SessionAgentSettings(t.Context(), rec.ID)
+			if err != nil || current.Settings.Model != "" {
+				t.Fatalf("inherited preference fixture: %+v, %v", current, err)
+			}
+			owner := domain.AgentSettingsOwner{SessionID: current.SessionID, AccountID: current.AccountID, ControllerGeneration: current.OwnerGeneration, ProviderConversationID: current.ProviderConversationID, BranchID: current.BranchID}
+			stale := owner
+			stale.AccountID = domain.DeviceAgentAccountID(domain.AgentAccountProviderClaude)
+			receipt := domain.AgentSettingsObservation{
+				Owner:         stale,
+				EffortOptions: &domain.AgentSettingsEffortOptions{ObservedAt: c.now(), Model: model, Permission: "auto", Efforts: []string{"high"}},
+			}
+			high := domain.AgentEffortSelection("high")
+			change := Change{ExpectedRevision: &current.Revision, IdempotencyKey: "native-effort", Settings: domain.AgentSettingsPatch{Effort: &high}}
+			c.core.SetObservationSource(observationSource{receipt})
+			if _, err := c.Change(t.Context(), Caller{}, rec.ID, change); !hasCode(err, "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE") {
+				t.Fatalf("foreign options authorized admission: %v", err)
+			}
+			receipt.Owner = owner
+			c.core.SetObservationSource(observationSource{receipt})
+			op, err := c.Change(t.Context(), Caller{}, rec.ID, change)
+			if err != nil || op.Phase != domain.AgentSettingsPending || op.Target.Model != "" || op.Target.Effort != high {
+				t.Fatalf("native effort did not queue with inherited model: %+v, %v", op, err)
+			}
+			if _, err := c.ValidateAgentSettings(t.Context(), op, owner, false); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := c.core.Read(t.Context(), rec.ID)
+			if err != nil || len(snapshot.CurrentModelEfforts) != 1 || snapshot.CurrentModelEfforts[0] != "high" || snapshot.Effective.Model.State != domain.AgentSettingUnknown {
+				t.Fatalf("session inspector evidence: %+v, %v", snapshot, err)
+			}
+		})
+	}
+}

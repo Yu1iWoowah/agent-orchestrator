@@ -91,6 +91,24 @@ function showSettingsSurfaces() {
 }
 
 describe("Session agent settings intent", () => {
+	it("submits only effort from the live Claude model choices when the catalog has no default", async () => {
+		server = agentSettingsSnapshot({
+			settings: agentSettingsSelection({ model: "", effort: "" }),
+			currentModelEfforts: ["high"],
+			capabilities: { ...server.capabilities, models: [] },
+			pending: undefined,
+		});
+		showSession({ provider: "claude-code" });
+		await userEvent.click(screen.getByRole("button", { name: "Agent settings" }));
+		await userEvent.click(await screen.findByRole("button", { name: "Edit agent settings" }));
+		const dialog = await screen.findByRole("dialog", { name: "Change agent settings" });
+		await userEvent.click(within(dialog).getByRole("button", { name: /^Effort/ }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "high" }));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Apply settings" }));
+		expect(patchMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/agent-settings", expect.objectContaining({
+			body: expect.objectContaining({ settings: { effort: "high" } }),
+		}));
+	});
 	it("restores the confirmed composer projection when cancellation is read before its CDC", async () => {
 		server = agentSettingsSnapshot();
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });

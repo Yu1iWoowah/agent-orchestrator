@@ -497,6 +497,11 @@ export function SessionInterfaceTransitionNotice({
 										? "The agent stays on its previous account. You can retry the switch."
 										: "The original interface remains available. You can retry the switch.")}
 				</p>
+				{accountMove && transition.completedAt && (
+					<time className="mt-1 block text-caption text-muted-foreground" dateTime={transition.completedAt}>
+						{new Date(transition.completedAt).toLocaleString()}
+					</time>
+				)}
 				{transition.phase === "failed" && !accountMove &&
 				(interactiveSourceUnverified || transition.errorCode === "DRAIN_DECISION_PENDING") &&
 				onSwitchWithInterrupt ? (

@@ -218,6 +218,7 @@ func legacySettingsAndTypedControl(t *testing.T, agentHarness domain.AgentHarnes
 	for _, entry := range []string{"turn_settings", "config_options", "direct_settings", "effort", "fast_on", "fast_off", "fast_off_after_on"} {
 		t.Run(entry, func(t *testing.T) {
 			h, conv, _, _ := journalHarnessForHarness(t, agentHarness)
+			conv.effortOptions = &domain.AgentSettingsEffortOptions{ObservedAt: h.now(), Model: "default", Permission: "default", Efforts: []string{"high"}}
 			catalog := ports.AgentModelCatalog{AgentID: string(agentHarness), Models: []ports.AgentModelInfo{{ID: "new-model", IsDefault: true, Efforts: []string{"high"}, SupportsFast: true}}}
 			raw, _ := json.Marshal(catalog)
 			if err := h.st.UpsertAgentModelCatalog(t.Context(), ports.CachedAgentModelCatalog{AgentID: string(agentHarness), CatalogJSON: string(raw), InputFingerprint: "live-inputs", LastSuccessAt: h.now(), FetchedAt: h.now()}); err != nil {
@@ -225,6 +226,7 @@ func legacySettingsAndTypedControl(t *testing.T, agentHarness domain.AgentHarnes
 			}
 			reader := agentsettings.New(h.st, h.now)
 			reader.SetCatalogFingerprintSource(legacyCatalogInputs{})
+			reader.SetObservationSource(h.svc)
 			control := agentsettings.NewControl(reader, h.st, agentsettings.NewAuthorizer(h.st, nil, h.now), h.svc, h.now)
 			h.svc.SetAgentSettingsMutator(control)
 			h.svc.SetAgentSettingsValidator(control)

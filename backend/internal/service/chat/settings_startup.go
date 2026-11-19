@@ -29,6 +29,12 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 	if !ok || c.reviewID != "" {
 		return nil
 	}
+	if c.settingsAwaitingAccountCommit {
+		if _, err := c.settingsContext(ctx, journal); err != nil {
+			return err
+		}
+		c.settingsAwaitingAccountCommit = false
+	}
 	_, pending, err := journal.PendingAgentSettingsOperation(ctx, c.sessionID)
 	if err != nil {
 		return err
@@ -122,7 +128,7 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
 	if err := c.coldSettingsStillQualified(ctx, journal, replay, current, proof); err != nil {
 		return err
 	}
-	if err := c.qualifySettingsEvidenceLocked(ctx, &current.Settings); err != nil {
+	if err := c.qualifySettingsEvidenceLocked(ctx, &current.Settings, plan); err != nil {
 		return err
 	}
 	c.adoptAgentSettings(current.Settings)

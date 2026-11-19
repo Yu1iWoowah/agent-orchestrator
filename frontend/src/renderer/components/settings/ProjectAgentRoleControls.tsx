@@ -239,6 +239,8 @@ export function AgentModelField({
 				retryAt={catalog?.retryAt}
 				disabled={catalogFetching || agentId === ""}
 				onChange={selectCatalogModel}
+				pinCatalogDefault={followCatalogDefaults}
+				onUseDefault={followCatalogDefaults ? () => selectCatalogModel("") : undefined}
 				onCustom={selectCustomModel}
 				triggerClassName={cn(MENU_TRIGGER_CHROME, "w-fit")}
 				compact

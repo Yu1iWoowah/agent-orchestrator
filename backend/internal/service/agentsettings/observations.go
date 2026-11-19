@@ -44,30 +44,19 @@ func (s *Service) readObservations(ctx context.Context, snapshot *Snapshot) erro
 	if s.observations == nil {
 		return nil
 	}
-	receipt, err := s.observations.ObserveAgentSettings(ctx, snapshot.SessionID)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		snapshot.Effective = domain.UnknownAgentSettingsEffective("observation_unavailable")
-		return nil
-	}
-	owner := receipt.Owner
-	if !observationOwnerMatches(owner, snapshot.SessionAgentSettings) {
-		snapshot.Effective = domain.UnknownAgentSettingsEffective("observation_owner_mismatch")
-		return nil
-	}
-	// An owner switch racing the receipt cannot lend the old provider's evidence
-	// to the replacement. This read does not mutate or wake either controller.
-	current, err := s.store.SessionAgentSettings(ctx, snapshot.SessionID)
+	receipt, unavailable, err := s.qualifiedObservation(ctx, snapshot.SessionAgentSettings)
 	if err != nil {
 		return err
 	}
-	if current != snapshot.SessionAgentSettings {
-		snapshot.Effective = domain.UnknownAgentSettingsEffective("observation_owner_changed")
+	if unavailable != "" {
+		snapshot.Effective = domain.UnknownAgentSettingsEffective(unavailable)
 		return nil
 	}
+	owner := receipt.Owner
 	now := s.now()
+	if options := receipt.EffortOptions; snapshot.Settings.Model == "" && options != nil {
+		snapshot.CurrentModelEfforts = options.Efforts
+	}
 	if turn := receipt.CurrentTurn; turn != nil {
 		frameSnapshot := *turn
 		if frameSnapshot.State == domain.AgentSettingKnown && (frameSnapshot.Settings == nil || frameSnapshot.Settings.Validate() != nil || frameSnapshot.CapturedAt == nil || frameSnapshot.CapturedAt.IsZero() || frameSnapshot.CapturedAt.After(now) || frameSnapshot.Revision != nil && *frameSnapshot.Revision > snapshot.Revision) {
@@ -90,6 +79,35 @@ func (s *Service) readObservations(ctx context.Context, snapshot *Snapshot) erro
 	effective.Owner = &owner
 	snapshot.Effective = effective
 	return nil
+}
+
+func (s *Service) qualifiedObservation(ctx context.Context, settings domain.SessionAgentSettings) (domain.AgentSettingsObservation, string, error) {
+	receipt, available := ports.AgentSettingsObservationFromContext(ctx)
+	if !available {
+		if s.observations == nil {
+			return receipt, "observation_unavailable", nil
+		}
+		var err error
+		receipt, err = s.observations.ObserveAgentSettings(ctx, settings.SessionID)
+		if err != nil {
+			return receipt, "observation_unavailable", ctx.Err()
+		}
+	}
+	if !observationOwnerMatches(receipt.Owner, settings) {
+		return receipt, "observation_owner_mismatch", nil
+	}
+	// Re-read after collecting evidence so a racing switch cannot qualify it.
+	current, err := s.store.SessionAgentSettings(ctx, settings.SessionID)
+	if err != nil {
+		return receipt, "", err
+	}
+	if current != settings {
+		return receipt, "observation_owner_changed", nil
+	}
+	if options := receipt.EffortOptions; options != nil && (settings.Harness != domain.HarnessClaudeCode || settings.Mode != domain.SessionModeChat || options.Model == "" || options.Permission == "" || options.ObservedAt.IsZero() || options.ObservedAt.After(s.now())) {
+		receipt.EffortOptions = nil
+	}
+	return receipt, "", nil
 }
 
 func observationOwnerMatches(owner domain.AgentSettingsOwner, settings domain.SessionAgentSettings) bool {

@@ -16,3 +16,20 @@ type ChatAgentSettingsObserver interface {
 type AgentSettingsObservationSource interface {
 	ObserveAgentSettings(context.Context, domain.SessionID) (domain.AgentSettingsObservation, error)
 }
+
+// ChatAgentSettingsEffortObserver reports authoritative options for Claude's
+// current model slot without reading or changing launch preferences.
+type ChatAgentSettingsEffortObserver interface {
+	AgentSettingsEffortOptions() *domain.AgentSettingsEffortOptions
+}
+
+type agentSettingsObservationKey struct{}
+
+func WithAgentSettingsObservation(ctx context.Context, observation domain.AgentSettingsObservation) context.Context {
+	return context.WithValue(ctx, agentSettingsObservationKey{}, observation)
+}
+
+func AgentSettingsObservationFromContext(ctx context.Context) (domain.AgentSettingsObservation, bool) {
+	observation, ok := ctx.Value(agentSettingsObservationKey{}).(domain.AgentSettingsObservation)
+	return observation, ok
+}

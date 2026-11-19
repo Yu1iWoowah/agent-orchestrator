@@ -55,10 +55,16 @@ func newSessionSettingsCommand(c *commandContext) *cobra.Command {
 			return writeSettingsJSON(cmd, response)
 		}
 		var view struct {
-			Revision  int64                `json:"revision"`
-			Settings  domain.AgentSettings `json:"settings"`
-			Pending   json.RawMessage      `json:"pending"`
-			Effective json.RawMessage      `json:"effective"`
+			Revision        int64                `json:"revision"`
+			Settings        domain.AgentSettings `json:"settings"`
+			Pending         json.RawMessage      `json:"pending"`
+			Effective       json.RawMessage      `json:"effective"`
+			Reconciliations []struct {
+				OperationID     string   `json:"operationId"`
+				ErrorCode       string   `json:"errorCode"`
+				EffectPending   bool     `json:"effectPending"`
+				MissingEvidence []string `json:"missingEvidence"`
+			} `json:"reconciliations"`
 		}
 		if err := json.Unmarshal(response, &view); err != nil {
 			return err
@@ -68,8 +74,26 @@ func newSessionSettingsCommand(c *commandContext) *cobra.Command {
 		}
 		if len(view.Pending) > 0 && string(view.Pending) != "null" {
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Pending: %s\n", view.Pending)
+			if err != nil {
+				return err
+			}
 		}
-		return err
+		for _, attempt := range view.Reconciliations {
+			switch {
+			case attempt.EffectPending:
+				evidence := strings.Join(attempt.MissingEvidence, ", ")
+				if evidence == "" {
+					evidence = "the provider outcome"
+				}
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "Settings operation %s is waiting for %s. Wait for provider confirmation before submitting another change.\n", attempt.OperationID, evidence)
+			case attempt.ErrorCode == "AGENT_SETTINGS_READ_TIMEOUT":
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "Settings operation %s timed out before applying. The previous settings are still active. You can submit a new change.\n", attempt.OperationID)
+			default:
+				continue
+			}
+			return err
+		}
+		return nil
 	}
 	return cmd
 }
@@ -230,6 +254,9 @@ func settingsOperationFailure(op sessionSettingsOperation) error {
 	case "applied", "pending":
 		return nil
 	case "failed", "cancelled", "recovery_required":
+		if op.ErrorCode == "AGENT_SETTINGS_READ_TIMEOUT" {
+			return errors.New(apiError{Message: fmt.Sprintf("settings operation %s timed out before applying. The previous settings are still active. You can submit a new change.", op.ID), Code: op.ErrorCode, RequestID: op.RequestID}.String())
+		}
 		return errors.New(apiError{Message: fmt.Sprintf("settings operation %s: %s", op.ID, op.Phase), Code: op.ErrorCode, RequestID: op.RequestID}.String())
 	default:
 		return fmt.Errorf("daemon returned unknown settings operation phase %q", op.Phase)

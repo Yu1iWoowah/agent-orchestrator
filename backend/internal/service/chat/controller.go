@@ -224,38 +224,39 @@ type replacementReplayProof struct {
 type Controller struct {
 	// Immutable after publication; belongs only to this successfully replayed
 	// controller, never to a future controller rebuilt from startConfigs.
-	strictReplacementReplay     *replacementReplayProof
-	sessionID                   domain.SessionID
-	reviewID                    string
-	conversation                domain.ConversationRecord
-	generation                  string
-	harness                     domain.AgentHarness
-	guardianLaunchedAt          time.Time
-	settingsObservationOwner    domain.AgentSettingsOwner
-	settingsDispatchSnapshot    *domain.AgentSettingsTurnSnapshot
-	settingsValidator           ports.ChatAgentSettingsValidator    // guarded by mu
-	settingsMutator             ports.ChatAgentSettingsMutator      // guarded by mu
-	settingsRecheckQueued       bool                                // guarded by mu; at most one waiting recheck
-	settingsRecheckRequested    bool                                // guarded by mu; don't lose a wake while the executor runs
-	settingsWaitingForWork      bool                                // guarded by mu; provider work release wakes reconciliation
-	settingsInitializationError error                               // guarded by sendMu; failed cold replay fences dispatch
-	settingsAttempt             *domain.AgentSettingsReconciliation // guarded by sendMu
-	settingsAttemptRunning      bool                                // guarded by sendMu
-	settingsRetrySourceVersion  int64                               // guarded by sendMu
-	settingsRetrySourceID       string                              // guarded by sendMu
-	settingsExecutorID          string                              // guarded by sendMu
-	after                       func(time.Duration) <-chan time.Time
-	deliveryCheckMu             sync.Mutex
-	deliveryReceiptMu           sync.Mutex                          // serializes attention creation with terminal receipts
-	deliveryWake                chan struct{}                       // guarded by mu
-	deliveryMonitorStarted      bool                                // guarded by mu
-	deliveryImmediate           bool                                // guarded by mu
-	deliveryQuiescing           bool                                // guarded by mu
-	deliveryRetryScheduled      bool                                // guarded by mu
-	deliveryRetryDelay          time.Duration                       // guarded by mu
-	deliveryAcks                map[string]ports.ChatDeliveryLookup // guarded by mu; durable settled receipts awaiting host GC
-	deliveryAckRetryAt          time.Time                           // guarded by mu
-	pendingDeliveryID           string                              // guarded by mu; original primary execution
+	strictReplacementReplay       *replacementReplayProof
+	sessionID                     domain.SessionID
+	reviewID                      string
+	conversation                  domain.ConversationRecord
+	generation                    string
+	harness                       domain.AgentHarness
+	guardianLaunchedAt            time.Time
+	settingsObservationOwner      domain.AgentSettingsOwner
+	settingsDispatchSnapshot      *domain.AgentSettingsTurnSnapshot
+	settingsValidator             ports.ChatAgentSettingsValidator    // guarded by mu
+	settingsMutator               ports.ChatAgentSettingsMutator      // guarded by mu
+	settingsRecheckQueued         bool                                // guarded by mu; at most one waiting recheck
+	settingsRecheckRequested      bool                                // guarded by mu; don't lose a wake while the executor runs
+	settingsWaitingForWork        bool                                // guarded by mu; provider work release wakes reconciliation
+	settingsAwaitingAccountCommit bool                                // guarded by sendMu
+	settingsInitializationError   error                               // guarded by sendMu; failed cold replay fences dispatch
+	settingsAttempt               *domain.AgentSettingsReconciliation // guarded by sendMu
+	settingsAttemptRunning        bool                                // guarded by sendMu
+	settingsRetrySourceVersion    int64                               // guarded by sendMu
+	settingsRetrySourceID         string                              // guarded by sendMu
+	settingsExecutorID            string                              // guarded by sendMu
+	after                         func(time.Duration) <-chan time.Time
+	deliveryCheckMu               sync.Mutex
+	deliveryReceiptMu             sync.Mutex                          // serializes attention creation with terminal receipts
+	deliveryWake                  chan struct{}                       // guarded by mu
+	deliveryMonitorStarted        bool                                // guarded by mu
+	deliveryImmediate             bool                                // guarded by mu
+	deliveryQuiescing             bool                                // guarded by mu
+	deliveryRetryScheduled        bool                                // guarded by mu
+	deliveryRetryDelay            time.Duration                       // guarded by mu
+	deliveryAcks                  map[string]ports.ChatDeliveryLookup // guarded by mu; durable settled receipts awaiting host GC
+	deliveryAckRetryAt            time.Time                           // guarded by mu
+	pendingDeliveryID             string                              // guarded by mu; original primary execution
 	// workspacePath is the worktree used for turn snapshots and rollback.
 	workspacePath string
 
@@ -1123,7 +1124,7 @@ func nativeHistorySettleDelay(refresh int) time.Duration {
 // ProjectProviderEvent deduplicates archive+projection together.
 func (c *Controller) projectNativeHistory(ctx context.Context, events []ports.ChatEvent) error {
 	for _, event := range events {
-		if _, _, err := c.projectEvent(ctx, event); err != nil {
+		if _, _, err := c.projectEventWithGuardian(ctx, event, nil, true); err != nil {
 			return fmt.Errorf("import native history event %s: %w", event.Kind, err)
 		}
 	}
@@ -3659,7 +3660,7 @@ func (c *Controller) projectUnit(
 			projected, err := c.projectDeltas(ctx, unit)
 			return projected, false, err
 		}
-		return c.projectEventWithGuardian(ctx, event, &queuedReview)
+		return c.projectEventWithGuardian(ctx, event, &queuedReview, false)
 	}
 	projected, primaryTurn, err := project()
 	// A terminal receipt compacts the entire prompt, so it cannot pass a
@@ -3754,17 +3755,17 @@ func (c *Controller) applyGuardianReview(ctx context.Context, event ports.ChatEv
 // projectEvent archives one normalized provider event and applies its durable
 // projection in the same SQLite transaction.
 func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (bool, bool, error) {
-	return c.projectEventWithGuardian(ctx, event, nil)
+	return c.projectEventWithGuardian(ctx, event, nil, false)
 }
 
-func (c *Controller) projectEventWithGuardian(ctx context.Context, event ports.ChatEvent, queued *bool) (bool, bool, error) {
+func (c *Controller) projectEventWithGuardian(ctx context.Context, event ports.ChatEvent, queued *bool, historical bool) (bool, bool, error) {
 	if queued != nil {
 		*queued = false
 	}
 	captured := false
 	projected, err := c.archive(ctx, event, func(txCtx context.Context) error {
 		captured = c.captureGuardianReview(txCtx, event)
-		return c.apply(txCtx, event)
+		return c.apply(txCtx, event, historical)
 	})
 	if err != nil || !projected {
 		return projected, false, err
@@ -3921,7 +3922,7 @@ func (c *Controller) applyCommittedTurnLifecycle(event ports.ChatEvent) bool {
 	}
 }
 
-func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
+func (c *Controller) apply(ctx context.Context, event ports.ChatEvent, historical bool) error {
 	now := c.now()
 	if event.ProviderTurnID != "" {
 		c.turnlessPlanItemID = ""
@@ -4008,6 +4009,9 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 			if err := c.recordTurnArtifacts(ctx, event.ProviderTurnID); err != nil {
 				c.log.Warn("turn artifacts not recorded", "session", c.sessionID, "providerTurn", event.ProviderTurnID, "error", err)
 			}
+		}
+		if historical {
+			return nil // A settled native turn does not observe this controller's login.
 		}
 		if errors.Is(event.Err, ports.ErrChatAuthRequired) {
 			if err := c.recordAccount(ctx, ports.ChatAccount{
@@ -4346,7 +4350,7 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 			message = event.Err.Error()
 			captureChatFault(ctx, event.Err, c.harness, "chat_provider_error", "")
 		}
-		if errors.Is(event.Err, ports.ErrChatAuthRequired) {
+		if !historical && errors.Is(event.Err, ports.ErrChatAuthRequired) {
 			if err := c.recordAccount(ctx, ports.ChatAccount{
 				ReauthRequired: true,
 				ReauthReason:   message,

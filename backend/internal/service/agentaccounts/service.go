@@ -62,6 +62,7 @@ type Service struct {
 	// stopAgents stops every running agent on an account before it is removed.
 	stopAgents  func(context.Context, string) error
 	usageOwners func(context.Context, string) ([]domain.AgentAccountUsageOwner, error)
+	loginOwners func(context.Context, string) ([]domain.AgentAccountUsageOwner, error)
 	log         *slog.Logger
 	now         func() time.Time
 
@@ -72,7 +73,7 @@ type Service struct {
 	retries             map[string]lifecycleRetry
 	opMu                sync.Mutex
 	useMu               sync.Mutex
-	uses                map[string]*sync.RWMutex
+	uses                map[string]*accountUseLock
 	unavailableMu       sync.Mutex
 	defaultChanged      func(domain.AgentAccountProvider)
 	legacyIdentityCheck func(context.Context, domain.AgentAccountProvider, string) (bool, error)

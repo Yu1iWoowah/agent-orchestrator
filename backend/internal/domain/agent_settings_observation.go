@@ -79,9 +79,19 @@ func (s AgentSettingsTurnSnapshot) Clone() AgentSettingsTurnSnapshot {
 // AgentSettingsObservation is internal: attribution comes from the live owner,
 // not a client-supplied account or a fresh lookup after the provider was started.
 type AgentSettingsObservation struct {
-	Owner       AgentSettingsOwner
-	Effective   AgentSettingsEffective
-	CurrentTurn *AgentSettingsTurnSnapshot
+	Owner         AgentSettingsOwner
+	Effective     AgentSettingsEffective
+	CurrentTurn   *AgentSettingsTurnSnapshot
+	EffortOptions *AgentSettingsEffortOptions
+}
+
+// AgentSettingsEffortOptions identifies the native model slot that owns these
+// choices. Model can be the provider's literal "default" selector.
+type AgentSettingsEffortOptions struct {
+	ObservedAt time.Time
+	Model      string
+	Permission string
+	Efforts    []string
 }
 
 // UnknownAgentSettingsEffective never supplies a value inferred from preference.

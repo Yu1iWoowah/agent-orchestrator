@@ -73,6 +73,7 @@ export function AgentModelCombobox({
 	onChange,
 	onCustom,
 	onUseDefault,
+	pinCatalogDefault = false,
 	emptyLabel,
 	footer,
 	modelHint,
@@ -105,6 +106,7 @@ export function AgentModelCombobox({
 	onCustom?: (value: string) => void;
 	/** Offers the agent's native default as a choice, above the listed models. */
 	onUseDefault?: () => void;
+	pinCatalogDefault?: boolean;
 	/** Shown when the agent does not report a concrete model. */
 	emptyLabel?: string;
 	/** A note under the models, such as where they come from. */
@@ -260,7 +262,7 @@ export function AgentModelCombobox({
 			const next = rememberRecentModel(recentScope, modelID);
 			setSessionRecentModels((current) => ({ ...current, [recentScope]: next }));
 		}
-		onChange(modelID === defaultModel ? "" : modelID);
+		onChange(!pinCatalogDefault && modelID === defaultModel ? "" : modelID);
 	};
 	const selectCatalogModel = (event: Event, item: IndexedModel) => {
 		const family = families?.find((entry) => entry.id === item.id);

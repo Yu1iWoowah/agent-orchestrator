@@ -189,8 +189,23 @@ export function useAgentAccountActions(hostId?: HostId) {
 		startLogin: async (provider: AgentAccountProvider) =>
 			unwrap(await client(hostId).POST("/api/v1/agents/accounts/login", { body: { provider } })),
 		/** Signs a saved account in again in its own folder; verify and cancel are the same as a new sign-in. */
-		signInAgain: async (accountId: string) =>
-			unwrap(await client(hostId).POST("/api/v1/agents/accounts/{accountId}/login", { params: { path: { accountId } } })),
+		signInAgain: async (accountId: string) => {
+			const result = await client(hostId).POST("/api/v1/agents/accounts/{accountId}/login", { params: { path: { accountId } } });
+			if (result.error && apiErrorCode(result.error) === "AGENT_ACCOUNT_IN_USE") {
+				const details = apiErrorDetails(result.error);
+				const rows = Array.isArray(details?.usageOwners) ? details.usageOwners : [];
+				const blockers = rows.flatMap((row: unknown) => {
+					if (!row || typeof row !== "object" || !("blocking" in row) || row.blocking !== true || !("kind" in row)) return [];
+					if (row.kind === "reviewer" && "reviewId" in row && typeof row.reviewId === "string") return ["reviewer " + row.reviewId];
+					if (row.kind === "transition" && "transitionId" in row && typeof row.transitionId === "string") return ["transition " + row.transitionId];
+					if (row.kind === "session" && "sessionId" in row && typeof row.sessionId === "string") return ["session " + row.sessionId];
+					return [];
+				});
+				const summary = details?.contention ? apiErrorMessage(result.error) : agentAccountErrorMessage(result.error);
+				throw new Error([summary, accountId, ...blockers].join(" · "));
+			}
+			return unwrap(result);
+		},
 		verifyLogin: async (operationId: string) => {
 			const result = unwrap(await client(hostId).POST("/api/v1/agents/accounts/login/{operationId}/verify", { params: { path: { operationId } } }));
 			if (result.status === "complete") await queryClient.invalidateQueries({ queryKey: agentAccountsQueryKeyFor(hostId) });

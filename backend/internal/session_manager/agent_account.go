@@ -6,11 +6,17 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func (m *Manager) beginAccountUses(ctx context.Context, ids ...string) (func(), error) {
+	if guard, ok := m.agentAccounts.(interface {
+		AcquireAccountLaunchUses(context.Context, ...string) (func(), error)
+	}); ok {
+		return guard.AcquireAccountLaunchUses(ctx, ids...)
+	}
 	if guard, ok := m.agentAccounts.(ports.AgentAccountUseGuard); ok {
 		return guard.AcquireAccountUses(ctx, ids...)
 	}
@@ -102,6 +108,69 @@ func (m *Manager) AccountUsageOwners(ctx context.Context, id string) ([]domain.A
 	for i := range owners {
 		if owners[i].Kind == "session" && m.launchInFlight(owners[i].SessionID) {
 			owners[i].Blocking = true
+		}
+	}
+	return owners, nil
+}
+
+// AccountLoginUsageOwners applies positive runtime evidence to the existing
+// owner snapshot while the account mutation lease excludes in-flight launches.
+func (m *Manager) AccountLoginUsageOwners(ctx context.Context, id string) ([]domain.AgentAccountUsageOwner, error) {
+	owners, err := m.AccountUsageOwners(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	for i := range owners {
+		owner := &owners[i]
+		if owner.Kind != "session" {
+			continue
+		}
+		if m.launchInFlight(owner.SessionID) {
+			owner.Blocking = true
+			continue
+		}
+		rec, found, err := m.store.GetSession(ctx, owner.SessionID)
+		if err != nil || !found || rec.ProvisionState.IsProvisioning() {
+			owner.Blocking = true
+			continue
+		}
+		if rec.Metadata.RuntimeHandleID != "" {
+			ref := ports.FencedRuntimeRef{Handle: runtimeHandle(rec.Metadata), SessionID: rec.ID, Generation: rec.Metadata.RuntimeLaunchID, NativeIdentity: rec.Metadata.AgentSessionID}
+			if ref.Generation != "" && m.runtime != nil {
+				switch m.runtime.ProbeFencedRuntime(ctx, ref).Liveness {
+				case ports.FencedDead:
+					if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeTUI {
+						owner.Blocking = false
+					}
+				case ports.FencedAlive:
+					owner.Blocking = true
+					continue
+				default:
+					owner.Blocking = true
+					continue
+				}
+			} else {
+				owner.Blocking = true
+				continue
+			}
+		}
+		if domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat || m.chat == nil {
+			continue
+		}
+		if m.chat.HasLiveChatController(rec.ID) {
+			owner.Blocking = true
+		} else if m.dataDir != "" {
+			switch persistenthost.ProbeHost(m.dataDir, string(rec.ID)) {
+			case persistenthost.HostRunning:
+				owner.Blocking = true
+			case persistenthost.HostAbsent:
+				// These local adapters record a persistent host before launching.
+				if rec.Harness == domain.HarnessCodex || rec.Harness == domain.HarnessClaudeCode {
+					owner.Blocking = false
+				}
+			case persistenthost.HostUnknown:
+				owner.Blocking = true
+			}
 		}
 	}
 	return owners, nil

@@ -361,12 +361,23 @@ func writeAgentAccountError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, ports.ErrAgentAccountLoginUnknown):
 		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "AGENT_ACCOUNT_LOGIN_NOT_FOUND", "Unknown or finished sign-in", nil)
 	case errors.Is(err, ports.ErrAgentAccountProviderMismatch):
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "AGENT_ACCOUNT_PROVIDER_INVALID", "Accounts are available for Claude Code and Codex only", nil)
+		message := "Accounts are available for Claude Code and Codex only"
+		var mismatch *ports.WorkerRoleAccountMismatchError
+		if errors.As(err, &mismatch) {
+			message = mismatch.Error()
+		}
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "AGENT_ACCOUNT_PROVIDER_INVALID", message, nil)
 	case errors.Is(err, ports.ErrAgentAccountUnshared):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "AGENT_ACCOUNT_UNSHARED", agentAccountUnsharedMessage, nil)
 	case errors.Is(err, ports.ErrAgentAccountInUse):
 		details := accountOperationErrorDetails(err, "account_in_use")
 		message := "This account is in use. Stop or hand off the listed sessions and reviewers, then retry. The account has not been changed."
+		switch details["contention"] {
+		case "launch_in_progress":
+			message = "An agent is starting on this account. Wait for startup to finish, then retry."
+		case "profile_operation":
+			message = "Another operation is using this account. Try signing in again in a moment."
+		}
 		var op *agentaccounts.OperationError
 		if errors.As(err, &op) && op.OperationID != "" {
 			message = "This account is disabled and cleanup is scheduled. AO will retry after its agents stop. Stop them and retry to finish sooner."
@@ -420,6 +431,12 @@ func accountOperationErrorDetails(err error, reason string) map[string]any {
 	if errors.As(err, &use) {
 		details["usageOwners"] = use.Owners
 		details["scheduled"] = false
+		if use.AccountID != "" {
+			details["accountId"] = use.AccountID
+		}
+		if use.Contention != "" {
+			details["contention"] = use.Contention
+		}
 	}
 	var op *agentaccounts.OperationError
 	if errors.As(err, &op) {

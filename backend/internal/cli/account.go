@@ -201,6 +201,9 @@ func (c *commandContext) waitAccountTransition(ctx context.Context, session stri
 		return err
 	}
 	if current.Phase != "completed" {
+		if current.ErrorDetail != "" {
+			return fmt.Errorf("transition %s: %s (%s): %s", current.ID, current.Phase, current.ErrorCode, current.ErrorDetail)
+		}
 		return fmt.Errorf("transition %s: %s (%s)", current.ID, current.Phase, current.ErrorCode)
 	}
 	return nil

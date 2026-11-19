@@ -25,6 +25,7 @@ func TestResolveAccountPrecedenceAndInvalidReferences(t *testing.T) {
 		{"role absent", "", "gone", "global", "", "", ports.ErrAgentAccountUnknown},
 		{"global absent", "", "", "gone", "", "", ports.ErrAgentAccountUnknown},
 		{"explicit wrong provider", "other", "role", "global", "", "", ports.ErrAgentAccountProviderMismatch},
+		{"worker role wrong provider never falls back", "", "other", "global", "", "", ports.ErrAgentAccountProviderMismatch},
 		{"role retired", "", "retired", "global", "", "", ports.ErrAgentAccountUnknown},
 		{"global signed out no fallback", "", "", "signed-out", "", "", ports.ErrAgentAccountSignedOut},
 	} {
@@ -59,6 +60,15 @@ func TestResolveAccountPrecedenceAndInvalidReferences(t *testing.T) {
 			got, err := svc.ResolveAccount(context.Background(), ports.AgentAccountResolutionRequest{Harness: domain.HarnessClaudeCode, Role: domain.AgentAccountRoleWorker, ProjectConfig: cfg, AccountID: tc.explicit})
 			if !errors.Is(err, tc.err) {
 				t.Fatalf("error=%v want %v", err, tc.err)
+			}
+			var mismatch *ports.WorkerRoleAccountMismatchError
+			qualifiedMismatch := errors.As(err, &mismatch)
+			if tc.role == "other" {
+				if !qualifiedMismatch || mismatch.AccountID != "other" || mismatch.Harness != domain.HarnessClaudeCode {
+					t.Fatalf("worker account mismatch lost actionable details: %v", err)
+				}
+			} else if qualifiedMismatch {
+				t.Fatalf("misreported %v as a worker role mismatch", err)
 			}
 			if tc.err == nil && (got.AccountID != tc.want || string(got.Source) != tc.source) {
 				t.Fatalf("resolution=%+v want %s/%s", got, tc.want, tc.source)

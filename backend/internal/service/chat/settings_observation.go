@@ -94,6 +94,9 @@ func (s *Service) ObserveAgentSettings(ctx context.Context, id domain.SessionID)
 	if observer, ok := c.conv.(ports.ChatAgentSettingsObserver); ok {
 		result.Effective = observer.AgentSettingsObservation()
 	}
+	if observer, ok := c.conv.(ports.ChatAgentSettingsEffortObserver); ok && c.harness == domain.HarnessClaudeCode {
+		result.EffortOptions = observer.AgentSettingsEffortOptions()
+	}
 	if c.conv.ProviderConversationID() != result.Owner.ProviderConversationID {
 		return domain.AgentSettingsObservation{}, ports.ErrAgentSettingsConflict
 	}

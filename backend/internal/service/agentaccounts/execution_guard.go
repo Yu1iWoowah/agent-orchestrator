@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -18,14 +19,19 @@ func (s *Service) acquireProfileRead(ctx context.Context, id string) (func(), er
 	return s.AcquireAccountUses(ctx, id)
 }
 
-func (s *Service) accountUseLock(id string) *sync.RWMutex {
+type accountUseLock struct {
+	sync.RWMutex
+	launches atomic.Int32
+}
+
+func (s *Service) accountUseLock(id string) *accountUseLock {
 	s.useMu.Lock()
 	defer s.useMu.Unlock()
 	if s.uses == nil {
-		s.uses = make(map[string]*sync.RWMutex)
+		s.uses = make(map[string]*accountUseLock)
 	}
 	if s.uses[id] == nil {
-		s.uses[id] = &sync.RWMutex{}
+		s.uses[id] = &accountUseLock{}
 	}
 	return s.uses[id]
 }
@@ -35,14 +41,25 @@ func (s *Service) accountUseLock(id string) *sync.RWMutex {
 // cycles with stop-agent callbacks. Durable owners protect already-live agents;
 // these short-lived holds close the preflight/Create/ownership-commit gaps.
 func (s *Service) AcquireAccountUses(ctx context.Context, ids ...string) (func(), error) {
+	return s.acquireAccountUses(ctx, false, ids)
+}
+
+func (s *Service) AcquireAccountLaunchUses(ctx context.Context, ids ...string) (func(), error) {
+	return s.acquireAccountUses(ctx, true, ids)
+}
+
+func (s *Service) acquireAccountUses(ctx context.Context, launch bool, ids []string) (func(), error) {
 	ids = slices.Clone(ids)
 	slices.Sort(ids)
 	ids = slices.Compact(ids)
-	var held []*sync.RWMutex
+	var held []*accountUseLock
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
 			for _, lock := range held {
+				if launch {
+					lock.launches.Add(-1)
+				}
 				lock.RUnlock()
 			}
 		})
@@ -61,6 +78,9 @@ func (s *Service) AcquireAccountUses(ctx context.Context, ids ...string) (func()
 			return nil, ports.ErrAgentAccountInUse
 		}
 		held = append(held, lock)
+		if launch {
+			lock.launches.Add(1)
+		}
 		// Read-only catalog stores cannot start a lifecycle operation. The
 		// production SQLite store implements the journal used by all mutators.
 		if _, journaled := s.store.(ports.AgentAccountJournal); !journaled {

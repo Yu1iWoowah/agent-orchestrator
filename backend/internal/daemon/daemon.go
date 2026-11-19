@@ -836,6 +836,11 @@ func Run(buildVersion string) (retErr error) {
 	}); ok {
 		agentAccountSvc.SetUsageOwners(owners.AccountUsageOwners)
 	}
+	if owners, ok := sessMgr.(interface {
+		AccountLoginUsageOwners(context.Context, string) ([]domain.AgentAccountUsageOwner, error)
+	}); ok {
+		agentAccountSvc.SetLoginUsageOwners(owners.AccountLoginUsageOwners)
+	}
 	if stopper, ok := sessMgr.(interface {
 		ExitAgentsOnAccount(context.Context, string) error
 	}); ok {

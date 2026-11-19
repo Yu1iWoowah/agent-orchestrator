@@ -90,6 +90,51 @@ func settingsConversation(t *testing.T, a *settingsAgent) ports.ChatConversation
 	return c
 }
 
+func TestInheritedClaudeEffortUsesTheLiveModelSlot(t *testing.T) {
+	for _, model := range []string{"old", "default"} {
+		t.Run(model, func(t *testing.T) {
+			a := &settingsAgent{fakeAgent: &fakeAgent{}, model: model, effort: "low", fast: "off", permission: "auto"}
+			c := settingsConversation(t, a)
+			owner := domain.AgentSettingsOwner{ProviderConversationID: c.ProviderConversationID(), ControllerGeneration: "current"}
+			observer := c.(ports.ChatAgentSettingsEffortObserver)
+			if got := observer.AgentSettingsEffortOptions(); got == nil || got.Model != model || !reflect.DeepEqual(got.Efforts, []string{"high", "low"}) {
+				t.Fatalf("effort options do not belong to the live model: %+v", got)
+			}
+			staged := c.(ports.ChatAgentSettingsController)
+			selection := domain.AgentSettings{FastMode: domain.AgentFastDefault}
+			target := selection
+			target.Effort = "high"
+			plan, err := staged.PrepareAgentSettings(t.Context(), selection, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range []domain.AgentSettingsCheckpoint{domain.AgentSettingsApplyingModel, domain.AgentSettingsApplyingEffort, domain.AgentSettingsApplyingFast, domain.AgentSettingsVerifying} {
+				if err := staged.ApplyAgentSettingsStep(t.Context(), plan, step, false); err != nil {
+					t.Fatalf("%s: %v", step, err)
+				}
+			}
+			proof, err := c.(ports.ChatAgentSettingsPlanEvidence).ReconciliationPlanEvidence(t.Context(), owner, &plan)
+			if err != nil || proof.Native == nil || proof.Native.Model != model || proof.Native.Effort != "high" || proof.Permission != "auto" {
+				t.Fatalf("post-apply receipt: %+v, %v", proof, err)
+			}
+			effective := c.(ports.ChatAgentSettingsObserver).AgentSettingsObservation()
+			if effective.Effort.Value != "high" || model == "default" && effective.Model.State != domain.AgentSettingUnknown {
+				t.Fatalf("incorrect effective values: %+v", effective)
+			}
+			foreign := owner
+			foreign.ProviderConversationID = "another-session"
+			if _, err := c.(ports.ChatAgentSettingsPlanEvidence).ReconciliationPlanEvidence(t.Context(), foreign, &plan); !errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable) {
+				t.Fatalf("accepted foreign receipt: %v", err)
+			}
+			a.configMu.Lock()
+			defer a.configMu.Unlock()
+			if !reflect.DeepEqual(a.calls, []string{"effort=high"}) {
+				t.Fatalf("unexpected provider setters: %v", a.calls)
+			}
+		})
+	}
+}
+
 func TestJournalledACPSettingsUsesPostModelCatalogAndOrderedReceipts(t *testing.T) {
 	a := &settingsAgent{fakeAgent: &fakeAgent{}, model: "old", effort: "high", fast: "on", permission: "auto"}
 	c := settingsConversation(t, a)

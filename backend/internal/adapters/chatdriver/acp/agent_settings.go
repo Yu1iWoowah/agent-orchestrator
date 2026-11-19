@@ -274,18 +274,22 @@ func (c *conversation) ApplyAgentSettingsStep(ctx context.Context, plan domain.A
 		if err != nil {
 			return err
 		}
-		current, _ := nativeSettings(catalog)
-		for _, id := range []string{"model", "effort", "fast"} {
-			value, err := c.targetOption(plan, id, false, catalog)
-			if err != nil {
-				return err
-			}
-			if value != "" && settingsValue(current, id) != value {
-				return fmt.Errorf("%w: provider_setting_unconfirmed", ports.ErrAgentSettingsCapabilitiesUnavailable)
-			}
-		}
-		return c.checkSettingsPermission(plan, catalog)
+		return c.verifySettingsCatalog(plan, catalog)
 	default:
 		return ports.ErrAgentSettingsInvalid
 	}
+}
+
+func (c *conversation) verifySettingsCatalog(plan domain.AgentSettingsProviderPlan, catalog []ports.ChatConfigOption) error {
+	current, _ := nativeSettings(catalog)
+	for _, id := range []string{"model", "effort", "fast"} {
+		value, err := c.targetOption(plan, id, false, catalog)
+		if err != nil {
+			return err
+		}
+		if value != "" && settingsValue(current, id) != value {
+			return fmt.Errorf("%w: provider_setting_unconfirmed", ports.ErrAgentSettingsCapabilitiesUnavailable)
+		}
+	}
+	return c.checkSettingsPermission(plan, catalog)
 }

@@ -672,3 +672,26 @@ func TestAccountSwitchWaitStopsWhenSuperseded(t *testing.T) {
 		t.Fatalf("polled %d times, want 2", state.polls)
 	}
 }
+
+func TestAccountLoginShowsBlockingOwnersFromRefusal(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/telemetry/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/agents/accounts/A/login" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"code":"AGENT_ACCOUNT_IN_USE","message":"Account is held.","requestId":"login-request","details":{"usageOwners":[{"kind":"transition","sessionId":"active","transitionId":"move-1","blocking":true},{"kind":"session","sessionId":"old","blocking":false}]}}`)
+	}))
+	defer srv.Close()
+	writeRunFileFor(t, cfg, srv)
+	_, stderr, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "account", "login", "A", "--detach")
+	if ExitCode(err) != 1 || !strings.Contains(err.Error(), "login-request") || !strings.Contains(stderr, "active") || !strings.Contains(stderr, "move-1") || strings.Contains(stderr, "old") {
+		t.Fatalf("err=%v stderr=%s", err, stderr)
+	}
+}

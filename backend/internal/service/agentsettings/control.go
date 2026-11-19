@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -210,15 +211,26 @@ func (c *Control) change(ctx context.Context, caller Caller, id domain.SessionID
 	if rec.Harness == domain.HarnessClaudeCode && in.Settings.FastMode == nil {
 		selection.FastMode = domain.AgentFastDefault
 	}
-	validated, err := c.core.ValidateSpawn(ctx, id, selection, in.Settings.Model != nil && in.Settings.Effort == nil && target.Model != base.Model)
-	if err != nil {
-		return empty, settingsError(err)
+	effortOnly := rec.Harness == domain.HarnessClaudeCode && rec.Mode == domain.SessionModeChat &&
+		target.Model == "" && target.Effort != "" && in.Settings.Effort != nil &&
+		in.Settings.Model == nil && in.Settings.FastMode == nil && current.Settings.Model == "" &&
+		current.Settings.FastMode == target.FastMode
+	if !effortOnly {
+		validated, err := c.core.ValidateSpawn(ctx, id, selection, in.Settings.Model != nil && in.Settings.Effort == nil && target.Model != base.Model)
+		if err != nil {
+			return empty, settingsError(err)
+		}
+		target.Effort = validated.Effort
 	}
-	target.Effort = validated.Effort
 	if _, err := c.authorizer.CheckSelection(ctx, accepted, rec, target); err != nil {
 		return empty, err
 	}
-	if _, err := c.selectionProof(ctx, id, target, rec.Harness == domain.HarnessClaudeCode && in.Settings.FastMode == nil); err != nil {
+	if effortOnly {
+		_, err = c.effortSelectionProof(ctx, current, target.Effort)
+	} else {
+		_, err = c.selectionProof(ctx, id, target, rec.Harness == domain.HarnessClaudeCode && in.Settings.FastMode == nil)
+	}
+	if err != nil {
 		return empty, settingsError(err)
 	}
 	op := domain.AgentSettingsOperation{ID: uuid.NewString(), SessionID: id, IdempotencyKey: in.IdempotencyKey, BaseRevision: current.Revision, Source: current.Settings, Target: target, AccountID: current.AccountID, ControllerGeneration: current.OwnerGeneration, ProviderConversationID: current.ProviderConversationID, BranchID: current.BranchID, Actor: accepted.Actor, Authority: accepted.Authority, RequestFingerprint: fingerprint, CreatedAt: c.now(), RequestID: in.RequestID, ApplyMode: in.ApplyMode}
@@ -231,6 +243,26 @@ func (c *Control) change(ctx context.Context, caller Caller, id domain.SessionID
 		return c.acceptedRetry(ctx, id, in.IdempotencyKey, fingerprint)
 	}
 	return result, settingsError(err)
+}
+
+func (c *Control) effortSelectionProof(ctx context.Context, current domain.SessionAgentSettings, effort domain.AgentEffortSelection) (string, error) {
+	receipt, unavailable, err := c.core.qualifiedObservation(ctx, current)
+	if err != nil {
+		return "", err
+	}
+	if unavailable != "" || receipt.EffortOptions == nil {
+		return "", ports.ErrAgentSettingsCapabilitiesUnavailable
+	}
+	options := receipt.EffortOptions
+	if !slices.Contains(options.Efforts, string(effort)) {
+		return "", ports.ErrAgentSettingsUnsupported
+	}
+	raw, err := json.Marshal([3]string{options.Model, options.Permission, string(effort)})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func (c *Control) acceptedRetry(ctx context.Context, id domain.SessionID, key, fingerprint string) (domain.AgentSettingsOperation, error) {
@@ -403,7 +435,13 @@ func (c *Control) ValidateAgentSettings(ctx context.Context, op domain.AgentSett
 	if restoring {
 		selection = current.Settings
 	}
-	fingerprint, err := c.selectionProof(ctx, op.SessionID, selection, rec.Harness == domain.HarnessClaudeCode)
+	var fingerprint string
+	if rec.Harness == domain.HarnessClaudeCode && rec.Mode == domain.SessionModeChat &&
+		selection.Model == "" && selection.Effort != "" && op.Source.Model == "" && op.Source.FastMode == selection.FastMode {
+		fingerprint, err = c.effortSelectionProof(ctx, current, selection.Effort)
+	} else {
+		fingerprint, err = c.selectionProof(ctx, op.SessionID, selection, rec.Harness == domain.HarnessClaudeCode)
+	}
 	return domain.AgentSettingsQualification{InputFingerprint: fingerprint, PolicyVersion: policy}, err
 }
 

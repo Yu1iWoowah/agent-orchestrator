@@ -21,7 +21,8 @@ vi.mock("../../lib/navigate-to-session", () => ({
 	useNavigateToSession: () => navigateSession,
 }));
 
-vi.mock("../../lib/api-client", () => ({
+vi.mock("../../lib/api-client", async (importOriginal) => ({
+	apiErrorDetails: (await importOriginal<typeof import("../../lib/api-client")>()).apiErrorDetails,
 	apiClient: { DELETE: deleteMock, GET: getMock, POST: postMock, PATCH: patchMock },
 	apiErrorCode: (error: unknown) =>
 		typeof error === "object" && error !== null && "code" in error ? error.code : undefined,
@@ -117,6 +118,36 @@ it("starts the sign-in a chat asked for, once", async () => {
 	]);
 	expect(useUiStore.getState().accountLogin).toBeNull();
 	await user.click(screen.getByRole("button", { name: "Close sign-in" }));
+});
+
+it("uses the requested device login even when its managed twin is shown", async () => {
+	getMock.mockResolvedValue({ data: { accounts: [device, { ...saved, email: device.email, signedIn: true, loggedIn: true }] } });
+	useUiStore.setState({ accountLogin: device.id });
+	const onSignIn = vi.fn();
+	renderPanel({ disabled: false, canLogout: true, onSignIn, onLogout: vi.fn() });
+	await waitFor(() => expect(onSignIn).toHaveBeenCalledTimes(1));
+	expect(useUiStore.getState().accountLogin).toBeNull();
+	expect(postMock).not.toHaveBeenCalledWith("/api/v1/agents/accounts/{accountId}/login", expect.anything());
+});
+
+it("shows the blocking owners from the original login refusal", async () => {
+	postMock.mockResolvedValueOnce({ error: {
+		code: "AGENT_ACCOUNT_IN_USE",
+		message: "This account is in use",
+		details: { usageOwners: [
+			{ kind: "session", sessionId: "worker-writing", blocking: true },
+			{ kind: "reviewer", reviewId: "review-writing", blocking: true },
+			{ kind: "session", sessionId: "worker-stopped", blocking: false },
+		] },
+	} });
+	renderPanel();
+	await userEvent.click(await screen.findByRole("button", { name: "Sign in again" }));
+	const error = await screen.findByRole("alert");
+	expect(error).toHaveTextContent("acct-b");
+	expect(error).toHaveTextContent("session worker-writing");
+	expect(error).toHaveTextContent("reviewer review-writing");
+	expect(error).not.toHaveTextContent("worker-stopped");
+	expect(getMock.mock.calls.some(([path]) => path.endsWith("usage-owners"))).toBe(false);
 });
 
 it("signs this computer's login in through the CLI once it can, when a chat asks", async () => {

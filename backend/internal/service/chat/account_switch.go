@@ -30,6 +30,25 @@ func (s *Service) accountMoveAwaitingTarget(ctx context.Context, id domain.Sessi
 	return active && move.AccountMoveAwaitsTarget()
 }
 
+// committedAccountMove recognizes the durable account move across a restart
+// between binding commit and the first drain. The current account is supplied
+// by launch resolution, never inferred from the old transition.
+func (s *Service) committedAccountMove(ctx context.Context, id domain.SessionID, account string) (bool, error) {
+	if account == "" {
+		return false, nil
+	}
+	reader, ok := s.store.(interface {
+		GetLatestSessionInterfaceTransition(context.Context, domain.SessionID) (domain.SessionInterfaceTransition, bool, error)
+	})
+	if !ok {
+		return false, nil
+	}
+	move, found, err := reader.GetLatestSessionInterfaceTransition(ctx, id)
+	return found && move.AccountMove() && move.TargetAccountID == account &&
+		(move.Phase == domain.SessionInterfaceTransitionCompleted ||
+			move.Phase == domain.SessionInterfaceTransitionRecovery && move.ErrorCode == "DAEMON_RESTARTED"), err
+}
+
 // MarkAccountSwitch records that the turn the session's account move stopped
 // ended for the move, rather than failing. It is the exact turn the handoff's
 // interrupt stopped: later rows (a swept queued message, a Codex subagent's own
