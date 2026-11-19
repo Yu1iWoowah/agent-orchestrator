@@ -842,7 +842,7 @@ func TestStalledPromptWithUnsettledDeliveryHoldsQueueUntilSettled(t *testing.T) 
 	conv.mu.Unlock()
 	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
-		return turnStateByText(t, s)["queued"] != domain.TurnStateQueued
+		return turnStateByText(t, s)["queued"] != domain.TurnStateQueued && len(conv.sentTexts()) >= 2
 	})
 	if sent := conv.sentTexts(); len(sent) != 2 || sent[1] != "queued" {
 		t.Fatalf("provider received %v, want the queued input once the stalled prompt settled", sent)
