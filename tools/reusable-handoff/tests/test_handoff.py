@@ -1179,6 +1179,12 @@ finally:
             with self.assertRaisesRegex(h.Stop, "receipt evidence turn differs from original dispatch"):
                 h.final_ready(fake.run)
             final_path.unlink()
+            snap = fake.snapshots["new"]["transcript"]
+            snap["entries"].append(dict(id="finalize-live", turnId="final", sequence=999, kind="activity",
+                                        activityKind="command", status="running"))
+            snap["incomplete"] = [dict(type="entry", sequence=999, reason="running")]
+            self.assertFalse(h.final_ready(fake.run))
+            snap["entries"][-1]["turnId"] = "nonce"
             with self.assertRaisesRegex(h.Stop, "completed without final.json"):
                 h.final_ready(fake.run)
 
@@ -1194,9 +1200,43 @@ finally:
         with self.assertRaisesRegex(h.Stop, "old_idle: old terminated"):
             h.idle_window(run, "old", "old_idle")
         run.state["new_id"] = "new"
-        run.cli.get = lambda _: {"session": {"isTerminated": True}}
-        with patch.object(h, "native_identity", return_value=None), self.assertRaisesRegex(h.Stop, "native: new terminated"):
-            run.wait("native", lambda: h.native_ready(run))
+        session = dict(isTerminated=False, status="idle", provisionState="provisioning")
+        run.cli.get = lambda _: {"session": session}
+        with patch.object(h, "native_identity", return_value=None):
+            self.assertFalse(h.native_ready(run))
+            session["provisionState"] = "failed"
+            with self.assertRaisesRegex(h.Stop, "native: new provisioning failed"):
+                run.wait("native", lambda: h.native_ready(run))
+            session.update(provisionState="provisioning", isTerminated=True)
+            with self.assertRaisesRegex(h.Stop, "native: new terminated"):
+                h.native_ready(run)
+
+    def test_export_rejects_truncated_command_on_settled_older_page_and_final_observation(self):
+        for location in ("older-page", "last-observation"):
+            with self.subTest(location=location), tempfile.TemporaryDirectory() as temp:
+                self.root = Path(temp)
+                run = self.run_fixture()
+                head = snapshot(entries=[dict(id="message", kind="message", sequence=1)])
+                head["transcript"].update(hasMoreBefore=True, next={"before": 1})
+                cut = dict(id=location, sequence=0, kind="activity", activityKind="command", status="completed",
+                           detail={"outputTruncated": True, "exitCode": 0})
+                older = snapshot(entries=[cut] if location == "older-page" else [])
+                after = snapshot(entries=[cut])
+                run.cli.read = lambda _: older
+                run.sleep = lambda _: self.fail("polled a permanent blocker")
+                cut_rows = {"conversation_messages": [{"sequence": 1}], "conversation_activities": []}
+                publish = h.publish
+
+                def record(path, raw):
+                    self.assertNotEqual(path.name, "conversation.json", "published a cut with truncated command evidence")
+                    publish(path, raw)
+
+                with patch.object(run, "snapshot", side_effect=[head, after]), \
+                     patch.object(h, "export_conversation", return_value=cut_rows) as export, \
+                     patch.object(h, "publish", side_effect=record):
+                    with self.assertRaisesRegex(h.Stop, f"command output truncated: old activity {location}"):
+                        run.wait("export", lambda: h.export_material(run))
+                    self.assertEqual(export.call_count, int(location == "last-observation"))
 
     def test_nonce_takes_one_bound_report_continuation_before_terminal_stop(self):
         run = self.run_fixture()
@@ -1218,9 +1258,14 @@ finally:
         snap["transcript"]["entries"] += [
             projected(run.cli.calls[-1], "nonce", "original", 2),
             dict(kind="message", role="assistant", id="interrupted-answer", turnId="original", sequence=3,
-                 createdAt="2026-11-08T01:00:00Z", text=run.state["nonce"]),
-            dict(kind="message", role="user", origin="automation", clientMessageId="report-batch:123",
-                 createdAt="2026-11-08T01:00:02Z", text="Reports [worker](ao://sessions/agent-orchestrator/worker)", sequence=4)]
+                 createdAt="2026-11-08T01:00:00Z", text=run.state["nonce"], streaming=True)]
+        snap["transcript"]["incomplete"] = [dict(type="entry", sequence=3, reason="streaming")]
+        self.assertFalse(h.nonce_completed(run))
+        self.assertEqual(len(run.cli.calls), 1)
+        snap["transcript"]["entries"][-1]["streaming"] = False
+        snap["transcript"]["incomplete"] = []
+        snap["transcript"]["entries"].append(dict(kind="message", role="user", origin="automation", clientMessageId="report-batch:123",
+                 createdAt="2026-11-08T01:00:02Z", text="Reports [worker](ao://sessions/agent-orchestrator/worker)", sequence=4))
         self.assertFalse(h.nonce_completed(run))
         self.assertFalse(h.nonce_completed(run))
         self.assertEqual(len(run.cli.calls), 2)
@@ -1843,9 +1888,28 @@ class SpeedPreparationTests(unittest.TestCase):
         root = h.mkdir(self.root / name)
         return root, cli, raw
 
-    def package(self, root, cli, run_id=None):
+    def package(self, root, cli, run_id=None, control_id="control"):
         with patch.object(h, "path_cli", return_value=cli), patch.dict(os.environ, {"AO_SESSION_ID": "old"}):
-            return h.prepare_request(root, None, "old", "control", run_id or str(uuid.uuid4()))
+            return h.prepare_request(root, None, "old", control_id, run_id or str(uuid.uuid4()))
+
+    def test_packaging_helper_refuses_historical_control_with_current_running_turn(self):
+        root, cli, _ = self.packaging_fixture()
+        page = cli.session("old")
+        human, current = page["transcript"]["entries"]
+        page["transcript"]["entries"] = [dict(human, id="past-human", turnId="past"),
+            dict(current, id="past-control", turnId="past"), dict(human, sequence=3), dict(current, sequence=4)]
+        page["transcript"]["turns"].append(dict(id="past", state="completed"))
+        cli.last_raw = h.canonical(page)
+        cli.session = lambda _: copy.deepcopy(page)
+        with self.assertRaisesRegex(h.Stop, "unique running preparation turn"):
+            self.package(root, cli, control_id="past-control")
+        self.assertFalse((root / ".start/old/request.json").exists())
+        page["transcript"]["entries"].append(dict(current, id="other-current", sequence=5))
+        with self.assertRaisesRegex(h.Stop, "unique control"):
+            self.package(root, cli)
+        self.assertFalse((root / ".start/old/request.json").exists())
+        page["transcript"]["entries"].pop()
+        self.assertTrue(Path(self.package(root, cli)["request"]).is_file())
 
     def test_packaging_helper_builds_request_from_original_bytes(self):
         root, cli, raw = self.packaging_fixture()

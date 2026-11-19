@@ -324,6 +324,15 @@ class WorkerProducerTests(unittest.TestCase):
         self.assertTrue(h.quiescent(hidden, worker=True))
         self.assertFalse(h.quiescent(hidden))
         remote = copy.deepcopy(hidden)
+        with patch.object(h, "proc_table", return_value=fake.processes):
+            self.assertEqual(fake.run.work(sid), [])
+        for result in ('Job running with ID', '{"type":"job","truncated":true}'):
+            entry(remote)["detail"].update(protocol="acp", content=[{"type": "content", "content": {"type": "text", "text": result}}])
+            fake.snapshots[sid] = remote
+            with self.assertRaisesRegex(h.Stop, "remote operation evidence truncated: worker activity " + tool):
+                fake.run.worker_stop({"id": sid})
+            self.assertFalse((fake.run.root / "workers/worker/stop.json").exists())
+        entry(remote)["detail"].pop("content")
         entry(remote)["detail"]["result"] = {"type": "job", "truncated": True}
         fake.snapshots[sid] = remote
         reason = h.truncated_command_blocker(entry(remote), worker=True)

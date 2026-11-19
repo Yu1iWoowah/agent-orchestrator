@@ -444,7 +444,7 @@ def completed_old_helper(run, snapshot):
     receipt = decode(private_read(run.root / "old/phase-2a.json"))
     turn = control["dispatch_turn_id"]
     require(receipt.get("evidence_turn_id") == turn, "old result differs from original directive turn")
-    if not completed(snapshot, turn):
+    if not completed(snapshot, turn) or phase_projection_pending(snapshot, turn):
         return None
     matches = [entry for entry in entries(snapshot) if entry.get("turnId") == turn and
                entry.get("kind") == "activity" and entry.get("activityKind") == "command" and
@@ -478,15 +478,24 @@ def operation_handles(entry, *, include_truncated_stdout=False):
     detail = entry.get("detail") or {}
     if detail.get("toolKind") == "read" or detail.get("toolName") in ("Read", "read_file"):
         return []
-    result = detail.get("result")
-    if include_truncated_stdout and result is not None and detail.get("output") is not None:
-        # Preserve recognizable evidence in both wire fields after a worker stdout cut.
-        output_only = dict(entry, detail=dict(detail, result=None))
-        result_only = dict(entry, detail=dict(detail, output=None))
-        return (operation_handles(result_only, include_truncated_stdout=True) +
-                operation_handles(output_only, include_truncated_stdout=True))
-    if result is None:
-        result = detail.get("output")
+    result, output = detail.get("result"), detail.get("output")
+    name = detail.get("toolName", "").rsplit(".", 1)[-1]
+    if include_truncated_stdout and result is not None:
+        handles = result_handles(result, name, True) + result_handles(output, name, True)
+    else:
+        handles = result_handles(result if result is not None else output, name, include_truncated_stdout, output)
+    content = detail.get("content")
+    if detail.get("protocol") == "acp" and isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "content":
+                continue
+            payload = block.get("content")
+            if isinstance(payload, dict) and payload.get("type") == "text" and isinstance(payload.get("text"), str):
+                handles.extend(result_handles(payload["text"], name, True))
+    return handles
+
+
+def result_handles(result, name, recognize_partial, fallback_output=None):
     if isinstance(result, dict) and isinstance(result.get("content"), list):
         result = "\n".join(x.get("text", "") for x in result["content"] if x.get("type") == "text")
     if isinstance(result, str):
@@ -496,19 +505,18 @@ def operation_handles(entry, *, include_truncated_stdout=False):
             pass
     if isinstance(result, dict) and result.get("truncated") is True:
         return [{"reference": "UNKNOWN", "state": "UNKNOWN"}]
-    name = detail.get("toolName", "").rsplit(".", 1)[-1]
     if name in ("exec_command", "write_stdin") and isinstance(result, dict) and result.get("session_id") is not None:
         return [{"reference": str(result["session_id"]), "state": "running" if result.get("exit_code") is None else "completed", "local": True}]
     if isinstance(result, dict) and (result.get("type") in ("async-operation", "job") or "job_id" in result):
         reference = result.get("reference") or result.get("job_id")
         return [{"reference": str(reference or "UNKNOWN"), "state": result.get("state", "UNKNOWN") if reference else "UNKNOWN"}]
     # A transport-level textual continuation is not a normal JSON key or an input quotation.
-    text = result if isinstance(result, str) else detail.get("output", "")
+    text = result if isinstance(result, str) else fallback_output
     match = isinstance(text, str) and re.match(
         r"^(Script running with (?:cell|session) ID|Process running with session ID|Job running with ID)\s+([A-Za-z0-9._:-]+)", text)
     if match:
         return [{"reference": match[2], "state": "UNKNOWN", "local": not match[1].startswith("Job")}]
-    if include_truncated_stdout and isinstance(text, str) and re.match(
+    if recognize_partial and isinstance(text, str) and re.match(
             r'^\s*(?:Job running with ID\b|\{\s*"job_id"\s*:|\{\s*"type"\s*:\s*"(?:job|async-operation)")', text):
         return [{"reference": "UNKNOWN", "state": "UNKNOWN"}]
     return []
@@ -1103,8 +1111,17 @@ class Execution:
         journal = self.journal
         call_id = str(uuid.uuid4())
         lease = None
-        deadlines = [value for value in (deadline, getattr(self, "admission_deadline", None)) if value is not None]
-        with journal.mutex(min(deadlines, default=None)):
+        phase_deadline = getattr(self, "admission_deadline", None)
+        phase_first = phase_deadline is not None and (deadline is None or phase_deadline <= deadline)
+        limit = phase_deadline if phase_first else deadline
+        phase_timeout = f"phase admission deadline reached: {journal.run_id}; this attempt not dispatched"
+        expired_at_start = limit is not None and time.monotonic() >= limit
+        if phase_first and expired_at_start:
+            raise AdmissionBusy(phase_timeout)
+        with journal.mutex(limit):
+            expired_on_admission = expired_at_start or (limit is not None and time.monotonic() >= limit)
+            if phase_first and expired_on_admission:
+                raise AdmissionBusy(phase_timeout)
             require(self._active_operation is None, "execution transport already active")
             state = journal.state()
             require(descriptor["script_sha256"] == self.registration["script_sha256"], "execution script bytes changed")
@@ -1148,18 +1165,18 @@ class Execution:
             lease = open(directory / "lease.lock", "a+b")
             os.chmod(directory / "lease.lock", 0o600)
             fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            expired = deadline is not None and time.monotonic() > deadline
+            expired = expired_on_admission or (limit is not None and time.monotonic() >= limit)
             if not expired:
                 publish(directory / "attempt.json", canonical(dict(call_id=call_id, intent_sha256=digest(canonical(intent)), at=now())))
             self.last_call_id = call_id
             self._active_operation, self._transport_claimed = descriptor, False
         raw, stderr, terminal, code = b"", b"", "not-started", None
         try:
-            if expired:
+            if expired or (limit is not None and time.monotonic() >= limit):
                 raise WindowElapsed()
             if on_dispatch:
                 on_dispatch()
-            if deadline is not None and time.monotonic() > deadline:
+            if limit is not None and time.monotonic() >= limit:
                 raise WindowElapsed()
             fixed = decode(private_read(directory / "intent.json"))["parameters"]
             materialized = dict(fixed)
@@ -1174,11 +1191,13 @@ class Execution:
             require(materialized == descriptor["parameters"], "materialized operation differs from intent")
             if fixed.get("file_source"):
                 hash_reference(fixed["file_source"])
-            raw, stderr, code = _CLI._transport(cli, descriptor, materialized, deadline)
+            raw, stderr, code = _CLI._transport(cli, descriptor, materialized, limit)
             terminal = "returned"
             return raw, stderr, code
         except WindowElapsed:
             terminal = "not-started"
+            if phase_first:
+                raise AdmissionBusy(phase_timeout) from None
             raise
         except subprocess.TimeoutExpired as exc:
             raw, stderr, terminal = exc.stdout or b"", exc.stderr or b"", "timeout"
@@ -1295,7 +1314,7 @@ class CLI:
         require(self.sha256 == operation["cli_sha256"], "AO CLI binding changed before dispatch")
         self.unchanged()
         self.last_dispatched = time.monotonic()
-        if deadline is not None and self.last_dispatched > deadline:
+        if deadline is not None and self.last_dispatched >= deadline:
             self.last_dispatched = None
             raise WindowElapsed()
         if operation["transport"] == "cli":
@@ -2031,9 +2050,8 @@ class Run:
                     self.unsettled[sid] = ["original worker-stop dispatch not projected"]
                     return False
                 require(stop["evidence_turn_id"] == dispatched, f"workers: {sid} receipt evidence turn differs from original dispatch")
-                require_productive_turn(snap, sid, "workers", dispatched)
-                if not completed(snap, stop["evidence_turn_id"]):
-                    self.unsettled[sid] = ["evidence turn not completed: " + stop["evidence_turn_id"]]
+                if not require_productive_turn(snap, sid, "workers", dispatched):
+                    self.unsettled[sid] = ["evidence turn or projection unsettled: " + dispatched]
                     return False
             if not self.quiescent_worker(sid, snap, stop["settled"]["in_flight"]):
                 return False
@@ -2047,6 +2065,10 @@ class Run:
             require(not work, "worker processes still running: " + sid + ": " + processes_text(work))
             return stop
         require_productive_turn(snap, sid, "workers", dispatched, "stop.json")
+        if phase_projection_pending(snap, dispatched):
+            require_usable_command_outputs(snap, self, worker=True)
+            self.unsettled[sid] = ["worker-stop projection unsettled: " + dispatched]
+            return False
         quiet = self.quiescent_worker(sid, snap)
         work = self.work(sid)
         if not work and quiet and not control.exists():
@@ -2283,6 +2305,7 @@ def phase_history(run, sid, snap, find):
         turns = {turn["id"]: turn for turn in page.get("turns", [])}
         turns.update((turn["id"], turn) for turn in transcript.get("turns", []))
         transcript = dict(transcript, entries=page["entries"] + transcript["entries"], turns=list(turns.values()),
+                          incomplete=(page.get("incomplete") or []) + (transcript.get("incomplete") or []),
                           hasMoreBefore=page["hasMoreBefore"], next=page.get("next"))
         snap = dict(snap, transcript=transcript)
         observed = find(snap)
@@ -2300,13 +2323,31 @@ def terminal_turn(snapshot, turn_id):
                  if turn["id"] == turn_id and turn.get("state") in TERMINAL_TURNS), None)
 
 
+def phase_projection_pending(snapshot, turn_id):
+    if not turn_id:
+        return False
+    incomplete = {(item.get("sequence"), item.get("reason")) for item in snapshot["transcript"].get("incomplete") or []
+                  if item.get("type") == "entry" and type(item.get("sequence")) is int}
+    return any((entry.get("consumedByTurnId") or entry.get("turnId")) == turn_id and
+               ((entry.get("streaming") is True and (entry.get("sequence"), "streaming") in incomplete) or
+                (entry.get("status") == "running" and (entry.get("sequence"), "running") in incomplete))
+               for entry in entries(snapshot))
+
+
 def require_productive_turn(snapshot, sid, phase, turn_id, missing=None):
     turn = terminal_turn(snapshot, turn_id)
     if not turn:
-        return
+        return False
+    if turn.get("state") == "interrupted" and phase in ("bootstrap", "nonce"):
+        report_interruption(snapshot, turn_id)  # Refuse human cancellation and actual tool failure before waiting.
+        if phase_projection_pending(snapshot, turn_id):
+            return False
     require(completed(snapshot, turn_id),
             f"{phase}: {sid} turn {turn_id} ended {turn['state']} without completed evidence")
+    if phase_projection_pending(snapshot, turn_id):
+        return False
     require(not missing, f"{phase}: {sid} turn {turn_id} completed without {missing}")
+    return True
 
 
 def producer_observation(run, sid, action, directory):
@@ -2701,7 +2742,8 @@ def phase_2a(run):
                 isinstance(receipt.get("pending_question_refs"), list) and isinstance(receipt.get("created_at"), str), "2a receipt fields")
         if not turn_id:
             return False
-        require_productive_turn(snap, run.old, "old_2a", turn_id)
+        if not require_productive_turn(snap, run.old, "old_2a", turn_id):
+            return False
         helper = completed_old_helper(run, snap)
         if helper is None:
             return False
@@ -2764,11 +2806,11 @@ def continuation_turn(run, sid, phase, snapshot):
 
 
 def phase_completed(run, sid, phase, original, snapshot):
-    if completed(snapshot, original):
+    if completed(snapshot, original) and not phase_projection_pending(snapshot, original):
         return original
     if phase + ":" + original in run.state.get("phase_continuations", {}):
         turn = continuation_turn(run, sid, phase, snapshot)
-        if turn and completed(snapshot, turn):
+        if turn and completed(snapshot, turn) and not phase_projection_pending(snapshot, turn):
             return turn
     return None
 
@@ -2776,20 +2818,16 @@ def phase_completed(run, sid, phase, original, snapshot):
 def export_material(run, delta=False):
     snap = run.snapshot(run.old)
     transcript = snap["transcript"]
-    require_usable_command_outputs(snap, run)
-    if not projection_settled(snap, run):
-        return False
     conversation, branch = transcript["conversationId"], transcript["activeBranchId"]
     pages, cursor = [], None
-    directory = mkdir(run.root / ("delta" if delta else "cut") / uuid.uuid4().hex)
+    directory = run.root / ("delta" if delta else "cut") / uuid.uuid4().hex
     while True:
+        require_usable_command_outputs(snap, run)
         if not projection_settled(snap, run):
-            require_usable_command_outputs(snap, run)
             return False
         require(snap["transcript"]["conversationId"] == conversation and snap["transcript"]["activeBranchId"] == branch,
                 "projection branch/scope changed")
-        require(projection_settled(snap, run) and
-                snap["transcript"]["latestSequence"] == transcript["latestSequence"], "projection changed/truncated")
+        require(snap["transcript"]["latestSequence"] == transcript["latestSequence"], "projection changed/truncated")
         page_raw = getattr(run.cli, "last_raw", canonical(snap))
         path = directory / ("page-" + str(len(pages)) + ".json")
         publish(path, page_raw)
@@ -2807,8 +2845,8 @@ def export_material(run, delta=False):
     after = run.snapshot(run.old)
     require(after["transcript"]["conversationId"] == conversation and after["transcript"]["activeBranchId"] == branch and
             after["transcript"]["latestSequence"] == transcript["latestSequence"], "conversation changed during export; retain partial evidence")
+    require_usable_command_outputs(after, run)
     if not projection_settled(after, run):
-        require_usable_command_outputs(after, run)
         return False
     publish(directory / "conversation.json", canonical(raw))
     handoff = run.state["handoff"]
@@ -3027,7 +3065,7 @@ def spawn_new(run):
         execution.bindings.add(sid)
         execution.new_id = sid
     actual = run.cli.get("sessions/" + identifier(sid))["session"]
-    require(not actual.get("isTerminated") and actual.get("status") != "failed", "original new provision failed")
+    require(not actual.get("isTerminated") and actual.get("provisionState") != "failed", "original new provision failed")
     require(actual.get("harness") == run.target["harness"] and actual.get("mode") == "chat", "spawn target identity mismatch")
     binding = run.cli.get("agents/accounts/sessions/" + sid)
     require(binding.get(provider(run.target)) == run.target["account"], "spawn original account mismatch")
@@ -3202,8 +3240,7 @@ def final_ready(run):
     receipt = decode(private_read(path))
     require(receipt.get("run_id") == run.run_id and receipt.get("new_id") == sid, "final receipt identity")
     require(receipt.get("evidence_turn_id") == turn_id, f"final: {sid} receipt evidence turn differs from original dispatch {turn_id}")
-    require_productive_turn(snap, sid, "final", turn_id)
-    return completed(snap, turn_id)
+    return require_productive_turn(snap, sid, "final", turn_id)
 
 
 def native_ready(run):
@@ -3212,8 +3249,8 @@ def native_ready(run):
     if native:
         return native
     session = run.cli.get("sessions/" + identifier(sid))["session"]
-    require(not session.get("isTerminated") and session.get("status") != "failed",
-            f"native: {sid} terminated or provisioning failed without native identity")
+    require(not session.get("isTerminated"), f"native: {sid} terminated without native identity")
+    require(session.get("provisionState") != "failed", f"native: {sid} provisioning failed without native identity")
     return False
 
 
@@ -3559,6 +3596,11 @@ def prepare_request(root, initial, old, control_id, run_id):
         control = controls[0][2]
         require(control.get("kind") == "message" and control.get("role") == "assistant" and control.get("turnId") and
                 type(control.get("sequence")) is int, "control lacks assistant turn provenance")
+        running = [turn["id"] for turn in pages[0][1]["transcript"]["turns"] if turn.get("state") == "running"]
+        require(running == [control["turnId"]], "control does not belong to the unique running preparation turn")
+        candidates = [entry for _, _, entry in records if entry.get("kind") == "message" and entry.get("role") == "assistant" and
+                      entry.get("turnId") == control["turnId"] and CONTROL_BLOCK.search(entry.get("text") or "")]
+        require(len(candidates) <= 1, "expected a unique control in the running preparation turn")
         humans = [record for record in records if (entry := record[2]).get("kind") == "message" and
                   entry.get("role") == "user" and entry.get("origin") == "human" and not entry.get("senderSessionId") and
                   (entry.get("consumedByTurnId") or entry.get("turnId")) == control["turnId"] and

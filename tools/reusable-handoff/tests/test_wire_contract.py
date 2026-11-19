@@ -117,6 +117,46 @@ class WireContractTests(unittest.TestCase):
             self.assertEqual(len(execution.effect_attempts(effect)), 1)
             transport.assert_called_once()
 
+    def test_phase_admission_proves_no_dispatch_before_lock_and_callback(self):
+        execution = self.cli.execution
+        execution.phase = "retire"
+        argv = ["session", "kill", "old", "--project", h.PROJECT]
+        flock = h.fcntl.flock
+        publish = h.publish
+        for location in ("before-lock", "after-lock", "before-attempt", "after-attempt"):
+            with self.subTest(location=location), self.transport("kill") as transport:
+                effect = execution.journal.run_id + ":" + location
+                clock = [2 if location == "before-lock" else 0]
+                execution.admission_deadline = 1
+                delivered = []
+
+                def acquire(fd, flags):
+                    result = flock(fd, flags)
+                    if location == "after-lock":
+                        clock[0] = 2
+                    return result
+
+                def record(path, raw):
+                    publish(path, raw)
+                    if path.name == {"before-attempt": "intent.json", "after-attempt": "attempt.json"}.get(location):
+                        clock[0] = 2
+
+                with patch.object(h.time, "monotonic", side_effect=lambda: clock[0]), \
+                     patch.object(h.fcntl, "flock", side_effect=acquire) as lock, patch.object(h, "publish", side_effect=record):
+                    with self.assertRaisesRegex(h.AdmissionBusy, "phase admission deadline.*not dispatched"):
+                        self.cli.call(argv, deadline=3, effect_id=effect, on_dispatch=lambda: delivered.append(effect))
+                    if location == "before-lock":
+                        lock.assert_not_called()
+                self.assertEqual(delivered, [])
+                transport.assert_not_called()
+                attempts = execution.effect_attempts(effect)
+                if location in ("before-lock", "after-lock"):
+                    self.assertEqual(attempts, [])
+                else:
+                    self.assertEqual(len(attempts), 1)
+                    self.assertEqual(attempts[0][1]["terminal"], "not-started")
+                    self.assertEqual((attempts[0][2] / "attempt.json").exists(), location == "after-attempt")
+
     def test_spawn_after_admission_timeout_reloads_the_original_intent_once(self):
         journal = self.cli.execution.journal
         request = h.canonical(dict(request_id=journal.run_id, old_id="old", workers=[],
@@ -137,9 +177,11 @@ class WireContractTests(unittest.TestCase):
             sessions.append(dict(id="new", projectId=h.PROJECT, role="orchestrator", displayName=name, createdAt=h.now()))
             return SimpleNamespace(returncode=0, stdout=b"spawned session new", stderr=b"")
 
+        provision = {"provisionState": "ready", "status": "idle"}
+
         def get(path):
             if path == "sessions/new":
-                return {"session": dict(harness="codex", mode="chat", isTerminated=False)}
+                return {"session": dict(provision, harness="codex", mode="chat", isTerminated=False)}
             self.assertEqual(path, "agents/accounts/sessions/new")
             return {h.provider(run.target): "acct"}
 
@@ -161,6 +203,9 @@ class WireContractTests(unittest.TestCase):
             resumed = h.Run(self.root, self.cli)
             self.assertEqual(h.spawn_new(resumed), "new")
             self.assertEqual(h.spawn_new(h.Run(self.root, self.cli)), "new")
+            provision["provisionState"] = "failed"
+            with self.assertRaisesRegex(h.Stop, "original new provision failed"):
+                h.spawn_new(h.Run(self.root, self.cli))
             sessions.clear()
             with self.assertRaisesRegex(h.Stop, "UNKNOWN spawn"):
                 h.spawn_new(h.Run(self.root, self.cli))
