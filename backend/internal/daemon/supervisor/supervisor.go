@@ -58,6 +58,18 @@ func New(grace time.Duration, onLastClientGone func(), log *slog.Logger) *Superv
 	}
 }
 
+// LaunchOwnerExited covers the interval before a supervised launch completes
+// its first socket connection. Call only on EOF of that app's launch pipe.
+// Once a connection has armed the ordinary watchdog, it owns disconnection.
+func (s *Supervisor) LaunchOwnerExited() {
+	s.mu.Lock()
+	armed := s.armed
+	s.mu.Unlock()
+	if !armed {
+		s.fireOnce.Do(s.onLastClientGone)
+	}
+}
+
 // Serve runs the accept loop on ln until ctx is cancelled or ln is closed.
 // It returns nil on a clean shutdown (context cancelled or listener closed
 // normally); it only returns a non-nil error for unexpected Accept failures.

@@ -1769,6 +1769,55 @@ func (s *Store) SettleTurnWithFailureCode(
 		errMessage = turn.ErrorMessage
 	}
 
+	return settleConversationTurn(ctx, q, turn, state, errMessage, failureCode, usageLimitResetsAt, now)
+}
+
+func settleLostChatTurn(ctx context.Context, q *gen.Queries, turn gen.ConversationTurn, now time.Time) error {
+	if err := settleConversationTurn(ctx, q, turn, domain.TurnStateInterrupted, "", "", time.Time{}, now); err != nil {
+		return err
+	}
+	return q.FailPendingConversationRequestsForTurn(ctx, gen.FailPendingConversationRequestsForTurnParams{
+		UpdatedAt: now, ConversationID: turn.ConversationID, TurnID: sql.NullString{String: turn.ID, Valid: true},
+	})
+}
+
+// SettleExitedChatAdapter closes work owned by the confirmed original
+// generation. It cannot release any delivery attempt.
+func (s *Store) SettleExitedChatAdapter(ctx context.Context, session domain.SessionID, conversation, branch, generation string, now time.Time) error {
+	if conversation == "" || branch == "" || generation == "" {
+		return ports.ErrAgentSettingsInvalid
+	}
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "settle exited chat adapter", func(q *gen.Queries) error {
+		current, err := q.GetSessionAgentSettings(ctx, session)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.IsTerminated || current.SessionMode != domain.SessionModeChat {
+			return nil
+		}
+		turns, err := q.ListRunningChatAdapterTurns(ctx, gen.ListRunningChatAdapterTurnsParams{
+			ConversationID: conversation, HandledBySessionID: session, ControllerGeneration: generation, BranchID: branch,
+		})
+		if err != nil {
+			return err
+		}
+		for _, turn := range turns {
+			if err := settleLostChatTurn(ctx, q, turn, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func settleConversationTurn(ctx context.Context, q *gen.Queries, turn gen.ConversationTurn, state domain.TurnState, errMessage string, failureCode domain.ConversationFailureCode, usageLimitResetsAt, now time.Time) error {
 	if err := q.SettleConversationTurn(ctx, gen.SettleConversationTurnParams{
 		State:              state,
 		ErrorMessage:       errMessage,
@@ -1782,7 +1831,7 @@ func (s *Store) SettleTurnWithFailureCode(
 	if err := q.SettleStreamingConversationMessagesForTurn(ctx,
 		gen.SettleStreamingConversationMessagesForTurnParams{
 			UpdatedAt:      now,
-			ConversationID: conversationID,
+			ConversationID: turn.ConversationID,
 			TurnID:         sql.NullString{String: turn.ID, Valid: true},
 		}); err != nil {
 		return fmt.Errorf("settle streaming messages for turn %s: %w", turn.ID, err)
@@ -1791,7 +1840,7 @@ func (s *Store) SettleTurnWithFailureCode(
 		gen.SettleRunningConversationActivitiesForTurnParams{
 			Status:         terminalActivityStatus(state),
 			UpdatedAt:      now,
-			ConversationID: conversationID,
+			ConversationID: turn.ConversationID,
 			TurnID:         sql.NullString{String: turn.ID, Valid: true},
 		}); err != nil {
 		return fmt.Errorf("settle running activities for turn %s: %w", turn.ID, err)

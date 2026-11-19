@@ -1,5 +1,6 @@
 import type { RunFileInfo } from "../shared/daemon-discovery";
 import type { DaemonStatus } from "../shared/daemon-status";
+import { shutdownRefusalMessage } from "../shared/daemon-takeover";
 
 export async function requestDesktopShutdown(options: {
 	keepAlive: boolean;
@@ -7,7 +8,7 @@ export async function requestDesktopShutdown(options: {
 	status: DaemonStatus;
 	preserveAgents(): boolean;
 	readRunInfo(): Promise<RunFileInfo | null>;
-	requestShutdown(port: number, body: { stopAgents: boolean; appRunId: string }): Promise<{ ok: boolean; status: number }>;
+	requestShutdown(port: number, body: { stopAgents: boolean; appRunId: string }): Promise<{ ok: boolean; status: number; json?(): Promise<unknown> }>;
 }): Promise<boolean> {
 	if (options.keepAlive || options.status.state !== "ready" || !options.status.port) return false;
 	const info = await options.readRunInfo();
@@ -22,6 +23,6 @@ export async function requestDesktopShutdown(options: {
 		stopAgents: !options.preserveAgents(),
 		appRunId: options.appRunId,
 	});
-	if (!response.ok) throw new Error(`Agent shutdown returned HTTP ${response.status}`);
+	if (!response.ok) throw new Error(shutdownRefusalMessage(response.status, await response.json?.().catch(() => null)));
 	return true;
 }

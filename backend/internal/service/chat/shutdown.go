@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -154,15 +155,37 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 			return c.blocked("delivery_not_settled", nil)
 		}
 	}
-	if nativeInFlight && len(attempts) == 0 {
-		return c.blocked("turn_in_flight", nil)
+	if len(attempts) == 0 {
+		c.mu.Lock()
+		nativeInFlight = c.pendingTurnID != "" || c.state == ports.ChatControllerBusy
+		c.mu.Unlock()
+		if nativeInFlight {
+			return c.blocked("turn_in_flight", nil)
+		}
 	}
 	return nil
 }
 
 // blocked names this session and a fixed reason for a refused settlement.
 func (c *Controller) blocked(reason string, cause error) error {
+	if reason == "delivery_journal_unavailable" {
+		logDeliveryJournalFailure(c.log, c.sessionID, "", cause)
+	}
 	return &ports.ChatShutdownBlockedError{SessionID: string(c.sessionID), Reason: reason, Cause: cause}
+}
+
+func logDeliveryJournalFailure(log *slog.Logger, id domain.SessionID, attempt string, cause error) {
+	if log == nil || cause == nil {
+		return
+	}
+	stage := "reconcile"
+	var journal *ports.ChatDeliveryJournalError
+	if errors.As(cause, &journal) {
+		stage = journal.Stage
+	} else if errors.Is(cause, ports.ErrAgentSettingsConflict) {
+		stage = "version_or_owner"
+	}
+	log.Warn("chat delivery journal unavailable", "session", id, "reason", "delivery_journal_unavailable", "stage", stage, "attempt", attempt)
 }
 
 // Record an already-observed custody failure before a native read can consume
@@ -275,6 +298,9 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 			}
 		}
 	}()
+	if err := s.ReconcilePreviousBootDeliveries(ctx); err != nil {
+		return err
+	}
 	if s.sides != nil {
 		s.sides.mu.Lock()
 		s.sides.quiescing = true

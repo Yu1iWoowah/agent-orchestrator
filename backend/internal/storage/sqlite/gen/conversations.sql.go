@@ -870,6 +870,25 @@ func (q *Queries) FailPendingConversationRequestsForSession(ctx context.Context,
 	return err
 }
 
+const failPendingConversationRequestsForTurn = `-- name: FailPendingConversationRequestsForTurn :exec
+UPDATE conversation_activities
+SET status = 'failed', revision = revision + 1, updated_at = ?1
+WHERE conversation_id = ?2
+  AND turn_id = ?3
+  AND kind IN ('approval', 'user_input') AND status = 'pending'
+`
+
+type FailPendingConversationRequestsForTurnParams struct {
+	UpdatedAt      time.Time
+	ConversationID string
+	TurnID         sql.NullString
+}
+
+func (q *Queries) FailPendingConversationRequestsForTurn(ctx context.Context, arg FailPendingConversationRequestsForTurnParams) error {
+	_, err := q.db.ExecContext(ctx, failPendingConversationRequestsForTurn, arg.UpdatedAt, arg.ConversationID, arg.TurnID)
+	return err
+}
+
 const failPendingReviewRequests = `-- name: FailPendingReviewRequests :exec
 UPDATE conversation_activities
 SET status = 'failed', revision = revision + 1, updated_at = ?1
@@ -1748,6 +1767,80 @@ func (q *Queries) ListInterruptedSessions(ctx context.Context, jsonEach interfac
 			return nil, err
 		}
 		items = append(items, session_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunningChatAdapterTurns = `-- name: ListRunningChatAdapterTurns :many
+SELECT id, conversation_id, handled_by_session_id, provider_turn_id, controller_generation, state, error_message, requested_at, started_at, completed_at, diff_json, rolled_back_at, plan_json, branch_id, promotion_started_at, promoted_to_turn_id, retry_of_turn_id, handled_by_review_id, usage_limit_resets_at, usage_limit_auto_resume, usage_limit_resume_error, batched_input, provider_input_text, intake_sequence, agent_settings_snapshot_json, batch_delivery_kind, batch_delivery_steer_id, artifacts_json, failure_code FROM conversation_turns
+WHERE conversation_id = ?1
+  AND handled_by_session_id = ?2
+  AND controller_generation = ?3
+  AND branch_id = ?4
+  AND state = 'running' AND rolled_back_at IS NULL AND handled_by_review_id IS NULL
+`
+
+type ListRunningChatAdapterTurnsParams struct {
+	ConversationID       string
+	HandledBySessionID   domain.SessionID
+	ControllerGeneration string
+	BranchID             string
+}
+
+func (q *Queries) ListRunningChatAdapterTurns(ctx context.Context, arg ListRunningChatAdapterTurnsParams) ([]ConversationTurn, error) {
+	rows, err := q.db.QueryContext(ctx, listRunningChatAdapterTurns,
+		arg.ConversationID,
+		arg.HandledBySessionID,
+		arg.ControllerGeneration,
+		arg.BranchID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ConversationTurn{}
+	for rows.Next() {
+		var i ConversationTurn
+		if err := rows.Scan(
+			&i.ID,
+			&i.ConversationID,
+			&i.HandledBySessionID,
+			&i.ProviderTurnID,
+			&i.ControllerGeneration,
+			&i.State,
+			&i.ErrorMessage,
+			&i.RequestedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.DiffJson,
+			&i.RolledBackAt,
+			&i.PlanJson,
+			&i.BranchID,
+			&i.PromotionStartedAt,
+			&i.PromotedToTurnID,
+			&i.RetryOfTurnID,
+			&i.HandledByReviewID,
+			&i.UsageLimitResetsAt,
+			&i.UsageLimitAutoResume,
+			&i.UsageLimitResumeError,
+			&i.BatchedInput,
+			&i.ProviderInputText,
+			&i.IntakeSequence,
+			&i.AgentSettingsSnapshotJson,
+			&i.BatchDeliveryKind,
+			&i.BatchDeliverySteerID,
+			&i.ArtifactsJson,
+			&i.FailureCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

@@ -83,21 +83,50 @@ func Capture(providerPID int) *Scope {
 }
 
 func birth(pid int) (string, error) {
+	birth, _, err := processState(pid)
+	return birth, err
+}
+
+// AdapterExited proves that the original adapter process ended. Its tools may
+// still be alive, so this must not be used for delivery custody or lock reuse.
+func AdapterExited(scope *Scope) bool {
+	if scope == nil || scope.LeaderPID <= 0 || scope.LeaderBirth == "" || scope.BootID == "" || scope.PIDNamespace == "" {
+		return false
+	}
+	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil || strings.TrimSpace(string(boot)) == "" {
+		return false
+	}
+	if strings.TrimSpace(string(boot)) != scope.BootID {
+		return true
+	}
+	ns, err := os.Readlink("/proc/self/ns/pid")
+	if err != nil || ns != scope.PIDNamespace {
+		return false
+	}
+	started, state, err := processState(scope.LeaderPID)
+	if err == nil {
+		return started != scope.LeaderBirth || state == "Z" || state == "X"
+	}
+	return errors.Is(err, os.ErrNotExist) && errors.Is(unix.Kill(scope.LeaderPID, 0), unix.ESRCH)
+}
+
+func processState(pid int) (string, string, error) {
 	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	// comm may contain spaces and parentheses. starttime is field 22.
 	end := strings.LastIndexByte(string(raw), ')')
 	if end < 0 {
-		return "", fmt.Errorf("invalid process stat")
+		return "", "", fmt.Errorf("invalid process stat")
 	}
 	fields := strings.Fields(string(raw)[end+1:])
 	if len(fields) <= 19 {
-		return "", fmt.Errorf("missing process birth")
+		return "", "", fmt.Errorf("missing process birth")
 	}
 	if _, err := strconv.ParseUint(fields[19], 10, 64); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return fields[19], nil
+	return fields[19], fields[0], nil
 }

@@ -86,6 +86,28 @@ func TestOrchestratorProjectGateIsCancellableAndRevokesReleasedContext(t *testin
 	}
 }
 
+func TestSteerAdmissionIsBusyOnlyForResumeOrNativeReplacement(t *testing.T) {
+	m := &Manager{}
+	for _, mode := range []orchestratorGateMode{orchestratorGateResume, orchestratorGateNativeReplacement, orchestratorGateOrdinary} {
+		_, release, err := m.acquireOrchestratorGate(context.WithValue(t.Context(), orchestratorGateModeKey{}, mode), "project")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		_, releaseSteer, err := m.acquireOrchestratorGate(context.WithValue(ctx, orchestratorGateModeKey{}, orchestratorGateSteer), "project")
+		cancel()
+		releaseSteer()
+		release()
+		want := domain.ErrOrchestratorInputBusy
+		if mode == orchestratorGateOrdinary {
+			want = context.DeadlineExceeded
+		}
+		if !errors.Is(err, want) {
+			t.Fatalf("gate held by %v: steer admission = %v, want %v", mode, err, want)
+		}
+	}
+}
+
 func (s *replacementFenceStore) GetRetiredOrchestratorReplacementBySource(_ context.Context, id domain.SessionID) (domain.OrchestratorReplacement, bool, error) {
 	return s.operation, s.retired && s.operation.SourceSessionID == id, nil
 }

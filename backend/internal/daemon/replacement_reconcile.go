@@ -15,7 +15,7 @@ const replacementReconcileTick = 2 * time.Second
 type replacementSessionRuntime interface {
 	replacementsvc.Runtime
 	BeginReplacementMutation(context.Context, domain.SessionID) (context.Context, func(), error)
-	WithOrchestratorProjectGate(context.Context, domain.ProjectID, func(context.Context) error) error
+	WithNativeReplacementProjectGate(context.Context, domain.ProjectID, func(context.Context) error) error
 }
 
 var _ replacementSessionRuntime = (*sessionmanager.Manager)(nil)

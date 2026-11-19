@@ -45,11 +45,11 @@ function setup() {
 		return marker;
 	});
 	const unlink = vi.fn(async (): Promise<void> => { marker = Object.assign(new Error("missing"), { code: "ENOENT" }); });
-	const children: Array<EventEmitter & { pid: number; stdout: EventEmitter; stderr: EventEmitter; stdin: { on: () => void; end: () => void }; kill: ReturnType<typeof vi.fn>; unref: ReturnType<typeof vi.fn> }> = [];
+	const children: Array<EventEmitter & { pid: number; stdout: EventEmitter; stderr: EventEmitter; stdin: { on: () => void; end: ReturnType<typeof vi.fn>; write: ReturnType<typeof vi.fn> }; kill: ReturnType<typeof vi.fn>; unref: ReturnType<typeof vi.fn> }> = [];
 	const spawn = vi.fn((_command: string, _args: string[], _options: { env: Record<string, string>; stdio: unknown }) => {
 		const child = Object.assign(new EventEmitter(), {
 			pid: 42 + children.length, stdout: new EventEmitter(), stderr: new EventEmitter(),
-			stdin: { on() {}, end() {} }, kill: vi.fn(), unref: vi.fn(),
+			stdin: { on() {}, end: vi.fn(), write: vi.fn() }, kill: vi.fn(), unref: vi.fn(),
 		});
 		children.push(child);
 		return child;
@@ -573,7 +573,11 @@ describe("main.ts daemon lifecycle wiring with controlled I/O", () => {
 			expect(options.env.AO_OWNER).toBe(keep ? "persistent" : "app");
 			expect(options.stdio).toEqual(keep ? ["pipe", 73, 73] : "pipe");
 		}
-		for (const child of h.children) expect(child.unref).toHaveBeenCalledTimes(keep ? 1 : 0);
+		for (const child of h.children) {
+			expect(child.unref).toHaveBeenCalledTimes(keep ? 1 : 0);
+			expect(child.stdin.end).toHaveBeenCalledTimes(keep ? 1 : 0);
+			expect(child.stdin.write).toHaveBeenCalledTimes(keep ? 0 : 1);
+		}
 		expect(h.establishSupervisorLink).toHaveBeenCalledTimes(keep ? 0 : 2);
 	});
 });

@@ -151,6 +151,9 @@ func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.Cha
 	if !a.Accepts(r) {
 		return a, ports.ErrChatDeliveryUnverified
 	}
+	if a.ExecutionSettled && unsettledAcceptanceReceipt(a) {
+		return a, nil
+	}
 	// A legacy settlement is final unless the host proves acceptance; a later
 	// incomplete receipt must not rewrite it or drop its daemon marker.
 	if a.ExecutionSettled && a.Disposition == domain.ChatDeliveryUnknown && r.Disposition != domain.ChatDeliveryAccepted {
@@ -554,9 +557,12 @@ func (c *Controller) goneHostEpoch(a domain.ChatDeliveryAttempt) bool {
 // and no execution can still run. Like legacy settlement it writes the daemon's
 // incomplete receipt, never a provider one; the input is never replayed. The
 // error code tells a completed turn from one the host loss interrupted. Only
-// unknown or reserved attempts qualify: an accepted receipt cannot be
-// downgraded to unknown, so an accepted-but-unsettled turn keeps its rule.
+// Unknown and reserved attempts use the existing incomplete settlement.
+// Known Codex acceptance takes the local-only path to preserve its receipt.
 func (c *Controller) settleGoneHostDelivery(ctx context.Context, a domain.ChatDeliveryAttempt) (bool, error) {
+	if a.Disposition == domain.ChatDeliveryAccepted {
+		return c.settlePreviousBootAcceptance(ctx, a)
+	}
 	if !c.goneHostEpoch(a) {
 		return false, nil
 	}
@@ -659,6 +665,9 @@ func (c *Controller) monitorDeliveries() {
 			cancel()
 			var earliest time.Time
 			if err != nil {
+				if firstSweep || force {
+					logDeliveryJournalFailure(c.log, c.sessionID, "", err)
+				}
 				earliest = c.now().Add(30 * time.Second)
 			} else {
 				resolveCtx, resolveCancel := c.deadlineContext(context.Background(), 10*time.Second)
@@ -668,9 +677,6 @@ func (c *Controller) monitorDeliveries() {
 				}
 				resolveCancel()
 				for _, a := range attempts {
-					if a.BlockedSince != nil && !force && !firstSweep && a.AttentionID != "" {
-						continue
-					}
 					due := a.LastProgressAt.Add(30 * time.Second)
 					if a.NextCheckAt != nil {
 						due = *a.NextCheckAt
@@ -679,9 +685,22 @@ func (c *Controller) monitorDeliveries() {
 						settleCtx, settleCancel := c.deadlineContext(context.Background(), 5*time.Second)
 						settled, settleErr := c.settleGoneHostDelivery(settleCtx, a)
 						settleCancel()
-						if settled && settleErr == nil {
+						if settleErr != nil {
+							if firstSweep || force {
+								logDeliveryJournalFailure(c.log, c.sessionID, a.ID, settleErr)
+							}
+							retry := c.now().Add(5 * time.Second)
+							if earliest.IsZero() || retry.Before(earliest) {
+								earliest = retry
+							}
 							continue
 						}
+						if settled {
+							continue
+						}
+					}
+					if a.BlockedSince != nil && !force && !firstSweep && a.AttentionID != "" {
+						continue
 					}
 					if force || firstSweep && a.BlockedSince != nil || !due.After(c.now()) {
 						queryCtx, queryCancel := c.deadlineContext(context.Background(), 10*time.Second)

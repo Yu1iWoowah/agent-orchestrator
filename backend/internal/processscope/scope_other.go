@@ -4,6 +4,8 @@ package processscope
 
 import "context"
 
+func AdapterExited(*Scope) bool { return false }
+
 // Capture leaves process identity absent on unsupported platforms.
 func Capture(int) *Scope { return nil }
 

@@ -53,32 +53,19 @@ func (s *Service) queueWithoutController(
 		}
 	}
 	heldByReplacement := false
-	startingIntake := false
-	intakeLocked := false
-	defer func() {
-		if intakeLocked {
-			s.startIntakeMu.Unlock()
-		}
-	}()
+	var startToken uint64
 	if !record.ProvisionState.IsProvisioning() && record.HibernatedAt == nil {
+		startToken = s.startToken(record.ID)
 		err := s.replacementWakeFence(ctx, record.ID)
 		switch {
 		case errors.Is(err, domain.ErrReplacementIntakeFenced):
 			heldByReplacement = true
 		case err != nil:
 			return domain.ConversationTurn{}, err
-		case s.controllerStarting(record.ID):
+		case startToken != 0:
 			if err := s.awaitStoppedControllerCleanup(ctx, record.ID); err != nil {
 				return domain.ConversationTurn{}, err
 			}
-			// Mark before appending: the start may finish meanwhile, and must
-			// then keep and drain this message rather than settle it as orphaned.
-			// Holding startIntakeMu until the append lands keeps a start from
-			// reading its cutoff before this mark and settling after the append.
-			s.startIntakeMu.Lock()
-			intakeLocked = true
-			s.markStartIntake(record.ID)
-			startingIntake = true
 		case !behindAccountMove:
 			return domain.ConversationTurn{}, ErrNotProvisioning
 		}
@@ -118,12 +105,30 @@ func (s *Service) queueWithoutController(
 		InteractionAt:       msg.InteractionAt,
 	}
 	appendQueued := func(conversationID string) (bool, error) {
-		if starting, ok := s.store.(startingIntakeStore); ok && startingIntake {
+		if starting, ok := s.store.(startingIntakeStore); ok && startToken != 0 && !heldByReplacement {
 			return starting.AppendStartingUserMessage(ctx, conversationID, record.ID, message, turnID, now)
 		}
 		return s.store.AppendUserMessage(ctx, conversationID, record.ID, "", message, turnID, now)
 	}
-	created, err := appendQueued(conversation.ID)
+	var created bool
+	if startToken != 0 && !heldByReplacement {
+		gate := s.intakeGate(domain.SessionConversationOwner(record.ID))
+		if err := gate.lock(ctx); err != nil {
+			return domain.ConversationTurn{}, err
+		}
+		if s.startToken(record.ID) != startToken {
+			gate.unlock()
+			return domain.ConversationTurn{}, ErrNotProvisioning
+		}
+		now = s.now()
+		created, err = appendQueued(conversation.ID)
+		if created && err == nil {
+			s.markStartIntakeAt(record.ID, now)
+		}
+		gate.unlock()
+	} else {
+		created, err = appendQueued(conversation.ID)
+	}
 	if errors.Is(err, domain.ErrConversationRebound) {
 		// An orchestrator's first controller moved its queue to the project
 		// conversation after ensureConversation returned the provisioning row
@@ -132,13 +137,12 @@ func (s *Service) queueWithoutController(
 		if err == nil {
 			err = validateExcerptReferences(msg.Excerpts, conversation.ID)
 		}
+		if err == nil && startToken != 0 && !heldByReplacement {
+			return domain.ConversationTurn{}, ErrNotProvisioning
+		}
 		if err == nil {
 			created, err = appendQueued(conversation.ID)
 		}
-	}
-	if intakeLocked {
-		s.startIntakeMu.Unlock()
-		intakeLocked = false
 	}
 	if err != nil {
 		return domain.ConversationTurn{}, fmt.Errorf("queue message for %s: %w", record.ID, err)

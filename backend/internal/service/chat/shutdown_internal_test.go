@@ -18,6 +18,16 @@ type shutdownGapConversation struct {
 	closed bool
 }
 
+func TestShutdownBlockDoesNotExposeRawCause(t *testing.T) {
+	const sentinel = "private journal contents"
+	cause := errors.New(sentinel)
+	err := (&Controller{sessionID: "worker"}).blocked("delivery_journal_unavailable", cause)
+	if strings.Contains(err.Error(), sentinel) || !strings.Contains(err.Error(), "worker") ||
+		!errors.Is(err, ports.ErrChatShutdownNotSettled) || !errors.Is(err, cause) {
+		t.Fatalf("unsafe or incomplete shutdown diagnostic: %s", err)
+	}
+}
+
 func (c *shutdownGapConversation) Close() error { c.closed = true; return nil }
 
 func TestStopAllRefusesUnmanagedSideBeforeClosingAnyTransport(t *testing.T) {

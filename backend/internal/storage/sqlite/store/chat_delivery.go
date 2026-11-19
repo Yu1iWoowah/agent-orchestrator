@@ -116,7 +116,7 @@ func (s *Store) UpdateChatDelivery(ctx context.Context, next domain.ChatDelivery
 	}
 	defer s.writeMu.Unlock()
 	err := s.inTx(ctx, "update chat delivery", func(q *gen.Queries) error {
-		return updateChatDelivery(ctx, q, next, expected, actor)
+		return updateChatDelivery(ctx, q, next, expected, actor, false)
 	})
 	return next, err
 }
@@ -142,7 +142,7 @@ func (s *Store) BlockChatDeliveryWithAttention(ctx context.Context, next domain.
 			return err
 		}
 		next.AttentionID = question.ID
-		return updateChatDelivery(ctx, q, next, expected, actor)
+		return updateChatDelivery(ctx, q, next, expected, actor, false)
 	})
 	if err != nil {
 		next.AttentionID = ""
@@ -150,7 +150,73 @@ func (s *Store) BlockChatDeliveryWithAttention(ctx context.Context, next domain.
 	return next, err
 }
 
-func updateChatDelivery(ctx context.Context, q *gen.Queries, next domain.ChatDeliveryAttempt, expected int64, actor domain.AgentSettingsOwner) error {
+// SettlePreviousBootAcceptance records that execution ended without rewriting
+// what the provider originally acknowledged. The caller has verified the boot.
+func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domain.ChatDeliveryAttempt, actor domain.AgentSettingsOwner, at time.Time) error {
+	if original.ExecutionSettled || original.Disposition != domain.ChatDeliveryAccepted || original.Receipt == nil ||
+		original.Receipt.ExecutionSettled || original.Receipt.ProviderTurnID == "" || !original.Accepts(*original.Receipt) ||
+		len(original.InputRefs) != len(original.TurnIDs) || len(original.InputRefs) == 0 {
+		return ports.ErrAgentSettingsInvalid
+	}
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "settle previous boot acceptance", func(q *gen.Queries) error {
+		code := "CHAT_DELIVERY_HOST_GONE_SETTLED"
+		for i, ref := range original.InputRefs {
+			turn, err := q.SelectConversationTurnByID(ctx, ref.TurnID)
+			if err != nil {
+				return err
+			}
+			if ref.TurnID != original.TurnIDs[i] || turn.ConversationID != original.ConversationID || turn.BranchID != ref.BranchID || turn.HandledBySessionID != ref.SessionID || turn.RolledBackAt.Valid || turn.HandledByReviewID.Valid {
+				return ports.ErrAgentSettingsConflict
+			}
+			if i > 0 {
+				if turn.State == domain.TurnStateRunning || turn.ProviderTurnID != "" {
+					return ports.ErrAgentSettingsConflict
+				}
+				if turn.State == domain.TurnStateQueued {
+					// The receipt covers the entire reserved batch. Link members
+					// whose acceptance had not yet been projected before the reboot.
+					n, err := q.CompleteQueuedConversationBatchMember(ctx, gen.CompleteQueuedConversationBatchMemberParams{
+						CompletedAt: sql.NullTime{Time: at, Valid: true}, PromotedToTurnID: sql.NullString{String: original.TurnIDs[0], Valid: true},
+						BatchDeliveryKind: batchDeliveryKind(""), ID: turn.ID, ConversationID: turn.ConversationID,
+					})
+					if err != nil {
+						return err
+					}
+					if n != 1 {
+						return ports.ErrAgentSettingsConflict
+					}
+				}
+				continue
+			}
+			if turn.ProviderTurnID != original.Receipt.ProviderTurnID {
+				return ports.ErrAgentSettingsConflict
+			}
+			if turn.State != domain.TurnStateCompleted {
+				code = "CHAT_DELIVERY_HOST_GONE_INTERRUPTED"
+			}
+			if turn.State == domain.TurnStateRunning {
+				if turn.ControllerGeneration != original.Owner.ControllerGeneration || turn.HandledBySessionID != original.SessionID || turn.BranchID != actor.BranchID {
+					return ports.ErrAgentSettingsConflict
+				}
+				if err := settleLostChatTurn(ctx, q, turn, at); err != nil {
+					return err
+				}
+			}
+		}
+		next := original
+		next.Version++
+		next.UpdatedAt = at
+		next.ExecutionSettled = true
+		next.NextCheckAt, next.BlockedSince, next.ErrorCode = nil, nil, code
+		return updateChatDelivery(ctx, q, next, original.Version, actor, true)
+	})
+}
+
+func updateChatDelivery(ctx context.Context, q *gen.Queries, next domain.ChatDeliveryAttempt, expected int64, actor domain.AgentSettingsOwner, previousBoot bool) error {
 	row, err := q.GetChatDeliveryAttempt(ctx, gen.GetChatDeliveryAttemptParams{SessionID: string(next.SessionID), ID: next.ID})
 	if err != nil {
 		return err
@@ -166,7 +232,10 @@ func updateChatDelivery(ctx context.Context, q *gen.Queries, next domain.ChatDel
 	if current.IsTerminated || chatJournalOwner(current) != actor || actor.AccountID != old.Owner.AccountID || actor.ProviderConversationID != old.Owner.ProviderConversationID || actor.BranchID != old.Owner.BranchID || old.Version != expected || old.Owner != next.Owner || old.Revision != next.Revision || old.ConversationID != next.ConversationID || !slices.Equal(old.TurnIDs, next.TurnIDs) || !slices.Equal(old.InputRefs, next.InputRefs) || !old.CreatedAt.Equal(next.CreatedAt) || next.UpdatedAt.Before(old.UpdatedAt) || next.LastProgressAt.Before(old.LastProgressAt) || old.PreparedTurnID != "" && next.PreparedTurnID != old.PreparedTurnID || old.ExecutionSettled && !next.ExecutionSettled {
 		return ports.ErrAgentSettingsConflict
 	}
-	if !old.ExecutionSettled && next.ExecutionSettled && (next.Receipt == nil || !next.Receipt.ExecutionSettled) {
+	if previousBoot && (current.Harness != domain.HarnessCodex || old.ExecutionSettled || old.Receipt == nil || next.Receipt == nil || *old.Receipt != *next.Receipt) {
+		return ports.ErrAgentSettingsConflict
+	}
+	if !previousBoot && !old.ExecutionSettled && next.ExecutionSettled && (next.Receipt == nil || !next.Receipt.ExecutionSettled) {
 		return ports.ErrAgentSettingsInvalid
 	}
 	if next.Receipt != nil {
@@ -246,7 +315,7 @@ func updateChatDelivery(ctx context.Context, q *gen.Queries, next domain.ChatDel
 			}
 		}
 	}
-	if next.Receipt != nil {
+	if next.Receipt != nil && !previousBoot {
 		proof, err := json.Marshal(next.Receipt)
 		if err != nil {
 			return err
@@ -278,13 +347,13 @@ func (s *Store) ChatDeliveryAttemptForTurn(ctx context.Context, id domain.Sessio
 func (s *Store) PendingChatDeliveries(ctx context.Context, id domain.SessionID) ([]domain.ChatDeliveryAttempt, error) {
 	rows, err := s.qr.ListPendingChatDeliveryAttempts(ctx, string(id))
 	if err != nil {
-		return nil, err
+		return nil, &ports.ChatDeliveryJournalError{Stage: "read", Cause: err}
 	}
 	result := make([]domain.ChatDeliveryAttempt, 0, len(rows))
 	for _, row := range rows {
 		a, err := decodeChatDelivery(row)
 		if err != nil {
-			return nil, err
+			return nil, &ports.ChatDeliveryJournalError{Stage: "validate", Cause: err}
 		}
 		result = append(result, a)
 	}

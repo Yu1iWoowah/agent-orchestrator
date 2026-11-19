@@ -3,6 +3,7 @@ package store_test
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,64 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestPreviousBootAcceptanceKeepsIncompleteBatchMembersOutOfQueue(t *testing.T) {
+	s, db, rec := settingsStartFixture(t, "")
+	ctx := t.Context()
+	if _, err := db.ExecContext(ctx, "UPDATE sessions SET harness=? WHERE id=?", domain.HarnessCodex, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := s.SessionAgentSettings(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := s.ConversationForSession(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC()
+	owner := *dispatchSnapshot(t, settings).Owner
+	for _, id := range []string{"root", "follower"} {
+		if _, err := s.AppendUserMessage(ctx, conv.ID, rec.ID, settings.OwnerGeneration, domain.ConversationMessage{ID: "message-" + id, Text: "fixture", ClientMessageID: "client-" + id, Origin: domain.MessageOriginHuman}, id, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batch, err := s.ClaimQueuedBatch(ctx, conv.ID, true, 2, at)
+	if err != nil || len(batch) != 2 {
+		t.Fatalf("queued batch = %v, %v", batch, err)
+	}
+	ids := []string{batch[0].TurnID, batch[1].TurnID}
+	before, created, err := s.ReserveChatDelivery(ctx, domain.ChatDeliveryAttempt{ID: "old-batch", SessionID: rec.ID, ConversationID: conv.ID, Owner: owner, Revision: settings.Revision, TurnIDs: ids, Disposition: domain.ChatDeliveryReserved, CreatedAt: at, UpdatedAt: at, LastProgressAt: at})
+	if err != nil || !created {
+		t.Fatalf("reserve batch = %t, %v", created, err)
+	}
+	const providerTurn = "original-native-turn"
+	if err := s.BindTurnToProvider(ctx, ids[0], providerTurn, at); err != nil {
+		t.Fatal(err)
+	}
+	proof := domain.ChatDeliveryReceipt{AttemptID: before.ID, ProviderTurnID: providerTurn, ProviderRequestID: "original-request", ProviderEpoch: "previous-boot", Disposition: domain.ChatDeliveryAccepted, Source: "provider_response", Complete: true, ObservedAt: at}
+	before.Version, before.EvidenceLevel, before.Disposition, before.Receipt = 1, 2, domain.ChatDeliveryAccepted, &proof
+	before, err = s.UpdateChatDelivery(ctx, before, 0, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SettlePreviousBootAcceptance(ctx, before, owner, at.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := s.ChatDeliveryAttempt(ctx, rec.ID, before.ID)
+	if err != nil || !saved.ExecutionSettled || saved.Receipt == nil || *saved.Receipt != proof || !slices.Equal(saved.InputRefs, before.InputRefs) {
+		t.Fatalf("accepted batch changed: %+v, %v", saved, err)
+	}
+	for i, want := range []domain.TurnState{domain.TurnStateInterrupted, domain.TurnStateCompleted} {
+		turn, err := s.TurnByID(ctx, ids[i])
+		if err != nil || turn.State != want {
+			t.Fatalf("input %s state = %s, want %s: %v", ids[i], turn.State, want, err)
+		}
+	}
+	if _, err := s.NextQueuedTurn(ctx, conv.ID); !errors.Is(err, domain.ErrNoQueuedTurn) {
+		t.Fatalf("settled batch became eligible for redispatch: %v", err)
+	}
+}
 
 func TestChatDeliveryReservationKeepsOneExecutionAndMonotonicEvidence(t *testing.T) {
 	s, db, rec := settingsStartFixture(t, "")

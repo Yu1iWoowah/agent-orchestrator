@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -261,6 +263,8 @@ func Run(buildVersion string) (retErr error) {
 	var browserRuntimeToken string
 	var appRuntimeToken string
 	var operatorRuntimeToken string
+	startupCtx := context.Background()
+	var desktopOwnerGone <-chan struct{}
 	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
 		var credentials appruntime.Credentials
 		credentials, err = appruntime.ReadCredentials(os.Stdin)
@@ -268,6 +272,22 @@ func Run(buildVersion string) (retErr error) {
 		operatorRuntimeToken = credentials.OperatorToken
 		if err != nil {
 			return err
+		}
+		if os.Getenv("AO_OWNER") == "app" && cfg.AppRunID != "" && os.Getenv("AO_APP_LIFETIME_STDIN") == "1" {
+			gone := make(chan struct{})
+			desktopOwnerGone = gone
+			var cancelStartup context.CancelFunc
+			startupCtx, cancelStartup = context.WithCancel(startupCtx)
+			defer cancelStartup()
+			// The credential frame is complete. No further bytes carry data;
+			// EOF now means that this launch's app no longer holds its pipe.
+			go func() {
+				defer sentryobs.RecoverBackground()
+				if _, err := io.Copy(io.Discard, os.Stdin); err == nil {
+					close(gone)
+					cancelStartup()
+				}
+			}()
 		}
 	}
 	if browserRuntimeToken == "" {
@@ -323,12 +343,18 @@ func Run(buildVersion string) (retErr error) {
 	// lifecycle stack) are not covered: a predecessor stuck in one past the
 	// wait still makes this daemon exit 75.
 	installerShutdownTimeout := max(cfg.ShutdownTimeout, cmp.Or(cfg.InstallerShutdownTimeout, systeminstall.DefaultShutdownTimeout()))
-	dataDirLock, err := lockDataDir(context.Background(), cfg.DataDir, dataDirTakeoverWait(cfg.ShutdownTimeout, installerShutdownTimeout), log)
+	dataDirLock, err := lockDataDir(startupCtx, cfg.DataDir, dataDirTakeoverWait(cfg.ShutdownTimeout, installerShutdownTimeout), log)
 	if err != nil {
+		if startupCtx.Err() != nil {
+			return nil
+		}
 		return err
 	}
 	openLogFile(cfg.DataDir)
 	defer func() { _ = dataDirLock.Release() }()
+	if startupCtx.Err() != nil {
+		return nil
+	}
 
 	// Open the durable store and bring up the CDC substrate: DB triggers capture
 	// changes into change_log, the poller tails it, and the broadcaster fans
@@ -535,7 +561,11 @@ func Run(buildVersion string) (retErr error) {
 	// observer they ask for early refreshes, so they hold a late-bound handle.
 	reviewRefresher := &scmReviewRefresher{}
 	chatSvc := chatsvc.New(chatsvc.Options{
-		NativeGuard: nativeGuard,
+		PreviousBootEpoch: persistenthost.EpochFromPreviousBoot,
+		NativeGuard:       nativeGuard,
+		BindAdapterOwner: func(id domain.SessionID, epoch, conversation, branch, generation string) error {
+			return persistenthost.BindAdapterOwner(cfg.DataDir, id, epoch, conversation, branch, generation)
+		},
 
 		PRChanged:           reviewRefresher.RequestSessionRefresh,
 		Store:               store,
@@ -1409,7 +1439,7 @@ func Run(buildVersion string) (retErr error) {
 	}
 	chatSvc.SetReplacementMutationGate(replacementRuntime)
 	sharedDocuments := projectdocssvc.New(projectdocssvc.Deps{Store: store, DataDir: cfg.DataDir, Capabilities: browserAuthority})
-	replacementSvc := replacementsvc.New(replacementsvc.Deps{Store: store, Runtime: replacementRuntime, Documents: sharedDocuments, NativeTranscripts: nativeTranscripts, WithProjectGate: replacementRuntime.WithOrchestratorProjectGate})
+	replacementSvc := replacementsvc.New(replacementsvc.Deps{Store: store, Runtime: replacementRuntime, Documents: sharedDocuments, NativeTranscripts: nativeTranscripts, WithProjectGate: replacementRuntime.WithNativeReplacementProjectGate})
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		ShutdownPreflight:        chatSvc.PreflightShutdown,
 		ShutdownPreservedSides:   chatSvc.ShutdownPreservedSides,
@@ -1600,17 +1630,26 @@ func Run(buildVersion string) (retErr error) {
 	}
 	// ponytail: 5s tolerates a brief frontend restart; tune if dev hot-reload trips it.
 	const supervisorGrace = 5 * time.Second
+	sup := supervisor.New(supervisorGrace, func() {
+		lifecycle.Record("supervisor_link_lost", map[string]any{"graceMs": supervisorGrace.Milliseconds()})
+		srv.RequestShutdownAfterDesktopExit()
+	}, log)
+	if desktopOwnerGone != nil {
+		go func() {
+			defer sentryobs.RecoverBackground()
+			select {
+			case <-desktopOwnerGone:
+				sup.LaunchOwnerExited()
+			case <-ctx.Done():
+			}
+		}()
+	}
 
 	if ln, addr, err := supervisor.Listen(cfg.RunFilePath); err != nil {
-		// Non-fatal: without the link the daemon still works (e.g. headless "ao start"),
-		// it just will not auto-stop when a frontend dies. Do not block startup on it.
-		log.Warn("supervisor: listener unavailable; frontend-death auto-stop disabled", "err", err)
+		// A verified app-owned launch still has its startup lifetime pipe.
+		log.Warn("supervisor: listener unavailable", "err", err)
 	} else {
 		log.Info("supervisor: listening", "addr", addr)
-		sup := supervisor.New(supervisorGrace, func() {
-			lifecycle.Record("supervisor_link_lost", map[string]any{"graceMs": supervisorGrace.Milliseconds()})
-			srv.RequestShutdownAfterDesktopExit()
-		}, log)
 		go func() {
 			defer sentryobs.RecoverBackground()
 			if err := sup.Serve(ctx, ln); err != nil {
@@ -1622,6 +1661,18 @@ func Run(buildVersion string) (retErr error) {
 	var startupReconcileDone <-chan struct{}
 	var usageLimitResumeDone <-chan struct{}
 	var replacementReconcileDone <-chan struct{}
+	var retryPreviousBootDeliveries atomic.Bool
+	reconcileExitedAdapters := func(ctx context.Context) {
+		err := persistenthost.ReconcileExitedAdapters(ctx, cfg.DataDir, func(id domain.SessionID, generation string) bool {
+			c, err := chatSvc.Controller(id)
+			return err != nil || c.Generation() != generation || c.State() == ports.ChatControllerStopped
+		}, func(ctx context.Context, id domain.SessionID, conversation, branch, generation string) error {
+			return store.SettleExitedChatAdapter(ctx, id, conversation, branch, generation, time.Now().UTC())
+		})
+		if err != nil && ctx.Err() == nil {
+			log.Warn("reconcile exited chat adapter failed")
+		}
+	}
 	runErr := srv.RunWithReady(ctx, func() {
 		// Agent-readiness warming is advisory and idempotent, and request paths
 		// lazily Ensure on demand. Kick it here, after the listener is live, so its
@@ -1654,6 +1705,11 @@ func Run(buildVersion string) (retErr error) {
 				log.Error("persistent chat host reconciliation on boot failed", "err", reconcileErr)
 				sentryobs.CaptureBackground(ctx, reconcileErr, "chat", "reconcile", map[string]string{"reason": "chat_host"})
 			}
+			if err := chatSvc.ReconcilePreviousBootDeliveries(ctx); err != nil && ctx.Err() == nil {
+				retryPreviousBootDeliveries.Store(true)
+				log.Warn("previous boot chat delivery remains unsettled", "err", err)
+			}
+			reconcileExitedAdapters(ctx)
 			close(persistentHostsReconciled)
 			// Reviewer-owned Chat controllers wait for persistent host reconciliation.
 			// Recover them only after the listener is ready and the gate is closed, or
@@ -1681,6 +1737,10 @@ func Run(buildVersion string) (retErr error) {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
+					if retryPreviousBootDeliveries.Load() {
+						retryPreviousBootDeliveries.Store(chatSvc.ReconcilePreviousBootDeliveries(ctx) != nil)
+					}
+					reconcileExitedAdapters(ctx)
 					if !settingsSvc.ChatHibernationEnabled() {
 						continue
 					}

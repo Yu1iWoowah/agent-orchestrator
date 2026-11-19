@@ -39,6 +39,15 @@ func (m *Manager) BeginReplacementMutation(ctx context.Context, id domain.Sessio
 	return locked, release, err
 }
 
+// BeginSteerOrSendMutation rejects public input during a known resume or native replacement.
+func (m *Manager) BeginSteerOrSendMutation(ctx context.Context, id domain.SessionID) (context.Context, func(), error) {
+	locked, release, err := m.BeginReplacementMutation(context.WithValue(ctx, orchestratorGateModeKey{}, orchestratorGateSteer), id)
+	if errors.Is(err, domain.ErrOrchestratorInputBusy) {
+		err = fmt.Errorf("session %s: %w", id, err)
+	}
+	return locked, release, err
+}
+
 // Only input can use a durable release. Generic clean/restore/account actions
 // keep the stricter project reservation throughout a paused handoff.
 func (m *Manager) beginReplacementInput(ctx context.Context, id domain.SessionID) (context.Context, func(), error) {
@@ -167,6 +176,7 @@ func (m *Manager) deliverTUIPrompt(ctx context.Context, guard *sessionguard.Guar
 
 // Only an activated successor may use ordinary native wake during replacement.
 func (m *Manager) beginReplacementResume(ctx context.Context, id domain.SessionID) (context.Context, func(), error) {
+	ctx = context.WithValue(ctx, orchestratorGateModeKey{}, orchestratorGateResume)
 	locked, release, err := m.beginReplacementSessionAction(ctx, id)
 	if !errors.Is(err, domain.ErrReplacementInProgress) {
 		return locked, release, err

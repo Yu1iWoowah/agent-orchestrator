@@ -58,6 +58,8 @@ type SessionReader interface {
 
 // Service owns the live Chat controllers.
 type Service struct {
+	previousBootEpoch      func(string) bool
+	bindAdapterOwner       func(domain.SessionID, string, string, string, string) error
 	shutdownPrepared       bool     // guarded by mu; admission stays fenced until detach
 	shutdownPreservedSides []string // guarded by mu; successful preflight report
 
@@ -146,11 +148,8 @@ type Service struct {
 	// starting counts Start calls in progress per owner. Requests for a session
 	// whose controller is still starting answer at once instead of waiting on
 	// its gate. Memory only: a daemon restart has no start in progress.
-	starting map[domain.ConversationOwner]int
-	// startIntakeMu orders starting intake against a start's settlement: input
-	// is marked and appended under it, and a start reads its cutoff and settles
-	// under it, so a start either keeps that input or settles before it lands.
-	startIntakeMu sync.Mutex
+	starting       map[domain.ConversationOwner]startWindow
+	nextStartToken uint64
 	// afterSettleCutoff, when set by a test, runs after a start reads its
 	// settlement cutoff and before it settles.
 	afterSettleCutoff func()
@@ -163,6 +162,7 @@ type Service struct {
 	handoffInterrupted      map[domain.SessionID]string
 	gateMu                  sync.Mutex
 	gates                   map[domain.ConversationOwner]controllerGate
+	intakeGates             map[domain.ConversationOwner]controllerGate
 	probeMu                 sync.Mutex
 	probed                  map[domain.AgentHarness]ports.ChatCapabilities
 	prewarming              sync.Map // domain.AgentHarness -> struct{}
@@ -180,6 +180,11 @@ func (s *Service) SetReportCoordinator(coordinator *reportsvc.Coordinator) {
 // controllerGate serializes start/stop for one session without making provider
 // I/O for that session block lookups or commands for every other Chat session.
 type controllerGate chan struct{}
+
+type startWindow struct {
+	count int
+	token uint64
+}
 
 func (g controllerGate) lock(ctx context.Context) error {
 	select {
@@ -242,6 +247,9 @@ type Options struct {
 	// DataDir locates a session's artifact directory when its record names
 	// none, for a render kept as an artifact.
 	DataDir string
+	// PreviousBootEpoch verifies a stored host identity without attaching or starting it.
+	PreviousBootEpoch func(string) bool
+	BindAdapterOwner  func(domain.SessionID, string, string, string, string) error
 	// PRChanged is told when a finished agent command probably changed the
 	// session's pull request (`gh pr merge`, `git push`), so the SCM observer
 	// can re-read it early. Nil leaves it to the regular poll.
@@ -268,6 +276,8 @@ func New(opts Options) *Service {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	svc := &Service{
+		previousBootEpoch:      opts.PreviousBootEpoch,
+		bindAdapterOwner:       opts.BindAdapterOwner,
 		store:                  opts.Store,
 		reader:                 opts.Reader,
 		pageReader:             opts.PageReader,
@@ -295,9 +305,10 @@ func New(opts Options) *Service {
 		ownerControllers:       make(map[domain.ConversationOwner]*Controller),
 		startConfigs:           make(map[domain.ConversationOwner]StartConfig),
 		awakeInterrupted:       make(map[domain.ConversationOwner]domain.AwakeAgentTarget),
-		starting:               make(map[domain.ConversationOwner]int),
+		starting:               make(map[domain.ConversationOwner]startWindow),
 		startIntake:            make(map[domain.SessionID]time.Time),
 		gates:                  make(map[domain.ConversationOwner]controllerGate),
+		intakeGates:            make(map[domain.ConversationOwner]controllerGate),
 		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
 		waking:                 make(map[domain.SessionID]int),
 		wakeRuns:               make(map[domain.SessionID]*wakeRun),
@@ -324,6 +335,17 @@ func (s *Service) controllerGate(owner domain.ConversationOwner) controllerGate 
 	if gate == nil {
 		gate = make(controllerGate, 1)
 		s.gates[owner] = gate
+	}
+	return gate
+}
+
+func (s *Service) intakeGate(owner domain.ConversationOwner) controllerGate {
+	s.gateMu.Lock()
+	defer s.gateMu.Unlock()
+	gate := s.intakeGates[owner]
+	if gate == nil {
+		gate = make(controllerGate, 1)
+		s.intakeGates[owner] = gate
 	}
 	return gate
 }
@@ -492,45 +514,81 @@ func (s *Service) settleOrphanedWork(ctx context.Context, session domain.Session
 func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, error) {
 	owner := conversationOwner(cfg)
 	s.mu.Lock()
-	s.starting[owner]++
+	window := s.starting[owner]
+	if window.count == 0 {
+		s.nextStartToken++
+		window.token = s.nextStartToken
+	}
+	window.count++
+	s.starting[owner] = window
 	s.mu.Unlock()
-	controller, err := func() (*Controller, error) {
-		defer func() {
-			s.mu.Lock()
-			s.starting[owner]--
-			if s.starting[owner] == 0 {
-				delete(s.starting, owner)
-			}
-			s.mu.Unlock()
-		}()
-		gate := s.controllerGate(owner)
-		if err := gate.lock(ctx); err != nil {
-			return nil, err
-		}
-		defer gate.unlock()
-		return s.startLocked(ctx, cfg)
-	}()
-	if err == nil && owner.Kind == domain.ConversationOwnerSession {
+	gate := s.controllerGate(owner)
+	if err := gate.lock(ctx); err != nil {
+		s.endStart(owner, cfg.SessionID, false, false)
+		return nil, err
+	}
+	controller, err := s.startLocked(ctx, cfg)
+	queued := s.endStart(owner, cfg.SessionID, true, err == nil)
+	gate.unlock()
+	if queued && controller != nil {
 		s.drainStartIntake(ctx, cfg.SessionID, controller)
 	}
 	return controller, err
 }
 
+func (s *Service) endStart(owner domain.ConversationOwner, id domain.SessionID, entered, succeeded bool) bool {
+	if entered {
+		gate := s.intakeGate(owner)
+		gate <- struct{}{}
+		defer gate.unlock()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	window := s.starting[owner]
+	window.count--
+	if window.count == 0 {
+		delete(s.starting, owner)
+	} else {
+		if entered {
+			s.nextStartToken++
+			window.token = s.nextStartToken
+		}
+		s.starting[owner] = window
+	}
+	if succeeded && owner.Kind == domain.ConversationOwnerSession {
+		_, queued := s.startIntake[id]
+		delete(s.startIntake, id)
+		return queued
+	}
+	return false
+}
+
 // controllerStarting reports a session whose controller is being started and
 // has no live controller yet.
 func (s *Service) controllerStarting(id domain.SessionID) bool {
+	return s.startToken(id) != 0
+}
+
+func (s *Service) startToken(id domain.SessionID) uint64 {
 	s.mu.RLock()
-	starting := s.starting[domain.SessionConversationOwner(id)] > 0
+	token := s.starting[domain.SessionConversationOwner(id)].token
 	s.mu.RUnlock()
-	return starting && !s.HasLiveChatController(id)
+	if token != 0 && s.HasLiveChatController(id) {
+		return 0
+	}
+	return token
 }
 
 // markStartIntake keeps the first time: input queued during an earlier,
 // failed start still waits for the start that succeeds.
 func (s *Service) markStartIntake(id domain.SessionID) {
+	s.markStartIntakeAt(id, s.now())
+}
+
+func (s *Service) markStartIntakeAt(id domain.SessionID, at time.Time) {
 	s.mu.Lock()
 	if _, marked := s.startIntake[id]; !marked {
-		s.startIntake[id] = s.now()
+		s.startIntake[id] = at
 	}
 	s.mu.Unlock()
 }
@@ -545,13 +603,6 @@ func (s *Service) startIntakeSince(id domain.SessionID) time.Time {
 // queued after this point reaches the live controller through
 // queueWithoutController's own drain.
 func (s *Service) drainStartIntake(ctx context.Context, id domain.SessionID, controller *Controller) {
-	s.mu.Lock()
-	_, queued := s.startIntake[id]
-	delete(s.startIntake, id)
-	s.mu.Unlock()
-	if !queued || controller == nil {
-		return
-	}
 	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	if err := controller.drainOne(drainCtx); err != nil {
@@ -1300,9 +1351,13 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	if !liveReconnect && cfg.ProviderHandoff == nil &&
 		owner.Kind != domain.ConversationOwnerReview &&
 		!queuedBeforeFirstController && !preserveUndispatchedQueue {
-		s.startIntakeMu.Lock()
+		intake := s.intakeGate(owner)
+		if err := intake.lock(ctx); err != nil {
+			_ = cleanupUnpublishedConversation(conv, false)
+			return nil, err
+		}
 		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID, s.startIntakeSince(cfg.SessionID))
-		s.startIntakeMu.Unlock()
+		intake.unlock()
 	}
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
@@ -1541,6 +1596,11 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			return nil, fmt.Errorf("%w: replay owner changed after ready publication", ports.ErrChatRecoveryInconclusive)
 		}
 		controller.strictReplacementReplay = &replacementReplayProof{owner: current.ControllerOwner(), capabilityVerifier: launchVerifier}
+	}
+	if epoch, ok := conv.(ports.ChatDeliveryEpochReporter); ok && s.bindAdapterOwner != nil && owner.Kind == domain.ConversationOwnerSession {
+		if err := s.bindAdapterOwner(cfg.SessionID, epoch.OutboundProviderEpoch(), controller.conversation.ID, controller.conversation.ActiveBranchID, generation); err != nil {
+			s.log.Warn("chat adapter lifetime ownership unavailable", "session", cfg.SessionID)
+		}
 	}
 	s.mu.Lock()
 	s.ownerControllers[owner] = controller
