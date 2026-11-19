@@ -1597,16 +1597,8 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		}
 		controller.strictReplacementReplay = &replacementReplayProof{owner: current.ControllerOwner(), capabilityVerifier: launchVerifier}
 	}
-	if epoch, ok := conv.(ports.ChatDeliveryEpochReporter); ok && s.bindAdapterOwner != nil && owner.Kind == domain.ConversationOwnerSession {
-		if err := s.bindAdapterOwner(cfg.SessionID, epoch.OutboundProviderEpoch(), controller.conversation.ID, controller.conversation.ActiveBranchID, generation); err != nil {
-			s.log.Warn("chat adapter lifetime ownership unavailable", "session", cfg.SessionID)
-		}
-	}
 	s.mu.Lock()
-	s.ownerControllers[owner] = controller
-	if owner.Kind == domain.ConversationOwnerSession {
-		s.controllers[cfg.SessionID] = controller
-	}
+	s.publishControllerLocked(owner, controller)
 	// A committed reservation is consumed. Internal controller restarts must
 	// resume the now-current branch, not retry its old ownership snapshot.
 	cfg.ProviderHandoff = nil
@@ -1677,6 +1669,21 @@ func cleanupUnpublishedConversation(conv ports.ChatConversation, fresh bool) err
 		return terminator.Terminate()
 	}
 	return conv.Close()
+}
+
+// publishControllerLocked installs both controller indexes and binds session
+// adapter identity to the durable generation before making it visible.
+func (s *Service) publishControllerLocked(owner domain.ConversationOwner, controller *Controller) {
+	if owner.Kind == domain.ConversationOwnerSession {
+		if epoch, ok := controller.conv.(ports.ChatDeliveryEpochReporter); ok && s.bindAdapterOwner != nil {
+			conversation := controller.conversation
+			if err := s.bindAdapterOwner(controller.sessionID, epoch.OutboundProviderEpoch(), conversation.ID, conversation.ActiveBranchID, controller.Generation()); err != nil {
+				s.log.Warn("chat adapter lifetime ownership unavailable", "session", controller.sessionID)
+			}
+		}
+		s.controllers[controller.sessionID] = controller
+	}
+	s.ownerControllers[owner] = controller
 }
 
 // Controller returns a session's live controller.

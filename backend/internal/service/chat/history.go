@@ -1161,13 +1161,7 @@ func (s *Service) installStartedBranchController(
 		return ErrControllerHandoff
 	}
 	source.prepareBranchHandoffStop()
-	s.ownerControllers[owner] = replacement
-	// Keep the session index as the backwards-compatible lookup path used by
-	// worker chat commands. Review owners never share this index, so replacing a
-	// worker controller cannot affect a reviewer controller for the same session.
-	if owner.Kind == domain.ConversationOwnerSession {
-		s.controllers[id] = replacement
-	}
+	s.publishControllerLocked(owner, replacement)
 	if cfg, ok := s.startConfigs[owner]; ok {
 		// Mirror the owner ActivateConversationBranchSession just made durable,
 		// agent-session identity included. A stale field here fails the next

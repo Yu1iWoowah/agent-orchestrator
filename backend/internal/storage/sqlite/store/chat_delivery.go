@@ -192,7 +192,8 @@ func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domai
 				}
 				continue
 			}
-			if turn.ProviderTurnID != original.Receipt.ProviderTurnID {
+			providerTurn := original.Receipt.ProviderTurnID
+			if turn.ProviderTurnID != providerTurn && (turn.ProviderTurnID != "" || turn.State != domain.TurnStateRunning) {
 				return ports.ErrAgentSettingsConflict
 			}
 			if turn.State != domain.TurnStateCompleted {
@@ -201,6 +202,18 @@ func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domai
 			if turn.State == domain.TurnStateRunning {
 				if turn.ControllerGeneration != original.Owner.ControllerGeneration || turn.HandledBySessionID != original.SessionID || turn.BranchID != actor.BranchID {
 					return ports.ErrAgentSettingsConflict
+				}
+				if turn.ProviderTurnID == "" {
+					// Codex can persist acceptance before binding the primary turn.
+					if original.PreparedTurnID != "" && original.PreparedTurnID != providerTurn {
+						return ports.ErrAgentSettingsConflict
+					}
+					if err := q.BindConversationTurnProviderID(ctx, gen.BindConversationTurnProviderIDParams{
+						ID: turn.ID, ProviderTurnID: providerTurn,
+						StartedAt: sql.NullTime{Time: original.Receipt.ObservedAt, Valid: true},
+					}); err != nil {
+						return err
+					}
 				}
 				if err := settleLostChatTurn(ctx, q, turn, at); err != nil {
 					return err

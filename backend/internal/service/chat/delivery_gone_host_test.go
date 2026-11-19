@@ -294,6 +294,56 @@ func TestColdShutdownReconcilesAcceptanceWithoutResuming(t *testing.T) {
 	}
 }
 
+type cancelledBindingStore struct{ *store.Store }
+
+func (*cancelledBindingStore) BindTurnToProvider(context.Context, string, string, time.Time) error {
+	return context.Canceled
+}
+
+func TestColdShutdownRecoversAcceptedReceiptBeforeProviderBinding(t *testing.T) {
+	requireBootIdentity(t)
+	ctx := t.Context()
+	clock := newSettingsTestClock()
+	conv := newGoneHostConversation(previousBootEpoch)
+	h := newHarnessWithConversationAndStoreForHarness(t, conv, func(st *store.Store) chatsvc.Store {
+		return &cancelledBindingStore{Store: st}
+	}, domain.HarnessCodex, func(opts *chatsvc.Options) { opts.Now, opts.After = clock.Now, clock.After })
+
+	turn, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "accepted before binding", ClientMessageID: "cold-unbound"})
+	if !errors.Is(err, ports.ErrChatDeliveryUnverified) || turn.ID == "" {
+		t.Fatalf("Send = %q, %v; want retained input after failed binding", turn.ID, err)
+	}
+	before, err := h.st.TurnByID(ctx, turn.ID)
+	if err != nil || before.State != domain.TurnStateRunning || before.ProviderTurnID != "" {
+		t.Fatalf("pre-reboot turn = %s/%q, %v; want running without a provider binding", before.State, before.ProviderTurnID, err)
+	}
+	original, err := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, turn.ID)
+	if err != nil || original.Disposition != domain.ChatDeliveryAccepted || original.ExecutionSettled ||
+		original.Receipt == nil || original.Receipt.ProviderTurnID == "" || original.Receipt.ProviderEpoch != previousBootEpoch {
+		t.Fatalf("accepted receipt missing before reboot: %+v, %v", original, err)
+	}
+
+	cold := chatsvc.New(chatsvc.Options{Store: h.st, Sessions: h.st, PreviousBootEpoch: persistenthost.EpochFromPreviousBoot, Now: clock.Now})
+	if err := cold.ReconcilePreviousBootDeliveries(ctx); err != nil {
+		t.Fatalf("cold reconciliation of accepted, unbound turn: %v", err)
+	}
+	if err := cold.PreflightShutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := h.st.ChatDeliveryAttempt(ctx, testSession, original.ID)
+	if err != nil || !saved.ExecutionSettled || saved.ErrorCode != "CHAT_DELIVERY_HOST_GONE_INTERRUPTED" ||
+		saved.Receipt == nil || *saved.Receipt != *original.Receipt {
+		t.Fatalf("cold settlement changed the original receipt: %+v, %v", saved, err)
+	}
+	after, err := h.st.TurnByID(ctx, turn.ID)
+	if err != nil || after.State != domain.TurnStateInterrupted || after.ProviderTurnID != original.Receipt.ProviderTurnID {
+		t.Fatalf("recovered turn = %s/%q, %v", after.State, after.ProviderTurnID, err)
+	}
+	if calls := conv.sendCallCount(); calls != 1 || cold.HasLiveChatController(testSession) {
+		t.Fatalf("cold settlement resumed the provider or sent again: %d sends", calls)
+	}
+}
+
 // The new app's takeover request is the same POST /shutdown: once the only
 // unsettled record belongs to a gone host it is accepted; a turn still in
 // flight keeps the 409 (SDR-PR1 AC4).

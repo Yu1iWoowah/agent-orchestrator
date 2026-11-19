@@ -83,8 +83,8 @@ func Capture(providerPID int) *Scope {
 }
 
 func birth(pid int) (string, error) {
-	birth, _, err := processState(pid)
-	return birth, err
+	stat, err := readProcessStat(pid)
+	return stat.birth, err
 }
 
 // AdapterExited proves that the original adapter process ended. Its tools may
@@ -104,29 +104,36 @@ func AdapterExited(scope *Scope) bool {
 	if err != nil || ns != scope.PIDNamespace {
 		return false
 	}
-	started, state, err := processState(scope.LeaderPID)
+	stat, err := readProcessStat(scope.LeaderPID)
 	if err == nil {
-		return started != scope.LeaderBirth || state == "Z" || state == "X"
+		// pthread_exit can leave the leader dead while its siblings still run.
+		// The same stat record must confirm that no other threads remain.
+		return stat.birth != scope.LeaderBirth || stat.threads == "1" && (stat.state == "Z" || stat.state == "X")
 	}
 	return errors.Is(err, os.ErrNotExist) && errors.Is(unix.Kill(scope.LeaderPID, 0), unix.ESRCH)
 }
 
-func processState(pid int) (string, string, error) {
+type processStat struct {
+	birth, state, threads string
+}
+
+func readProcessStat(pid int) (processStat, error) {
 	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
-		return "", "", err
+		return processStat{}, err
 	}
-	// comm may contain spaces and parentheses. starttime is field 22.
+	// comm may contain spaces and parentheses. num_threads and starttime are
+	// fields 20 and 22, respectively.
 	end := strings.LastIndexByte(string(raw), ')')
 	if end < 0 {
-		return "", "", fmt.Errorf("invalid process stat")
+		return processStat{}, fmt.Errorf("invalid process stat")
 	}
 	fields := strings.Fields(string(raw)[end+1:])
 	if len(fields) <= 19 {
-		return "", "", fmt.Errorf("missing process birth")
+		return processStat{}, fmt.Errorf("missing process birth")
 	}
 	if _, err := strconv.ParseUint(fields[19], 10, 64); err != nil {
-		return "", "", err
+		return processStat{}, err
 	}
-	return fields[19], fields[0], nil
+	return processStat{birth: fields[19], state: fields[0], threads: fields[17]}, nil
 }
