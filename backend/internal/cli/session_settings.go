@@ -55,15 +55,21 @@ func newSessionSettingsCommand(c *commandContext) *cobra.Command {
 			return writeSettingsJSON(cmd, response)
 		}
 		var view struct {
-			Revision        int64                `json:"revision"`
-			Settings        domain.AgentSettings `json:"settings"`
-			Pending         json.RawMessage      `json:"pending"`
-			Effective       json.RawMessage      `json:"effective"`
+			Revision     int64                      `json:"revision"`
+			Settings     domain.AgentSettings       `json:"settings"`
+			Pending      json.RawMessage            `json:"pending"`
+			Effective    json.RawMessage            `json:"effective"`
+			History      []sessionSettingsOperation `json:"history"`
+			Capabilities struct {
+				ControllerGeneration string `json:"controllerGeneration"`
+			} `json:"capabilities"`
 			Reconciliations []struct {
 				OperationID     string   `json:"operationId"`
-				ErrorCode       string   `json:"errorCode"`
 				EffectPending   bool     `json:"effectPending"`
 				MissingEvidence []string `json:"missingEvidence"`
+				Owner           struct {
+					ControllerGeneration string `json:"controllerGeneration"`
+				} `json:"owner"`
 			} `json:"reconciliations"`
 		}
 		if err := json.Unmarshal(response, &view); err != nil {
@@ -72,26 +78,35 @@ func newSessionSettingsCommand(c *commandContext) *cobra.Command {
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Session %s · revision %d\nCommitted: %s\nEffective: %s\n", id, view.Revision, settingsSelectionLabel(view.Settings), view.Effective); err != nil {
 			return err
 		}
+		var pending sessionSettingsOperation
 		if len(view.Pending) > 0 && string(view.Pending) != "null" {
+			if err := json.Unmarshal(view.Pending, &pending); err != nil {
+				return err
+			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Pending: %s\n", view.Pending)
 			if err != nil {
 				return err
 			}
 		}
 		for _, attempt := range view.Reconciliations {
-			switch {
-			case attempt.EffectPending:
-				evidence := strings.Join(attempt.MissingEvidence, ", ")
-				if evidence == "" {
-					evidence = "the provider outcome"
-				}
-				_, err = fmt.Fprintf(cmd.OutOrStdout(), "Settings operation %s is waiting for %s. Wait for provider confirmation before submitting another change.\n", attempt.OperationID, evidence)
-			case attempt.ErrorCode == "AGENT_SETTINGS_READ_TIMEOUT":
-				_, err = fmt.Fprintf(cmd.OutOrStdout(), "Settings operation %s timed out before applying. The previous settings are still active. You can submit a new change.\n", attempt.OperationID)
-			default:
+			currentOperation := pending.ID != "" && attempt.OperationID == pending.ID
+			currentOwner := view.Capabilities.ControllerGeneration != "" && attempt.Owner.ControllerGeneration == view.Capabilities.ControllerGeneration
+			if !attempt.EffectPending || !currentOperation && !currentOwner {
 				continue
 			}
+			evidence := strings.Join(attempt.MissingEvidence, ", ")
+			if evidence == "" {
+				evidence = "the provider outcome"
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Settings operation %s is waiting for %s. Wait for provider confirmation before submitting another change.\n", attempt.OperationID, evidence)
 			return err
+		}
+		if pending.ID == "" && len(view.History) > 0 {
+			latest := view.History[0]
+			if latest.Phase == "failed" && latest.ErrorCode == domain.AgentSettingsReadTimeoutCode {
+				_, err := fmt.Fprintf(cmd.OutOrStdout(), "Settings operation %s timed out before applying. The previous settings are still active. You can submit a new change.\n", latest.ID)
+				return err
+			}
 		}
 		return nil
 	}
@@ -254,7 +269,7 @@ func settingsOperationFailure(op sessionSettingsOperation) error {
 	case "applied", "pending":
 		return nil
 	case "failed", "cancelled", "recovery_required":
-		if op.ErrorCode == "AGENT_SETTINGS_READ_TIMEOUT" {
+		if op.ErrorCode == domain.AgentSettingsReadTimeoutCode {
 			return errors.New(apiError{Message: fmt.Sprintf("settings operation %s timed out before applying. The previous settings are still active. You can submit a new change.", op.ID), Code: op.ErrorCode, RequestID: op.RequestID}.String())
 		}
 		return errors.New(apiError{Message: fmt.Sprintf("settings operation %s: %s", op.ID, op.Phase), Code: op.ErrorCode, RequestID: op.RequestID}.String())
