@@ -427,7 +427,7 @@ type conversationSettingsStore interface {
 // the outbound ports. User-facing read-model assembly lives in the service package.
 type Manager struct {
 	replacementGatesMu sync.Mutex
-	replacementGates   map[domain.ProjectID]chan struct{}
+	replacementGates   map[domain.ProjectID]*orchestratorProjectGate
 
 	replyLanguage settingssvc.ReplyLanguageSource
 	runtime       runtimeController

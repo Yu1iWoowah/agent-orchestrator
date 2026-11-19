@@ -30,10 +30,10 @@ func newHeldService(st *sqlite.Store, first ports.ChatConversation, idPrefix str
 	return newHeldServiceWithStore(st, st, first, idPrefix)
 }
 
-func newHeldServiceWithStore(st *sqlite.Store, store chatsvc.Store, first ports.ChatConversation, idPrefix string) (*chatsvc.Service, *heldResume) {
+func newHeldServiceWithStore(st *sqlite.Store, store chatsvc.Store, first ports.ChatConversation, idPrefix string, configure ...func(*chatsvc.Options)) (*chatsvc.Service, *heldResume) {
 	held := &heldResume{entered: make(chan struct{}, 4), release: make(chan error, 1), conv: newFakeConversation()}
 	var ids atomic.Int32
-	svc := chatsvc.New(chatsvc.Options{
+	opts := chatsvc.Options{
 		Store: store, Sessions: st, Reader: fullSnapshotReader(st),
 		Drivers: fakeRegistry{driver: fakeDriver{
 			start: func(ports.ChatStartConfig) (ports.ChatConversation, error) { return first, nil },
@@ -47,8 +47,11 @@ func newHeldServiceWithStore(st *sqlite.Store, store chatsvc.Store, first ports.
 		}},
 		Log:   slog.New(slog.DiscardHandler),
 		NewID: func() string { return fmt.Sprintf("%s-%d", idPrefix, ids.Add(1)) },
-	})
-	return svc, held
+	}
+	for _, apply := range configure {
+		apply(&opts)
+	}
+	return chatsvc.New(opts), held
 }
 
 // startedService runs a session's first controller and records its provider
@@ -246,6 +249,97 @@ func TestFailedStartKeepsQueuedInputForTheNextStart(t *testing.T) {
 	awaitSent(t, held.conv, []string{"kept"})
 }
 
+func TestStartingIntakeSnapshotDoesNotBlockAnotherSessionOrEnterLaterStart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	type waitForSnapshot struct{}
+	reading, release := make(chan struct{}), make(chan struct{})
+	st := openStore(t)
+	const other = domain.SessionID("p1-2")
+	rec, _, err := st.GetSession(ctx, testSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.ID, rec.Kind = other, domain.KindWorker
+	if _, err := st.CreateSession(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	svc, held := newHeldServiceWithStore(st, st, newFakeConversation(), "intake", func(opts *chatsvc.Options) {
+		opts.Reader = chatsvc.SnapshotReaderFunc(func(ctx context.Context, id string) (chatsvc.ConversationRows, error) {
+			if ctx.Value(waitForSnapshot{}) != true {
+				return fullSnapshotReader(st).LoadConversationSnapshot(ctx, id)
+			}
+			close(reading)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return chatsvc.ConversationRows{}, ctx.Err()
+			}
+			return chatsvc.ConversationRows{
+				Turns:    []domain.ConversationTurn{{ID: "interrupted", ProviderTurnID: "native", State: domain.TurnStateInterrupted}},
+				Messages: []domain.ConversationMessage{{ID: "original", TurnID: "interrupted", Role: domain.MessageRoleUser, Text: "original", Sequence: 1}},
+			}, nil
+		})
+	})
+	workspace := t.TempDir()
+	first := resume(t, svc, held, workspace)
+	stale := make(chan error, 1)
+	go func() {
+		_, err := svc.QueueUserMessage(context.WithValue(ctx, waitForSnapshot{}, true), testSession, ports.ChatUserMessage{
+			Text: "Continue", ClientMessageID: "stale-input", Continuation: true,
+		})
+		stale <- err
+	}()
+	select {
+	case <-reading:
+	case <-ctx.Done():
+		t.Fatal("intake did not reach the full snapshot")
+	}
+	otherDone := make(chan error, 1)
+	go func() {
+		_, err := svc.Start(ctx, chatsvc.StartConfig{SessionID: other, ProjectID: testProject, Kind: domain.KindWorker, Harness: domain.HarnessCodex, WorkspacePath: workspace})
+		otherDone <- err
+	}()
+	select {
+	case err := <-otherDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("another session's Start waited for the held snapshot")
+	}
+	second := make(chan error, 1)
+	go func() {
+		_, err := svc.Start(ctx, chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Kind: domain.KindOrchestrator, Harness: domain.HarnessCodex, WorkspacePath: workspace, ProviderConversationID: "thread-1"})
+		second <- err
+	}()
+	// Hold Start-2 at the provider after Start-1 ends. Intake prepared under
+	// Start-1 must never be written as Start-2's first queued message.
+	held.release <- errors.New("first resume failed")
+	if err := <-first; err == nil {
+		t.Fatal("first resume unexpectedly succeeded")
+	}
+	select {
+	case <-held.entered:
+	case <-ctx.Done():
+		t.Fatal("second start did not enter")
+	}
+	close(release)
+	if err := <-stale; !errors.Is(err, chatsvc.ErrNotProvisioning) {
+		t.Fatalf("stale snapshot result = %v, want ErrNotProvisioning", err)
+	}
+	conversation, err := st.ConversationForSession(ctx, testSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := st.ConversationMessageByClientID(ctx, conversation.ID, "stale-input"); err != nil || found {
+		t.Fatalf("old start wrote a stale message: found=%t, err=%v", found, err)
+	}
+	held.release <- errors.New("test concluded")
+	<-second
+	_ = svc.Stop(ctx, other)
+}
+
 func awaitTurnState(t *testing.T, st *sqlite.Store, turnID string, want domain.TurnState) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -357,6 +451,14 @@ func TestSteerRetriedWhileStartingReplaysItsReceipt(t *testing.T) {
 			}
 
 			done := resume(t, svc, held, workspace)
+			if tc.wantErr == nil {
+				recovered, err := promptly(t, "recover-only while starting", func() (chatsvc.SteerOrSendResult, error) {
+					return svc.SteerOrSend(ctx, testSession, ports.ChatUserMessage{ClientMessageID: steer.ClientMessageID}, true)
+				})
+				if err != nil || !recovered.Duplicate || !recovered.Steered {
+					t.Fatalf("recover-only while starting = %+v, %v", recovered, err)
+				}
+			}
 			retried, err := promptly(t, "steer-or-send retry", func() (chatsvc.SteerOrSendResult, error) {
 				return svc.SteerOrSend(ctx, testSession, steer, false)
 			})
@@ -375,6 +477,32 @@ func TestSteerRetriedWhileStartingReplaysItsReceipt(t *testing.T) {
 				t.Fatalf("resumed controller was sent %q; the steer must not go again", sent)
 			}
 		})
+	}
+}
+
+func TestRecoverSteerOrSendFindsSendReceiptWhileStarting(t *testing.T) {
+	svc, _, held, _, workspace := startedService(t)
+	ctx := t.Context()
+	result, err := svc.SteerOrSend(ctx, testSession, ports.ChatUserMessage{Text: "normal send", ClientMessageID: "sent-once"}, false)
+	if err != nil || result.Turn.ID == "" {
+		t.Fatalf("send fallback = %+v, %v", result, err)
+	}
+	if err := svc.Stop(ctx, testSession); err != nil {
+		t.Fatal(err)
+	}
+	done := resume(t, svc, held, workspace)
+	recovered, err := promptly(t, "recover-only send receipt", func() (chatsvc.SteerOrSendResult, error) {
+		return svc.SteerOrSend(ctx, testSession, ports.ChatUserMessage{ClientMessageID: "sent-once"}, true)
+	})
+	held.release <- nil
+	if resumeErr := <-done; resumeErr != nil {
+		t.Fatal(resumeErr)
+	}
+	if err != nil || !recovered.Duplicate || recovered.Turn.ID != result.Turn.ID {
+		t.Fatalf("recover-only = %+v, %v", recovered, err)
+	}
+	if len(held.conv.sentTexts()) != 0 {
+		t.Fatal("recover-only dispatched the earlier input")
 	}
 }
 

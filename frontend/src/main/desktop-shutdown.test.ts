@@ -60,4 +60,16 @@ describe("desktop daemon shutdown", () => {
 		options.requestShutdown.mockResolvedValue({ ok: false, status: 409 });
 		await expect(requestDesktopShutdown(options)).rejects.toThrow("HTTP 409");
 	});
+
+	it("identifies the session blocking a preserving shutdown", async () => {
+		const options = setup();
+		options.preserveAgents.mockReturnValue(true);
+		await expect(requestDesktopShutdown({
+			...options,
+			requestShutdown: async () => ({
+				ok: false, status: 409,
+				json: async () => ({ status: "shutdown_not_settled", blockedSession: "worker-1", blockedReason: "delivery_unverified" }),
+			}),
+		})).rejects.toThrow(/delivery_unverified.*worker-1/);
+	});
 });

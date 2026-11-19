@@ -292,6 +292,12 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 		return false, nil
 	}
 	controller, err := s.Controller(id)
+	if err == nil && controller.harness == domain.HarnessCodex {
+		if err := controller.reconcileBeforeHibernate(ctx); err != nil {
+			gate.unlock()
+			return false, err
+		}
+	}
 	if err != nil || controller.State() != ports.ChatControllerReady ||
 		!controller.Capabilities().Has(ports.ChatCapabilityResume) {
 		gate.unlock()

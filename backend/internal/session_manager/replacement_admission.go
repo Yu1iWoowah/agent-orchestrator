@@ -8,9 +8,26 @@ import (
 )
 
 type orchestratorGateContextKey struct{}
+type orchestratorGateModeKey struct{}
+
+type orchestratorGateMode uint8
+
+const (
+	orchestratorGateOrdinary orchestratorGateMode = iota
+	orchestratorGateResume
+	orchestratorGateNativeReplacement
+	orchestratorGateSteer
+)
+
+// protected by the Manager's replacementGatesMu
+type orchestratorProjectGate struct {
+	mode     orchestratorGateMode
+	released chan struct{}
+}
+
 type orchestratorGateReservation struct {
 	mu         sync.Mutex
-	gate       chan struct{}
+	gate       *orchestratorProjectGate
 	references int
 }
 type orchestratorGateLease struct {
@@ -43,7 +60,10 @@ func (lease *orchestratorGateLease) release() {
 	last := r.references == 0
 	r.mu.Unlock()
 	if last {
-		<-r.gate
+		lease.manager.replacementGatesMu.Lock()
+		close(r.gate.released)
+		r.gate.released = nil
+		lease.manager.replacementGatesMu.Unlock()
 	}
 }
 
@@ -62,25 +82,37 @@ func (m *Manager) acquireOrchestratorGate(ctx context.Context, project domain.Pr
 			return context.WithValue(ctx, orchestratorGateContextKey{}, borrowed), borrowed.release, nil
 		}
 	}
+	mode, _ := ctx.Value(orchestratorGateModeKey{}).(orchestratorGateMode)
 	m.replacementGatesMu.Lock()
 	if m.replacementGates == nil {
-		m.replacementGates = map[domain.ProjectID]chan struct{}{}
+		m.replacementGates = map[domain.ProjectID]*orchestratorProjectGate{}
 	}
 	gate := m.replacementGates[project]
 	if gate == nil {
-		gate = make(chan struct{}, 1)
+		gate = &orchestratorProjectGate{}
 		m.replacementGates[project] = gate
 	}
-	m.replacementGatesMu.Unlock()
-	select {
-	case gate <- struct{}{}:
-	case <-ctx.Done():
-		return ctx, func() {}, ctx.Err()
+	for gate.released != nil {
+		if mode == orchestratorGateSteer && (gate.mode == orchestratorGateResume || gate.mode == orchestratorGateNativeReplacement) {
+			m.replacementGatesMu.Unlock()
+			return ctx, func() {}, domain.ErrOrchestratorInputBusy
+		}
+		released := gate.released
+		m.replacementGatesMu.Unlock()
+		select {
+		case <-released:
+		case <-ctx.Done():
+			return ctx, func() {}, ctx.Err()
+		}
+		m.replacementGatesMu.Lock()
 	}
 	if err := ctx.Err(); err != nil {
-		<-gate
+		m.replacementGatesMu.Unlock()
 		return ctx, func() {}, err
 	}
+	gate.mode = mode
+	gate.released = make(chan struct{})
+	m.replacementGatesMu.Unlock()
 	lease := &orchestratorGateLease{manager: m, project: project, reservation: &orchestratorGateReservation{gate: gate, references: 1}, active: true}
 	return context.WithValue(ctx, orchestratorGateContextKey{}, lease), lease.release, nil
 }
@@ -94,6 +126,12 @@ func (m *Manager) WithOrchestratorProjectGate(ctx context.Context, project domai
 	}
 	defer release()
 	return fn(locked)
+}
+
+// WithNativeReplacementProjectGate identifies the same gate's native
+// replacement occupancy for public steer-or-send admission.
+func (m *Manager) WithNativeReplacementProjectGate(ctx context.Context, project domain.ProjectID, fn func(context.Context) error) error {
+	return m.WithOrchestratorProjectGate(context.WithValue(ctx, orchestratorGateModeKey{}, orchestratorGateNativeReplacement), project, fn)
 }
 
 func (m *Manager) beginReplacementSessionAction(ctx context.Context, id domain.SessionID) (context.Context, func(), error) {

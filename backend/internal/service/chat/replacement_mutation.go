@@ -30,6 +30,18 @@ func (s *Service) beginReplacementMutation(ctx context.Context, id domain.Sessio
 	return ctx, func() {}, s.replacementWakeFence(ctx, id)
 }
 
+func (s *Service) beginSteerOrSendMutation(ctx context.Context, id domain.SessionID) (context.Context, func(), error) {
+	s.mu.RLock()
+	gate, ok := s.replacementMutationGate.(interface {
+		BeginSteerOrSendMutation(context.Context, domain.SessionID) (context.Context, func(), error)
+	})
+	s.mu.RUnlock()
+	if ok {
+		return gate.BeginSteerOrSendMutation(ctx, id)
+	}
+	return s.beginReplacementMutation(ctx, id)
+}
+
 // replacementWakeFence keeps view leases and ordinary queued sends from waking
 // a controller parked for an active replacement. Controlled native resume uses
 // the Manager's operation-bound path, never this automatic wake callback.

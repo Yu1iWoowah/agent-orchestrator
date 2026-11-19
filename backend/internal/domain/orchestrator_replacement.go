@@ -18,6 +18,8 @@ var (
 	ErrReplacementKeyConflict = errors.New("replacement operation key conflicts")
 	// ErrReplacementInProgress protects the project's active replacement.
 	ErrReplacementInProgress = errors.New("replacement operation is already active")
+	// ErrOrchestratorInputBusy means this steer-or-send was not admitted.
+	ErrOrchestratorInputBusy = errors.New("orchestrator input admission is busy; retry with the same client message id")
 	// ErrReplacementSourceChanged rejects admission against a stale source owner.
 	ErrReplacementSourceChanged = errors.New("replacement source ownership changed")
 	// ErrReplacementSourceRetired prevents revival of a superseded source controller.

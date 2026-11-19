@@ -1761,6 +1761,21 @@ WHERE conversation_activities.conversation_id = sqlc.arg(target_conversation_id)
       AND handled_by_session_id = sqlc.arg(handled_by_session_id)
   );
 
+-- name: FailPendingConversationRequestsForTurn :exec
+UPDATE conversation_activities
+SET status = 'failed', revision = revision + 1, updated_at = sqlc.arg(updated_at)
+WHERE conversation_id = sqlc.arg(conversation_id)
+  AND turn_id = sqlc.arg(turn_id)
+  AND kind IN ('approval', 'user_input') AND status = 'pending';
+
+-- name: ListRunningChatAdapterTurns :many
+SELECT * FROM conversation_turns
+WHERE conversation_id = sqlc.arg(conversation_id)
+  AND handled_by_session_id = sqlc.arg(handled_by_session_id)
+  AND controller_generation = sqlc.arg(controller_generation)
+  AND branch_id = sqlc.arg(branch_id)
+  AND state = 'running' AND rolled_back_at IS NULL AND handled_by_review_id IS NULL;
+
 -- name: FailPendingReviewRequests :exec
 UPDATE conversation_activities
 SET status = 'failed', revision = revision + 1, updated_at = sqlc.arg(updated_at)

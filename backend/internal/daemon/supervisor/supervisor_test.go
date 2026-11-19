@@ -82,6 +82,16 @@ func noopLogger() *slog.Logger {
 
 const testGrace = 30 * time.Millisecond
 
+func TestVerifiedLaunchOwnerExitBeforeConnect(t *testing.T) {
+	fired := 0
+	s := supervisor.New(testGrace, func() { fired++ }, noopLogger())
+	s.LaunchOwnerExited()
+	s.LaunchOwnerExited()
+	if fired != 1 {
+		t.Fatalf("verified app exit requested shutdown %d times", fired)
+	}
+}
+
 // comfortWait is how long we wait when asserting the callback did NOT fire.
 // It must be strictly greater than testGrace so a real timer would have fired.
 const comfortWait = testGrace * 5

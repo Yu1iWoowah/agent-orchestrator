@@ -443,6 +443,7 @@ let pendingSessionDeepLink: string | null = null;
 // flushed on the TRAY_RENDERER_READY handshake like pendingSessionDeepLink.
 let pendingBillingSection: string | null = null;
 let daemonProcess: ChildProcess | null = null;
+const daemonLaunchKeepAlive = new WeakMap<ChildProcess, boolean>();
 // Set once this instance owns the single-instance lock; a no-op before that.
 let lifecycleLog: LifecycleRecord = () => undefined;
 let daemonStoppingProcess: ChildProcess | null = null;
@@ -1948,6 +1949,7 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 	const bundledTmuxBinary = stagedBundledTmuxBinary;
 	const ownerTag = {
 		AO_OWNER,
+		AO_APP_LIFETIME_STDIN: forceKeep ? "0" : "1",
 		AO_DATA_DIR: desktopDataDir,
 		AO_APP_RUN_ID: appRunId,
         ...(process.platform === "darwin" ? { AO_WAKE_HELPER: app.isPackaged
@@ -2844,16 +2846,18 @@ async function startDaemonInner(startEpoch: number, autoRestartIntent: DaemonAut
 		}
 		keepDaemonLogFd = undefined;
 	}
-	// daemonEnv deliberately contains only a marker. Deliver the actual token
-	// over the inherited pipe, then close it; Go does not pass this descriptor to
-	// worker processes when it spawns them.
+	// Deliver the private frame over stdin. For an app-owned launch, hold the
+	// pipe open so its EOF covers the time before the supervisor connects.
 	if (child.stdin) {
 		child.stdin.on("error", () => undefined);
-		child.stdin.end(privateRuntimeHandoff(browserRuntimeToken, appDiagnosticsToken, operatorConsentToken));
+		const handoff = privateRuntimeHandoff(browserRuntimeToken, appDiagnosticsToken, operatorConsentToken);
+		if (keep) child.stdin.end(handoff);
+		else child.stdin.write(handoff);
 	} else {
 		console.warn("AO: browser runtime token handoff pipe was unavailable");
 	}
 	if (keep) child.unref();
+	daemonLaunchKeepAlive.set(child, keep);
 	daemonProcess = child;
 	daemonAutoRestartStandDown = false;
 
@@ -2899,12 +2903,8 @@ async function startDaemonInner(startEpoch: number, autoRestartIntent: DaemonAut
 		//
 		// AO_KEEP_DAEMON opts out of the link entirely: the daemon is spawned but
 		// survives the window closing, stopping only on an explicit `ao stop`.
-		// Reuse the `keep` captured at spawn rather than re-reading process.env
-		// here: the flag is a property of this spawn, not a value that should be
-		// able to flip between spawn and port-confirmation. (The process.on("exit")
-		// orphan-cleanup below re-reads process.env because this `keep` is scoped
-		// to the spawn function — AO_KEEP_DAEMON is set once at startup and never
-		// mutated, so both reads agree.)
+		// Keep is a property of this launch, including when it was inherited
+		// from an earlier persistent daemon.
 		if (!keep) {
 			establishSupervisorLink();
 		}
@@ -3198,11 +3198,16 @@ function scheduleDaemonAutoRestart(
 }
 
 async function shutdownDaemonForDesktopQuit(): Promise<void> {
+	const launchKeepAlive = daemonProcess !== null ? daemonLaunchKeepAlive.get(daemonProcess) : undefined;
+	const preserve = preserveAgentsOnQuit || isUpdateRestartRequested();
+	if (preserve && launchKeepAlive === false && daemonStatus.state !== "ready") {
+		throw new Error("The app-owned daemon has not finished starting");
+	}
 	const accepted = await requestDesktopShutdown({
-		keepAlive: keepDaemonAlive(process.env),
+		keepAlive: launchKeepAlive === true,
 		appRunId,
 		status: daemonStatus,
-		preserveAgents: () => preserveAgentsOnQuit || isUpdateRestartRequested(),
+		preserveAgents: () => preserve,
 		readRunInfo: async () => {
 			const handshakePath = runFilePath();
 			if (!handshakePath) throw new Error("Daemon ownership record is unavailable");
@@ -3215,6 +3220,9 @@ async function shutdownDaemonForDesktopQuit(): Promise<void> {
 			signal: AbortSignal.timeout(3000),
 		}),
 	});
+	if (preserve && launchKeepAlive === false && !accepted) {
+		throw new Error("Daemon ownership changed before desktop quit");
+	}
 	lifecycleLog("daemon_quit_shutdown", { accepted, daemonPid: daemonProcess?.pid ?? daemonStatus.pid ?? null, updateRestart: isUpdateRestartRequested() });
 	if (!accepted) return;
 	desktopAgentShutdownAccepted = true;
@@ -4984,16 +4992,25 @@ app.on("before-quit", (event) => {
 		// shutdown request below.
 		cancelDaemonAutoRestart();
 		if (!agentQuitCleanupPromise) {
-			// Fail open: a crashed, hung, or taken-over daemon must never block
-			// quit or an update restart. Dropping the supervisor link and the exit
-			// handler still clean up an app-owned daemon.
+			// Actual desktop exit can rely on owner loss. Update restart needs
+			// accepted preservation before it releases the supervisor.
 			agentQuitCleanupPromise = shutdownDaemonForDesktopQuit()
 				.catch((error) => {
+					if (preserveAgentsOnQuit || isUpdateRestartRequested()) {
+						preserveAgentsOnQuit = false;
+						clearUpdateRestartRequest();
+						desktopQuit.cancelQuit();
+						dialog.showErrorBox("Could not restart Orchestrator", error instanceof Error ? error.message : String(error));
+						focusMainWindow();
+						return false;
+					}
 					console.error("AO: daemon shutdown on desktop quit failed; quitting anyway", error);
+					return true;
 				})
-				.then(() => {
-					agentQuitCleanupComplete = true;
+				.then((proceed) => {
 					agentQuitCleanupPromise = null;
+					if (proceed === false) return;
+					agentQuitCleanupComplete = true;
 					app.quit();
 				});
 		}
@@ -5063,7 +5080,7 @@ app.on("before-quit", (event) => {
 // supervisor link so it persists across app quit, so this orphan-cleanup kill
 // must be skipped — otherwise it would defeat the whole point on quit.
 process.on("exit", () => {
-	if (daemonProcess && !supervisorLink?.connected && !keepDaemonAlive(process.env) && !desktopAgentShutdownAccepted) {
+	if (daemonProcess && daemonLaunchKeepAlive.get(daemonProcess) === false && !supervisorLink?.connected && !desktopAgentShutdownAccepted) {
 		killDaemon(daemonProcess);
 	}
 });

@@ -1286,11 +1286,14 @@ func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func writeConversationErrorWithCode(w http.ResponseWriter, r *http.Request, err error, fallbackCode, fallbackMessage string) {
+	var shutdownBlocked *ports.ChatShutdownBlockedError
 	switch {
 	case errors.Is(err, chatsvc.ErrNativeHomeUnavailable):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_NATIVE_HOME_UNAVAILABLE", "The provider native home could not be verified", nil)
 	case errors.Is(err, ports.ErrNativeConversationProtected):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_NATIVE_CONVERSATION_PROTECTED", err.Error(), nil)
+	case errors.As(err, &shutdownBlocked):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_SHUTDOWN_NOT_SETTLED", shutdownBlocked.Error(), nil)
 	case errors.Is(err, ports.ErrChatDeliveryUnverified):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_DELIVERY_UNVERIFIED", "The original input is preserved; delivery must be verified before retry", nil)
 	case errors.Is(err, ports.ErrChatShutdownNotSettled):
@@ -1298,6 +1301,8 @@ func writeConversationErrorWithCode(w http.ResponseWriter, r *http.Request, err 
 
 	case errors.Is(err, domain.ErrReplacementIntakeFenced):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "ORCHESTRATOR_REPLACEMENT_INTAKE_FENCED", err.Error(), nil)
+	case errors.Is(err, domain.ErrOrchestratorInputBusy):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "ORCHESTRATOR_INPUT_BUSY", err.Error(), nil)
 	case errors.Is(err, domain.ErrReplacementInProgress):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "ORCHESTRATOR_REPLACEMENT_IN_PROGRESS", err.Error(), nil)
 	case errors.Is(err, domain.ErrReplacementSourceRetired):

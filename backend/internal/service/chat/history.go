@@ -483,6 +483,7 @@ func (s *Service) EditMessage(
 	// Consume the replacement privately while its bootstrap prompt is recorded.
 	// The source remains the registry owner with its intake fence installed, so a
 	// concurrent ordinary send cannot become the first turn on the new branch.
+	s.bindControllerAdapter(replacement)
 	replacement.initializeAgentSettings(operationCtx)
 	replacement.start()
 	if replayContent.Type != "" {
@@ -1134,6 +1135,7 @@ func (s *Service) installBranchController(
 	source, replacement *Controller,
 	sourceBranchID string,
 ) error {
+	s.bindControllerAdapter(replacement)
 	replacement.initializeAgentSettings(ctx)
 	replacement.start()
 	return s.installStartedBranchController(ctx, id, source, replacement, sourceBranchID)
@@ -1161,13 +1163,7 @@ func (s *Service) installStartedBranchController(
 		return ErrControllerHandoff
 	}
 	source.prepareBranchHandoffStop()
-	s.ownerControllers[owner] = replacement
-	// Keep the session index as the backwards-compatible lookup path used by
-	// worker chat commands. Review owners never share this index, so replacing a
-	// worker controller cannot affect a reviewer controller for the same session.
-	if owner.Kind == domain.ConversationOwnerSession {
-		s.controllers[id] = replacement
-	}
+	s.publishControllerLocked(owner, replacement)
 	if cfg, ok := s.startConfigs[owner]; ok {
 		// Mirror the owner ActivateConversationBranchSession just made durable,
 		// agent-session identity included. A stale field here fails the next

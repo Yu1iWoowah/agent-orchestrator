@@ -34,7 +34,7 @@ func (*ChatShutdownSideError) Unwrap() error { return ErrChatShutdownNotSettled 
 
 // ChatShutdownBlockedError names what kept shutdown from settling: the session
 // (empty for a service-wide condition) and a fixed reason code. It carries no
-// provider text; the cause stays available to logs through Unwrap.
+// provider text; the cause stays available to internal classification through Unwrap.
 type ChatShutdownBlockedError struct {
 	SessionID string
 	Reason    string
@@ -46,11 +46,18 @@ func (e *ChatShutdownBlockedError) Error() string {
 	if e.SessionID != "" {
 		text += " (session " + e.SessionID + ")"
 	}
-	if e.Cause != nil {
-		text += ": " + e.Cause.Error()
-	}
 	return text
 }
+
+// ChatDeliveryJournalError identifies a journal failure at its source without
+// formatting the original storage or decoder error.
+type ChatDeliveryJournalError struct {
+	Stage string
+	Cause error
+}
+
+func (e *ChatDeliveryJournalError) Error() string { return "chat delivery journal: " + e.Stage }
+func (e *ChatDeliveryJournalError) Unwrap() error { return e.Cause }
 
 func (e *ChatShutdownBlockedError) Unwrap() []error {
 	return []error{ErrChatShutdownNotSettled, e.Cause}
