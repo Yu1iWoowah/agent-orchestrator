@@ -31,7 +31,7 @@ func TestExplicitReviewerRebuildCreatesNewOwnerAndPreservesPassHistory(t *testin
 	if _, created, err := store.CreateReviewerAccountExecution(ctx, old.ID, "refused-pass", target, now); err != nil || created {
 		t.Fatalf("active pass was rebuilt: created=%t %v", created, err)
 	}
-	_, err := s.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunComplete, domain.VerdictNone, "fake completed review", "", false)
+	_, err := s.TransitionReviewRun(ctx, run.ID, []domain.ReviewRunStatus{domain.ReviewRunRunning}, domain.ReviewRunCompleted, domain.ReviewRunPatch{Verdict: domain.VerdictNone})
 	mustNoError(t, err)
 	current, created, err := store.CreateReviewerAccountExecution(ctx, old.ID, "new-execution", target, now.Add(-time.Hour))
 	mustNoError(t, err)

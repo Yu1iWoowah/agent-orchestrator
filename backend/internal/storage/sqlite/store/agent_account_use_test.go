@@ -67,7 +67,7 @@ func TestRunningReviewerPassProtectsAccountBeforeNativeActivityArrives(t *testin
 	if owner == nil || owner.ReviewID != review.ID {
 		t.Errorf("pending pass allowed native logout: %+v", owner)
 	}
-	_, err = s.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunComplete, domain.VerdictNone, "fake complete", "", false)
+	_, err = s.TransitionReviewRun(ctx, run.ID, []domain.ReviewRunStatus{domain.ReviewRunRunning}, domain.ReviewRunCompleted, domain.ReviewRunPatch{Verdict: domain.VerdictNone})
 	mustNoError(t, err)
 	owners, err = s.ListAgentAccountUsageOwners(ctx, "protected")
 	mustNoError(t, err)

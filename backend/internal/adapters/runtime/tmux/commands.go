@@ -137,6 +137,11 @@ func exactPaneTarget(id string) string {
 	return exactSessionTarget(id) + ":"
 }
 
+// listLivePanePIDsArgs reports each pane PID and whether the pane is dead.
+func listLivePanePIDsArgs(id string) []string {
+	return []string{"list-panes", "-s", "-t", exactPaneTarget(id), "-F", "#{pane_pid} #{pane_dead}"}
+}
+
 // listPanePIDsArgs builds args for `tmux list-panes -s -t =<id>: -F #{pane_pid}`.
 // -s lists every pane in the whole session (not just the active window); the
 // window-targeting parser needs the trailing colon to honor the exact session

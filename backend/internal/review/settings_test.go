@@ -170,7 +170,7 @@ func TestReviewerNextPassPinsItsOwnSelectionAndAccount(t *testing.T) {
 	if _, err = engine.TriggerWithOptions(ctx, worker.ID, TriggerOptions{Config: domain.AgentConfig{Model: "review-two"}}); !errors.Is(err, ports.ErrAgentSettingsConflict) || launcher.destroyed || launcher.cancelled {
 		t.Fatalf("active legacy trigger = %v, destroyed=%v", err, launcher.destroyed)
 	}
-	if _, err = store.UpdateReviewRunResult(ctx, first.Run.ID, domain.ReviewRunComplete, domain.VerdictApproved, "", "", false); err != nil {
+	if _, err = store.TransitionReviewRun(ctx, first.Run.ID, []domain.ReviewRunStatus{domain.ReviewRunRunning}, domain.ReviewRunCompleted, domain.ReviewRunPatch{Verdict: domain.VerdictApproved}); err != nil {
 		t.Fatal(err)
 	}
 	op, err := engine.ChangeReviewerAgentSettings(ctx, first.Run.ReviewID, req)
