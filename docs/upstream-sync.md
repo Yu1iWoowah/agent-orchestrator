@@ -259,3 +259,12 @@ CLI 仍走 daemon HTTP，Cloud、HCG 與 `go.work` 保留 fork 原來源。LAN �
 | I1 | `ed765f56bb` 的 23 條路徑恢復 F，包括 TLS 表單、解析器、新增／編輯呼叫端與測試。 | D.02 一起接入位址推導 TLS、wire 與呼叫端驗收。 |
 | I2 | 撤回 `4b5d3d3f80` 的九條手勢路徑。ChatMarkdown 已維持 F，ChatTimelineItems 的手勢 hunk 也已維持 F，保留 A 的時間格式匯出。 | D.01 一起接入 #8709 的 wheel ownership、通知、圖片、程式碼、表格與 timeline 呼叫端。 |
 | I3 | 舊 retarget 由同一 head 選取實際執行 `changes` 的 run。 | 雙 run fixture 核對略過新 skipped run。新整合分支以 fresh merge ref 驗收。 |
+
+### B 段裁決（UPSYNC2-PR2.06）
+
+| 子工項 | 合併處置 | 驗證接點 |
+|---|---|---|
+| .01、.02、.05 | 加入 U 的 18 份原樣 SQL。沿用 fork 的分段 migration runner、rebuild 與已發布收據，再由具名欄和查詢重產 sqlc。 | fresh、u3、F1、u4／F 以 production Open 驗 schema、收據、資料與第二次開庫。 |
+| .03 | UTC startup fence 與背景修復使用同一儲存邊界。保留 Guardian trigger 產生的 UTC 表示，以及有 active hold 的 conversation queue 順序。WITHOUT ROWID 表以主鍵分批續跑。 | 合成同 instant 帳號碰撞依較高 rowid 保留，記錄修復前後 effective owner 與來源。不同 automation 執行和不允許改寫的列保留並記 skip。AU1 實測政策，AU2 在首次寫入前重新做適用性檢查。 |
+| .04、.07 | review run 狀態機、draft guard、terminal notice、report retry 與 DB trigger CDC 一起接入。保留 fork reviewer 帳號設定與既有 process ownership 判定。 | 兩個帳號使用查詢以 launch reservation 區分 queued，launch、cancel、cleanup 與既有未 exited reviewer 一起驗。 |
+| .08 | 依 `upsync2-pr2-q1=a_include` 接入本機刪除預設保留、封存清理、HTTP／CLI 參數、Artifacts 頁面與文案。 | 註冊檔案與獨立檔案由原 artifact 目錄供唯讀檢視及明確刪除。Cloud share 與 remote artifact 的上游差異留 D。 |

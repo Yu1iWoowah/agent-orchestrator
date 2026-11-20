@@ -19,7 +19,10 @@ import (
 const offsetOnlyTimestampRepairVersion = 1
 const timestampRepairBatch = 256
 
-var errTimestampPolicySkip = errors.New("preserved distinct execution history")
+var (
+	errTimestampPolicySkip = errors.New("preserved distinct execution history")
+	errTimestampHeldQueue  = errors.New("preserved request order while input is held")
+)
 
 // These tables feed timestamp predicates, keyset pages, or newest-row decisions.
 // Repair them before the store, search readers, and schedulers become available.
@@ -201,7 +204,7 @@ func repairTimestampKeyBatch(ctx context.Context, db *sql.DB, columns []timestam
 	fields, sets, checks := make([]string, len(columns)), make([]string, len(columns)), make([]string, len(columns))
 	for i, c := range columns {
 		column := quoteIdentifier(c.column)
-		fields[i] = fmt.Sprintf("CASE WHEN %s THEN CAST(%s AS TEXT) END", legacyTimestampPredicate(c.column), column)
+		fields[i] = fmt.Sprintf("CASE WHEN %s THEN CAST(%s AS TEXT) END", legacyTimestampPredicate(c), column)
 		sets[i] = fmt.Sprintf("%s=coalesce(?,%s)", column, column)
 		checks[i] = fmt.Sprintf("(? IS NULL OR (typeof(%[1]s)='text' AND CAST(%[1]s AS TEXT)=?))", column)
 	}
@@ -342,7 +345,7 @@ func repairTimestampKeyBatch(ctx context.Context, db *sql.DB, columns []timestam
 				return expected, err
 			}
 			var constraint *modernsqlite.Error
-			if !errors.As(batchErr, &constraint) || constraint.Code()&255 != 19 {
+			if !errors.Is(batchErr, errTimestampHeldQueue) && (!errors.As(batchErr, &constraint) || constraint.Code()&255 != 19) {
 				return 0, batchErr
 			}
 			if _, err := tx.ExecContext(ctx, "ROLLBACK TO timestamp_batch"); err != nil {
@@ -442,7 +445,7 @@ func repairTimestampKeyBatch(ctx context.Context, db *sql.DB, columns []timestam
 // A representation change must not discard execution history or rewrite a row
 // into a CHECK violation. Other failures still abort repair and startup.
 func preserveRejectedTimestamp(table string, err error) bool {
-	if errors.Is(err, errTimestampPolicySkip) {
+	if errors.Is(err, errTimestampPolicySkip) || errors.Is(err, errTimestampHeldQueue) {
 		return true
 	}
 	var constraint *modernsqlite.Error
@@ -454,13 +457,47 @@ func preserveRejectedTimestamp(table string, err error) bool {
 	}
 	// The fork's custody guards protect raw held input, including its time
 	// representation. Keep it unchanged until the authoritative hold ends.
-	return constraint.Code() == 1811 && strings.HasSuffix(constraint.Error(), ": INPUT_HELD (1811)") &&
-		(table == "conversation_turns" || table == "conversation_messages" || table == "conversation_activities")
+	if constraint.Code() != 1811 {
+		return false
+	}
+	switch table {
+	case "conversation_turns", "conversation_messages", "conversation_activities":
+		return strings.HasSuffix(constraint.Error(), ": INPUT_HELD (1811)")
+	case "conversation_input_actions":
+		return strings.HasSuffix(constraint.Error(), ": INPUT_ACTION_IMMUTABLE (1811)")
+	case "conversation_input_custody":
+		return strings.HasSuffix(constraint.Error(), ": INPUT_CUSTODY_FENCED (1811)")
+	}
+	return false
 }
 
 // applyTimestampUpdate counts only direct writes and the session revision
 // compensation. Collision handling is reserved for the constraint fallback.
 func applyTimestampUpdate(ctx context.Context, tx *sql.Conn, stmt *sql.Stmt, columns []timestampColumn, values []any) (int64, bool, error) {
+	if columns[0].table == "conversation_turns" {
+		for i, column := range columns {
+			if column.column != "requested_at" || values[i] == nil {
+				continue
+			}
+			// A held turn's request timestamp is immutable. Normalizing only its
+			// neighbors would reorder the queue's raw requested_at,rowid key.
+			var held bool
+			err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+ SELECT 1 FROM conversation_turns target
+ JOIN conversation_turns frozen ON frozen.conversation_id=target.conversation_id
+ WHERE target.rowid=?
+ AND (frozen.state='held' OR EXISTS (
+    SELECT 1 FROM conversation_input_holds WHERE turn_id=frozen.id AND active=1))
+)`, values[len(columns)]).Scan(&held)
+			if err != nil {
+				return 0, false, err
+			}
+			if held {
+				return 0, false, errTimestampHeldQueue
+			}
+			break
+		}
+	}
 	if columns[0].table == "sessions" {
 		var revision int64
 		if err := stmt.QueryRowContext(ctx, values...).Scan(&revision); err != nil {
@@ -484,15 +521,22 @@ func applyTimestampUpdate(ctx context.Context, tx *sql.Conn, stmt *sql.Stmt, col
 	return n, n > 0, err
 }
 
-func legacyTimestampPredicate(column string) string {
-	return fmt.Sprintf(`typeof(%[1]s)='text'
+func legacyTimestampPredicate(column timestampColumn) string {
+	name := quoteIdentifier(column.column)
+	predicate := fmt.Sprintf(`typeof(%[1]s)='text'
 AND ((%[1]s GLOB '* [+-][0-9][0-9][0-9][0-9] *' AND %[1]s NOT GLOB '* +0000 UTC')
 OR %[1]s GLOB '????-??-??T*'
 OR %[1]s GLOB '????-??-?? ??:??:*[+-]??:??'
 OR %[1]s GLOB '????-??-?? ??:??:*Z'
 OR %[1]s GLOB '????-??-?? ??:??'
 OR %[1]s GLOB '????-??-?? ??:??Z'
-OR %[1]s GLOB '????-??-??Z')`, quoteIdentifier(column))
+OR %[1]s GLOB '????-??-??Z')`, name)
+	// The fork writes Guardian policy time in this exact UTC format. Its
+	// consumers parse the instant and do not order or join on the raw text.
+	if column.table == "guardian_project_policy" && column.column == "enabled_at" {
+		predicate += " AND " + name + " NOT GLOB '????-??-??T??:??:??.???Z'"
+	}
+	return predicate
 }
 
 // A covering index avoids loading transcript/command payloads just to discover
@@ -504,7 +548,7 @@ func timestampRepairBounds(ctx context.Context, db *sql.DB, columns []timestampC
 	predicates := make([]string, len(columns))
 	for i, column := range columns {
 		args = append(args, column.column)
-		predicates[i] = "(" + legacyTimestampPredicate(column.column) + ")"
+		predicates[i] = "(" + legacyTimestampPredicate(column) + ")"
 	}
 	args = append(args, len(columns))
 	var index string

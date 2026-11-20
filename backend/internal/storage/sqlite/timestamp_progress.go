@@ -81,7 +81,7 @@ func timestampProgressTriggers(columns []timestampColumn) map[string]string {
 	literal := "'" + strings.ReplaceAll(table, "'", "''") + "'"
 	old, fresh := make([]string, 0, len(columns)), make([]string, 0, len(columns))
 	for _, column := range columns {
-		predicate := legacyTimestampPredicate(column.column)
+		predicate := legacyTimestampPredicate(column)
 		old = append(old, strings.ReplaceAll(predicate, quoteIdentifier(column.column), "OLD."+quoteIdentifier(column.column)))
 		fresh = append(fresh, strings.ReplaceAll(predicate, quoteIdentifier(column.column), "NEW."+quoteIdentifier(column.column)))
 	}

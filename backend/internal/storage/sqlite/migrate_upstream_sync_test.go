@@ -98,6 +98,9 @@ func TestUpstreamSyncInstallsAndUpgrades(t *testing.T) {
 				{"conversation_turns", "failure_code"},
 				{"model_usage_events", "service_tier"},
 				{"model_usage_events", "provider_message_id"},
+				{"review_run", "worker_notice"},
+				{"shell_terminals", "agent_conversation_id"},
+				{"kept_artifact_sessions", "kept_at"},
 			} {
 				var found int
 				if err = db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, field.table, field.column).Scan(&found); err != nil || found != 1 {

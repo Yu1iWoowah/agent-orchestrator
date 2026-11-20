@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	sqlitestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func TestTimestampFenceAutomationOccurrence(t *testing.T) {
@@ -70,8 +71,18 @@ func TestTimestampFenceAccountBindingCollision(t *testing.T) {
 			if _, err := db.Exec(`INSERT INTO sessions(id,num,harness,activity_state,activity_last_at,is_terminated,created_at,updated_at) VALUES('s',1,'aider','idle',CURRENT_TIMESTAMP,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.Exec(`INSERT INTO session_agent_accounts(session_id,provider,account_id,bound_at) VALUES('s','codex','first','2026-10-21 03:30:00 +0000 UTC'),('s','codex','last',?)`, legacy); err != nil {
+			if _, err := db.Exec(`INSERT INTO session_agent_accounts(session_id,provider,account_id,resolution_source,bound_at) VALUES('s','codex','first','project','2026-10-21 03:30:00 +0000 UTC'),('s','codex','last','explicit',?)`, legacy); err != nil {
 				t.Fatal(err)
+			}
+			ctx := context.Background()
+			legacyStore := sqlitestore.NewStore(db, db)
+			before, bound, err := legacyStore.GetSessionAgentAccountBinding(ctx, "s", domain.AgentAccountProviderCodex)
+			wantBefore, wantSource := "last", domain.AgentAccountSourceExplicit
+			if name == "negative" {
+				wantBefore, wantSource = "first", domain.AgentAccountResolutionSource("project")
+			}
+			if err != nil || !bound || before.AccountID != wantBefore || before.Source != wantSource {
+				t.Fatalf("effective binding before repair=%+v bound=%v: %v", before, bound, err)
 			}
 			var last int64
 			if err := db.QueryRow(`SELECT max(rowid) FROM session_agent_accounts`).Scan(&last); err != nil {
@@ -92,10 +103,11 @@ func TestTimestampFenceAccountBindingCollision(t *testing.T) {
 			if err := db.QueryRow(`SELECT count(*),account_id,rowid FROM session_agent_accounts`).Scan(&count, &account, &survivor); err != nil || count != 1 || account != "last" || survivor != last {
 				t.Fatalf("bindings=%d account=%q rowid=%d want=%d: %v", count, account, survivor, last, err)
 			}
-			current, bound, err := s.GetSessionAgentAccount(context.Background(), "s", domain.AgentAccountProviderCodex)
-			if err != nil || !bound || current != "last" {
-				t.Fatalf("effective account=%q bound=%v: %v", current, bound, err)
+			after, bound, err := s.GetSessionAgentAccountBinding(ctx, "s", domain.AgentAccountProviderCodex)
+			if err != nil || !bound || after.AccountID != "last" || after.Source != domain.AgentAccountSourceExplicit {
+				t.Fatalf("effective binding after repair=%+v bound=%v: %v", after, bound, err)
 			}
+			t.Logf("effective binding before=%s/%s after=%s/%s survivor rowid=%d", before.AccountID, before.Source, after.AccountID, after.Source, survivor)
 			if err := s.Close(); err != nil {
 				t.Fatal(err)
 			}

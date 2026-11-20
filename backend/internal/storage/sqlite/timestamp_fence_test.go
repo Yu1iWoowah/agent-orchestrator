@@ -117,9 +117,11 @@ func TestTimestampRepairTriggerInventory(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	// review_run_worker_notice_pending only fires on status updates. Timestamp
-	// repair preserves notice state (TestTimestampRepairPreservesReviewDoneNotices).
-	const reviewed = "2950d2c69446158666dea383760aca5175ce76f90753523751da938910061ba6"
+	// Fork custody guards remain active (including during the historical
+	// fixture upgrades), and the Guardian policy keeps its trigger's UTC
+	// format. The review notice trigger depends on actual status changes.
+	// TestTimestampRepairPreservesReviewDoneNotices checks that distinction.
+	const reviewed = "34598aa09d2992ceeaed38222fb94b0a23c748d9b357e2c5e763202a9310f9b9"
 	if got := fmt.Sprintf("%x", hash.Sum(nil)); got != reviewed {
 		t.Fatalf("timestamp trigger inventory changed; review preservation logic before updating fingerprint: %s", got)
 	}
