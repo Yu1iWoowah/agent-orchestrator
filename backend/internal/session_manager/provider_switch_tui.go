@@ -17,6 +17,12 @@ import (
 // session and terminal. The target starts a fresh native thread seeded with the
 // handoff note: native histories cannot be merged across harnesses.
 func (m *Manager) SwitchTUIProvider(ctx context.Context, id domain.SessionID, request domain.ProviderSwitchRequest) error {
+	return m.SwitchTUIProviderWithPreflight(ctx, id, request, nil)
+}
+
+// SwitchTUIProviderWithPreflight runs the model picker check against the exact
+// target account reserved for the launch.
+func (m *Manager) SwitchTUIProviderWithPreflight(ctx context.Context, id domain.SessionID, request domain.ProviderSwitchRequest, checkPicks func(context.Context, *domain.ProviderSwitchRequest) error) error {
 	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, id)
 	if err != nil {
 		return err
@@ -83,6 +89,14 @@ func (m *Manager) SwitchTUIProvider(ctx context.Context, id domain.SessionID, re
 		return err
 	}
 	defer releaseTarget()
+	if checkPicks != nil {
+		if err := checkPicks(targetCtx, &request); err != nil {
+			return err
+		}
+		if sameAgent && !tuiSettingsChange(rec.Metadata, request) {
+			return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalAlreadyActive, Detail: "target provider is already active", Cause: domain.ErrProviderAlreadyActive}
+		}
+	}
 	if err := preflightTUISwitchTarget(targetCtx, target, targetAgent, m.dataDir); err != nil {
 		return err
 	}

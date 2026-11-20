@@ -232,6 +232,31 @@ func TestTUISwitchWrongTargetAccountLeavesSourceRunning(t *testing.T) {
 	}
 }
 
+func TestTUISwitchModelCheckUsesTargetAccountBeforeStoppingSource(t *testing.T) {
+	manager, store, runtime, _, accounts, effects := newAccountTransitionManager(t, domain.SessionModeTUI)
+	manager.SetAgentAccounts(switchTargetAccount{transitionAccounts: accounts, provider: domain.AgentAccountProviderCodex})
+	id := domain.SessionID("session-1")
+	before := store.sessions[id]
+	refusal := errors.New("fixture model refusal")
+	calls := 0
+	check := func(ctx context.Context, _ *domain.ProviderSwitchRequest) error {
+		calls++
+		account, found := ports.AgentAccountFromContext(ctx)
+		if !found || account.Provider != domain.AgentAccountProviderCodex || account.AccountID != "acct-b" {
+			t.Errorf("unexpected catalog account: %+v found=%v", account, found)
+		}
+		return refusal
+	}
+	if err := manager.SwitchTUIProviderWithPreflight(t.Context(), id, domain.ProviderSwitchRequest{
+		TargetHarness: domain.HarnessCodex, Model: "requested-model",
+	}, check); !errors.Is(err, refusal) {
+		t.Fatalf("switch = %v, want preflight refusal", err)
+	}
+	if calls != 1 || store.sessions[id].ControllerOwner() != before.ControllerOwner() || len(runtime.interrupts) != 0 || len(*effects) != 0 {
+		t.Fatalf("preflight refusal changed source or touched runtime: calls=%d effects=%v", calls, *effects)
+	}
+}
+
 func TestForcedTUISwitchInterruptsAWorkingAgent(t *testing.T) {
 	ctx := context.Background()
 	settle, poll := tuiSwitchTargetSettle, tuiSwitchTargetSettlePoll

@@ -15,6 +15,40 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
+type scopedSwitchLaunch struct{ account domain.ResolvedAgentAccount }
+
+func (l scopedSwitchLaunch) PrepareProviderSwitchLaunch(ctx context.Context, _ domain.SessionRecord, _ domain.AgentHarness) (context.Context, map[string]string, func(), error) {
+	return ports.WithAgentAccount(ctx, l.account), nil, func() {}, nil
+}
+
+type scopedSwitchCatalog struct{ account domain.ResolvedAgentAccount }
+
+func (c *scopedSwitchCatalog) ModelCatalog(ctx context.Context, _, _ string, _ bool) (ports.AgentModelCatalog, error) {
+	c.account, _ = ports.AgentAccountFromContext(ctx)
+	return ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{ID: "approved-model"}}}, nil
+}
+
+func TestProviderSwitchModelCatalogUsesTargetAccountBeforeStoppingSource(t *testing.T) {
+	h, _, driver := newEditHarness(t, false)
+	account := domain.ResolvedAgentAccount{AccountID: "target-claude", Provider: domain.AgentAccountProviderClaude}
+	catalog := &scopedSwitchCatalog{}
+	h.svc.SetProviderSwitchLaunch(scopedSwitchLaunch{account})
+	h.svc.SetSwitchModelCatalog(catalog)
+
+	_, err := h.svc.SwitchProviderReport(t.Context(), testSession, domain.ProviderSwitchRequest{
+		TargetHarness: domain.HarnessClaudeCode, Model: "wrong-model",
+	})
+	var refused *domain.ProviderSwitchError
+	if !errors.As(err, &refused) || refused.Kind != domain.ProviderSwitchRefusalUnsupported || catalog.account.AccountID != account.AccountID {
+		t.Fatalf("switch = %v, catalog account = %+v", err, catalog.account)
+	}
+	driver.mu.Lock()
+	defer driver.mu.Unlock()
+	if len(driver.startConfigs) != 1 || !h.svc.HasLiveChatController(testSession) {
+		t.Fatal("model refusal touched the source or started the target")
+	}
+}
+
 func TestForcedProviderSwitchKeepsUnsettledDeliveryAndQueue(t *testing.T) {
 	h, _, driver := newEditHarness(t, false)
 	ctx := t.Context()

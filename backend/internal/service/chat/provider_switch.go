@@ -16,7 +16,7 @@ import (
 
 // TerminalProviderSwitcher is late-bound during daemon construction.
 type TerminalProviderSwitcher interface {
-	SwitchTUIProvider(context.Context, domain.SessionID, domain.ProviderSwitchRequest) error
+	SwitchTUIProviderWithPreflight(context.Context, domain.SessionID, domain.ProviderSwitchRequest, func(context.Context, *domain.ProviderSwitchRequest) error) error
 }
 
 type ProviderSwitchLaunch interface {
@@ -256,8 +256,9 @@ func (s *Service) switchProvider(ctx context.Context, id domain.SessionID, reque
 	} else if !found {
 		return fmt.Errorf("switch %s: %w", id, ports.ErrSessionNotFound)
 	}
-	result.Warnings, err = s.checkSwitchPicks(ctx, request)
-	if err != nil {
+	checkPicks := func(ctx context.Context, request *domain.ProviderSwitchRequest) error {
+		warnings, err := s.checkSwitchPicks(ctx, request)
+		result.Warnings = warnings
 		return err
 	}
 	if domain.NormalizeSessionMode(stored.Mode) == domain.SessionModeTUI && s.terminalSwitcher != nil {
@@ -270,7 +271,7 @@ func (s *Service) switchProvider(ctx context.Context, id domain.SessionID, reque
 			}
 		}
 		noteReady := time.Since(started)
-		if err := s.terminalSwitcher.SwitchTUIProvider(ctx, id, *request); err != nil {
+		if err := s.terminalSwitcher.SwitchTUIProviderWithPreflight(ctx, id, *request, checkPicks); err != nil {
 			return err
 		}
 		result.SettingsUpdated = sameAgent
@@ -314,7 +315,8 @@ func (s *Service) switchProvider(ctx context.Context, id domain.SessionID, reque
 	if err != nil {
 		return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalRecoveryRequired, Detail: "the source Chat controller is not ready", Cause: err}
 	}
-	if source.harness == request.TargetHarness {
+	alreadyActive := source.harness == request.TargetHarness
+	if alreadyActive && request.Model == "" && request.Effort == "" && request.PermissionMode == "" {
 		return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalAlreadyActive, Detail: "target provider is already active", Cause: domain.ErrProviderAlreadyActive}
 	}
 	targetCtx := ctx
@@ -326,6 +328,12 @@ func (s *Service) switchProvider(ctx context.Context, id domain.SessionID, reque
 			return err
 		}
 		defer release()
+	}
+	if err := checkPicks(targetCtx, request); err != nil {
+		return err
+	}
+	if alreadyActive {
+		return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalAlreadyActive, Detail: "target provider is already active", Cause: domain.ErrProviderAlreadyActive}
 	}
 	// The target runs under the chat's own permission mode, so an agent that only
 	// runs with permissions bypassed (Pi) can take over a chat that has them.
