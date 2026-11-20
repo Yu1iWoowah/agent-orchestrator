@@ -40,8 +40,15 @@ func TestForcedProviderSwitchKeepsUnsettledDeliveryAndQueue(t *testing.T) {
 		t.Fatalf("force changed acceptance: %+v %v", saved, err)
 	}
 	follower, err := h.st.TurnByID(ctx, queued.ID)
-	if err != nil || follower.State != domain.TurnStateQueued || len(h.conv.sentTexts()) != 1 || lastStart(driver).Harness != domain.HarnessCodex {
+	if err != nil || follower.State != domain.TurnStateQueued || len(h.conv.sentTexts()) != 1 {
 		t.Fatalf("force mutated source work: follower=%+v sends=%v err=%v", follower, h.conv.sentTexts(), err)
+	}
+	driver.mu.Lock()
+	starts := len(driver.startConfigs)
+	driver.mu.Unlock()
+	record, found, err := h.st.GetSession(ctx, testSession)
+	if err != nil || !found || record.Harness != domain.HarnessCodex || starts != 1 {
+		t.Fatalf("force changed source or started another provider: harness=%s starts=%d err=%v", record.Harness, starts, err)
 	}
 }
 
