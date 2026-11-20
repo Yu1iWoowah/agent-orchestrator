@@ -7,7 +7,7 @@ import { useRestoreFocusOnClose } from "../hooks/useRestoreFocusOnClose";
 import { useCloudArtifactAccess, usePinnedArtifactUrl } from "../hooks/useCloudArtifacts";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { artifactContentUrl } from "../lib/artifact-content-url";
-import { artifactKey, type ArtifactRow } from "../lib/artifacts";
+import { artifactContext, artifactKey, type ArtifactRow } from "../lib/artifacts";
 import { useNavigateToSession } from "../lib/navigate-to-session";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
@@ -58,7 +58,7 @@ export function ArtifactPreviewModal({ artifact, projectName, onClose, pinId }: 
 					<header className="flex shrink-0 items-center gap-2 py-1 pl-4 pr-2">
 						<div className="flex min-w-0 flex-1 items-baseline gap-2">
 							<DialogTitle className="min-w-0 truncate text-control outline-none" ref={titleRef} tabIndex={-1}>{artifact.name}</DialogTitle>
-							<DialogDescription className="min-w-0 shrink-[2] truncate text-caption">{projectName} · {artifact.sessionTitle}</DialogDescription>
+							<DialogDescription className="min-w-0 shrink-[2] truncate text-caption">{artifactContext(t, artifact, projectName)}</DialogDescription>
 						</div>
 						<div className="relative z-10 flex shrink-0 items-center gap-0.5">
 							{share ? <ShareArtifactButton className="transition-none" file={share} iconOnly name={artifact.name} published={Boolean(artifact.shareUrl)} revision={artifact.updatedAt} /> : null}
@@ -76,14 +76,14 @@ export function ArtifactPreviewModal({ artifact, projectName, onClose, pinId }: 
 								errorClassName="bottom-auto top-full mb-0 mt-2"
 								className="transition-none"
 							/>
-							<Tooltip>
+							{artifact.kept ? null : <Tooltip>
 								<TooltipTrigger asChild>
 									<Button aria-label={t("artifacts.openInSession")} className="shrink-0" onClick={openInSession} size="icon-sm" type="button" variant="quiet">
 										<ArrowUpRight aria-hidden="true" className="size-icon-sm" />
 									</Button>
 								</TooltipTrigger>
 								<TooltipContent side="bottom">{t("artifacts.openInSession")}</TooltipContent>
-							</Tooltip>
+							</Tooltip>}
 							<DialogClose asChild>
 								<CloseButton aria-label={t("common.close")} className="shrink-0" size="icon-sm" />
 							</DialogClose>
@@ -123,5 +123,5 @@ function ArtifactPreviewBody({ artifact }: { artifact: ArtifactRow }) {
 		return <iframe className="h-full w-full border-0 bg-background" key={`${page}:${artifact.updatedAt}`} sandbox="allow-scripts allow-same-origin" src={page} title={artifact.name} />;
 	}
 	if (!contentUrl) return <PanelMessage>{t("artifactLink.noPreview")}</PanelMessage>;
-	return <ArtifactFileView artifactName={artifact.name} path={artifact.path} rawUrl={artifact.rawUrl} readOnly sessionId={artifact.sessionId} />;
+	return <ArtifactFileView artifactName={artifact.name} path={artifact.path} rawUrl={artifact.rawUrl} noFeedback={artifact.archived} readOnly sessionId={artifact.sessionId} />;
 }

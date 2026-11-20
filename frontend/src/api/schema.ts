@@ -1940,6 +1940,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/kept-artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the artifacts no session or project lists: those of sessions deleted with their artifacts kept, and of sessions in removed projects */
+        get: operations["listKeptArtifacts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/link-preview": {
         parameters: {
             query?: never;
@@ -8222,9 +8239,24 @@ export interface components {
             lidSupported?: boolean;
             supported: boolean;
         };
+        ControllersKeptArtifactsView: {
+            artifactFiles: components["schemas"]["SessionArtifact"][];
+            /**
+             * Format: date-time
+             * @description When the session was deleted, or last updated.
+             */
+            at: string;
+            projectId?: string;
+            sessionDeleted: boolean;
+            sessionId: string;
+            title: string;
+        };
         ControllersKillSessionRequest: {
             callerSessionId?: string;
             deleteArtifacts?: boolean;
+        };
+        ControllersListKeptArtifactsResponse: {
+            sets: components["schemas"]["ControllersKeptArtifactsView"][];
         };
         ControllersPairDeviceRequest: {
             /** @description Name shown in the host's device list. */
@@ -11320,20 +11352,41 @@ export interface components {
             batchId: string;
             body: string;
             /** Format: date-time */
+            cancelRequestedAt?: null | string;
+            /** @enum {string} */
+            cancelledBy?: "user" | "worker_lifecycle";
+            /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
             deliveredAt?: null | string;
+            /** Format: date-time */
+            endedAt?: null | string;
+            /** @enum {string} */
+            failureReason?: "preflight_failed" | "launch_failed" | "never_started" | "exited_during_launch" | "turn_ended_without_submit" | "process_exited" | "timed_out" | "daemon_restarted" | "cancel_unconfirmed";
+            /** Format: date-time */
+            firstActivityAt?: null | string;
             githubReviewId: string;
             harness: string;
             id: string;
+            /** Format: date-time */
+            launchingAt?: null | string;
             prUrl: string;
             reviewId: string;
             sessionId: string;
-            status: string;
+            /** Format: date-time */
+            startedAt?: null | string;
+            /** @enum {string} */
+            status: "queued" | "launching" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "superseded";
             targetSha: string;
             /** @enum {string} */
             triggerSource: "manual" | "agent" | "auto";
             verdict: string;
+            /** @enum {string} */
+            workerNotice?: "" | "pending" | "sent" | "failed";
+            /** Format: date-time */
+            workerNoticeAttemptedAt?: null | string;
+            workerNoticeAttempts?: number;
+            workerNoticeError?: string;
         };
         ReviewRunResponse: {
             review: components["schemas"]["ReviewRun"];
@@ -12578,6 +12631,8 @@ export interface components {
             prUrl?: string;
             /** @description Return 409 instead of reusing when every open PR head is already being reviewed or already has a review. */
             rejectReviewedHead?: boolean;
+            /** @description Agent session that requested the pass and should receive its final outcome. */
+            requesterSessionId?: string;
             /** @description Start a fresh pass for already-reviewed current heads; a different reviewer may run alongside one that is still running. A person's rerun reuses an active pass from the same reviewer; an agent's rerun returns 409 REVIEW_ALREADY_RUNNING instead. */
             rerun?: boolean;
             /**
@@ -20278,6 +20333,44 @@ export interface operations {
             };
         };
     };
+    listKeptArtifacts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControllersListKeptArtifactsResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     getLinkPreview: {
         parameters: {
             query?: {
@@ -26214,6 +26307,8 @@ export interface operations {
             query?: {
                 /** @description When true, a worktree that is still on disk is cleaned up first, the way session cleanup does it; a dirty or locked worktree is never forced and refuses the delete. */
                 cleanup?: boolean;
+                /** @description When true, the session's artifact files are kept, view only, and listed by GET /api/v1/kept-artifacts until they are deleted one by one. Otherwise they are deleted with the session. */
+                keepArtifacts?: boolean;
             };
             header?: never;
             path: {

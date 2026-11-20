@@ -94,6 +94,25 @@ export function legacyGalleryGroups(
 		};
 	});
 }
+export function withKeptGalleryGroups(
+	groups: readonly GalleryGroup[],
+	connection: DocumentConnection,
+	kept: readonly ArtifactGroup[],
+): GalleryGroup[] {
+	const keptKeys = new Set(kept.flatMap((group) => group.rows.map(artifactKey)));
+	const byGroup = new Map(groups.map((group) => [group.id, {
+		...group,
+		rows: group.rows.filter((row) => row.connection.kind !== "local" || !keptKeys.has(galleryLegacyKey(row) ?? "")),
+	}]));
+	for (const group of kept) {
+		const id = groupKey(connection, group.id);
+		const existing = byGroup.get(id);
+		const rows = group.rows.map((row) => ({ ...row, connection }));
+		byGroup.set(id, { ...(existing ?? group), id, rows: [...(existing?.rows ?? []), ...rows].sort(newestGalleryFirst) });
+	}
+	return [...byGroup.values()];
+}
+
 export function filterGalleryGroups(
 	groups: readonly GalleryGroup[],
 	filters: GalleryFilters,
@@ -107,7 +126,7 @@ export function filterGalleryGroups(
 			rows: group.rows.filter((row) => {
 				const catalog = isCatalogArtifact(row);
 				const source = catalog ? row.source : "worker";
-				const archived = catalog && row.archived;
+				const archived = row.archived;
 				if (filters.source !== "all" && source !== filters.source) return false;
 				if ((filters.archive === "archive" && !archived) || (filters.archive === "current" && archived)) return false;
 				const owner = catalog ? (row.target.kind === "artifact" ? row.target.sessionId : "") : row.sessionId;

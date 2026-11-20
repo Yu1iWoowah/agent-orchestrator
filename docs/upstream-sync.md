@@ -247,7 +247,7 @@ CLI 仍走 daemon HTTP，Cloud、HCG 與 `go.work` 保留 fork 原來源。LAN �
 
 | PR #134 thread | A 段處置 | 後段驗收 |
 |---|---|---|
-| `PRRT_kwDOVZZGR8652AK2` | 設定各語系與 CLI 文件恢復 F 的刪除語意。封存自動清理目前會刪除 artifact 檔。 | B 一起接入封存保留、CLI／HTTP 參數、儲存與測試，再更新使用者文案。 |
+| `PRRT_kwDOVZZGR8652AK2` | 設定各語系與 CLI 文件恢復 F 的刪除語意。封存自動清理目前會刪除 artifact 檔。 | 由 UPSYNC2-PR2.08 承接。依 `upsync2-pr2-q1=a_include` 一起啟用本機封存保留、CLI／HTTP 參數、Artifacts 頁面與各語系文案。Cloud share 與遠端 artifact 留 D。 |
 | `PRRT_kwDOVZZGR8652AK7` | 恢復 F 的 Kimi hooks 與 lifecycle。撤回 `1a5d2647` 已匯入的 callback、reducer 及對應測試。 | C 接入同一提交的 CLI scoped approval identity、真實 payload 的 CLI→HTTP 測試與 reducer。 |
 | `PRRT_kwDOVZZGR8652ALA` | 把逐 harness 的驗證錯誤傳給共用 `describeHarness`。父元件測試實際觸發 Check again，驗 Health、Account 與成功重試。 | A 驗證。 |
 | `PRRT_kwDOVZZGR8652ALF` | 恢復 F 的 minimap E2E，配對 A 現有 inspector 行為。 | D 將按 chat 寬度顯示的實作與 E2E 一起接入。 |
