@@ -162,6 +162,15 @@ func (m *Manager) SwitchTUIProviderWithPreflight(ctx context.Context, id domain.
 	}
 	var bindingAt time.Time
 	bindingPublished := false
+	writeSource := func(ctx context.Context, rec domain.SessionRecord) error {
+		if bindingPublished {
+			return switchStore.UpdateTUIProviderSwitch(ctx, rec, sourceLaunch, *newBinding, bindingAt, true)
+		}
+		if launchStore != nil {
+			return launchStore.UpdateSessionWithLaunchOptions(ctx, rec, sourceLaunch)
+		}
+		return m.store.UpdateSession(ctx, rec)
+	}
 	restoreSource := func(cause error, what string) error {
 		// A target that used up the switch's time still leaves the restore its own.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*interfaceTransitionStepLimit)
@@ -172,14 +181,7 @@ func (m *Manager) SwitchTUIProviderWithPreflight(ctx context.Context, id domain.
 		// Ownership and the source's launch choices go back in one write, as they
 		// moved: a stop between two writes would leave the target owning the
 		// session with neither its handoff nor the source's native identity.
-		var restoreErr error
-		if bindingPublished {
-			restoreErr = switchStore.UpdateTUIProviderSwitch(ctx, source, sourceLaunch, *newBinding, bindingAt, true)
-		} else if launchStore != nil {
-			restoreErr = launchStore.UpdateSessionWithLaunchOptions(ctx, source, sourceLaunch)
-		} else {
-			restoreErr = m.store.UpdateSession(ctx, source)
-		}
+		restoreErr := writeSource(ctx, source)
 		if restoreErr == nil {
 			ctx = ports.WithProviderSwitchAccountPreservation(ctx)
 			_, restoreErr = m.relaunchSessionWithPolicy(ctx, "restore source provider", source, project, ws, nil, false, false, domain.SessionInterfaceTransitionHistoryStrict)
@@ -187,7 +189,7 @@ func (m *Manager) SwitchTUIProviderWithPreflight(ctx context.Context, id domain.
 		if restoreErr != nil {
 			// No agent runs now, so the session must not read as idle.
 			source.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: m.clock()}
-			_ = m.store.UpdateSession(ctx, source)
+			_ = writeSource(ctx, source)
 			return &domain.ProviderSwitchError{
 				Kind:   domain.ProviderSwitchRefusalRecoveryRequired,
 				Detail: fmt.Sprintf("%s and source restoration also failed: %v; %v", what, cause, restoreErr),
@@ -232,6 +234,7 @@ func (m *Manager) SwitchTUIProviderWithPreflight(ctx context.Context, id domain.
 		return restoreSource(err, "could not publish target provider ownership")
 	}
 
+	ctx = ports.WithProviderSwitchAccountPreservation(ctx)
 	if preparer, ok := targetAgent.(interface {
 		PrepareSwitchTarget(context.Context, string)
 	}); ok {

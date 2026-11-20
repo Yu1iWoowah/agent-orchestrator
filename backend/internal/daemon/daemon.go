@@ -367,7 +367,23 @@ func Run(buildVersion string) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer func() { _ = store.Close() }()
+	var usageHookQueue *usagesvc.HookQueue
+	defer func() {
+		if usageHookQueue != nil {
+			select {
+			case <-usageHookQueue.Done():
+			default:
+				// An unresponsive hook must not extend the shutdown budget.
+				// Close the store only if and when that worker releases it.
+				go func() {
+					<-usageHookQueue.Done()
+					_ = store.Close()
+				}()
+				return
+			}
+		}
+		_ = store.Close()
+	}()
 	operatorBroker := operatornative.New(store.NativeOperatorIssuer(), operatorRuntimeToken, operatorOwner)
 	browserBroker.SetNativeHandler(operatorBroker.Handle)
 	settingsGrantAuthority, err := agentsettings.NewStoredGrantAuthority(context.Background(), store, time.Now)
@@ -1174,8 +1190,7 @@ func Run(buildVersion string) (retErr error) {
 	sessMgr.SetShellTerminalCloser(shellTermSvc)
 	var (
 		usageCollector  *usagesvc.Collector
-		usageHookQueue  *usagesvc.HookQueue
-		closeUsageHooks func() error
+		closeUsageHooks func(context.Context) error
 		usagePipeline   *usagepipeline.Pipeline
 		usagePricing    *usagePricingRuntime
 	)
@@ -1267,7 +1282,9 @@ func Run(buildVersion string) (retErr error) {
 			if closeUsageHooks == nil {
 				return
 			}
-			if err := closeUsageHooks(); err != nil {
+			drainCtx, cancelDrain := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+			defer cancelDrain()
+			if err := closeUsageHooks(drainCtx); err != nil {
 				retErr = errors.Join(retErr, err)
 			}
 		}()
@@ -1930,15 +1947,18 @@ func Run(buildVersion string) (retErr error) {
 	<-previewDone
 	// Daemon replacement detaches providers. Desktop exit stops processes
 	// while keeping the sessions and worktrees available for resume.
+	drainUsage := closeUsageHooks
+	closeUsageHooks = nil
 	if srv.StopAgentsRequested() {
-		drainUsage := closeUsageHooks
-		closeUsageHooks = nil
-		if err := stopDesktopControllers(max(cfg.ShutdownTimeout, 30*time.Second), drainUsage, sessMgr.StopAgentsForQuit, chatSvc.TerminateAll); err != nil {
+		if err := stopDesktopControllers(max(cfg.ShutdownTimeout, 30*time.Second), cfg.ShutdownTimeout, drainUsage, sessMgr.StopAgentsForQuit, chatSvc.TerminateAll); err != nil {
 			log.Error("desktop quit controller shutdown", "err", err)
 			runErr = errors.Join(runErr, err)
 		}
 	} else {
 		chatStopCtx, chatCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		if drainUsage != nil {
+			runErr = errors.Join(runErr, drainUsage(chatStopCtx))
+		}
 		if err := chatSvc.StopAll(chatStopCtx); err != nil {
 			log.Error("chat shutdown not settled; original providers retained", "error", err)
 			runErr = errors.Join(runErr, err)
@@ -1978,17 +1998,20 @@ func Run(buildVersion string) (retErr error) {
 	return runErr
 }
 
-func stopDesktopControllers(timeout time.Duration, drainUsage func() error, stopAgents, stopChats func(context.Context) error) error {
-	// ExitAgent commits ActivityExited. The collector rejects ordinary hooks
-	// for exited sessions, so accepted hooks must finish before that write.
-	if drainUsage != nil {
-		if err := drainUsage(); err != nil {
-			return fmt.Errorf("drain usage hooks before desktop quit: %w", err)
-		}
-	}
+func stopDesktopControllers(timeout, drainTimeout time.Duration, drainUsage func(context.Context) error, stopAgents, stopChats func(context.Context) error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return errors.Join(stopAgents(ctx), stopChats(ctx))
+	// ExitAgent commits ActivityExited. The collector rejects ordinary hooks
+	// for exited sessions. Drain first, within the existing shutdown budget.
+	var usageErr error
+	if drainUsage != nil {
+		drainCtx, cancelDrain := context.WithTimeout(ctx, drainTimeout)
+		if err := drainUsage(drainCtx); err != nil {
+			usageErr = fmt.Errorf("drain usage hooks before desktop quit: %w", err)
+		}
+		cancelDrain()
+	}
+	return errors.Join(usageErr, stopAgents(ctx), stopChats(ctx))
 }
 
 func telemetryAppVersion(configured, buildVersion string) string {

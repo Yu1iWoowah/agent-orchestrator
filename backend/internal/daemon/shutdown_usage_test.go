@@ -1,7 +1,11 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,14 +24,18 @@ import (
 
 type quitUsageStore struct {
 	*sqlite.Store
-	reads   atomic.Int32
-	entered chan struct{}
-	release chan struct{}
+	reads     atomic.Int32
+	entered   chan struct{}
+	release   chan struct{}
+	recordCtx chan context.Context
 }
 
 func (s *quitUsageStore) GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
 	// The collector's second read happens with its lock held.
 	if s.reads.Add(1) == 2 {
+		if s.recordCtx != nil {
+			s.recordCtx <- ctx
+		}
 		close(s.entered)
 		<-s.release
 	}
@@ -41,14 +49,13 @@ func (quitUsageRuntime) ProbeFencedRuntime(context.Context, ports.FencedRuntimeR
 	return ports.FencedProbeResult{Liveness: ports.FencedDead}
 }
 
-func TestDesktopQuitDrainsUsageBeforeExitAgent(t *testing.T) {
+func seedDesktopQuitSession(t *testing.T, ctx context.Context) (*sqlite.Store, domain.SessionRecord) {
+	t.Helper()
 	st, err := sqlitetest.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
 	now := time.Now().UTC()
 	if err := st.UpsertProject(ctx, domain.ProjectRecord{ID: "usage-quit", Path: t.TempDir(), RegisteredAt: now}); err != nil {
 		t.Fatal(err)
@@ -61,6 +68,13 @@ func TestDesktopQuitDrainsUsageBeforeExitAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return st, rec
+}
+
+func TestDesktopQuitDrainsUsageBeforeExitAgent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	st, rec := seedDesktopQuitSession(t, ctx)
 	root := t.TempDir()
 	path := filepath.Join(root, "project", "native-quit", "subagents", "agent-sub-1.jsonl")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -83,7 +97,7 @@ func TestDesktopQuitDrainsUsageBeforeExitAgent(t *testing.T) {
 	defer func() {
 		cancelWorker()
 		release()
-		_ = queue.CloseAndWait()
+		_ = queue.CloseAndWait(ctx)
 	}()
 	if err := queue.RecordHook(ctx, rec.ID, usagesvc.HookSignal{Event: "session-start"}); err != nil {
 		t.Fatal(err)
@@ -110,9 +124,9 @@ func TestDesktopQuitDrainsUsageBeforeExitAgent(t *testing.T) {
 	quitDone := make(chan struct{})
 	go func() {
 		defer close(quitDone)
-		result <- stopDesktopControllers(5*time.Second, func() error {
+		result <- stopDesktopControllers(5*time.Second, 4*time.Second, func(drainCtx context.Context) error {
 			close(draining)
-			return queue.CloseAndWait()
+			return queue.CloseAndWait(drainCtx)
 		}, func(ctx context.Context) error {
 			close(stopping)
 			return manager.StopAgentsForQuit(ctx)
@@ -153,5 +167,76 @@ func TestDesktopQuitDrainsUsageBeforeExitAgent(t *testing.T) {
 	sources, err := st.ListUsageSourcesForBinding(ctx, binding.ID)
 	if err != nil || len(sources) != 1 || sources[0].SubagentID != "sub-1" || sources[0].ArtifactPath != resolvedPath {
 		t.Fatalf("sources after quit: %+v err=%v", sources, err)
+	}
+}
+
+func TestDesktopQuitFinishesWhenUsageRecorderStaysBlocked(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	st, rec := seedDesktopQuitSession(t, ctx)
+	blocked := &quitUsageStore{
+		Store: st, entered: make(chan struct{}), release: make(chan struct{}), recordCtx: make(chan context.Context, 1),
+	}
+	var logs bytes.Buffer
+	collector := usagesvc.NewCollector(blocked, usagesvc.SourceRoots{}, nil)
+	queue := usagesvc.NewHookQueue(collector, slog.New(slog.NewJSONHandler(&logs, nil)))
+	workerCtx, cancelWorker := context.WithCancel(ctx)
+	go queue.Run(workerCtx)
+	defer func() {
+		cancelWorker()
+		close(blocked.release)
+		select {
+		case <-queue.Done():
+		case <-ctx.Done():
+			t.Error("usage worker did not exit after fixture released")
+		}
+	}()
+	if err := queue.RecordHook(ctx, rec.ID, usagesvc.HookSignal{Event: "session-start"}); err != nil {
+		t.Fatal(err)
+	}
+	var recordCtx context.Context
+	select {
+	case recordCtx = <-blocked.recordCtx:
+	case <-ctx.Done():
+		t.Fatal("collector did not start")
+	}
+	if err := queue.RecordHook(ctx, rec.ID, usagesvc.HookSignal{Event: "subagent-stop"}); err != nil {
+		t.Fatal(err)
+	}
+	cancelWorker()
+	lcm := lifecycle.New(st, nil)
+	lcm.SetUsageFinalizer(queue)
+	manager := sessionmanager.New(sessionmanager.Deps{Store: st, Lifecycle: lcm, Runtime: quitUsageRuntime{}})
+	result := make(chan error, 1)
+	go func() {
+		result <- stopDesktopControllers(2*time.Second, 25*time.Millisecond, queue.CloseAndWait,
+			manager.StopAgentsForQuit, func(context.Context) error { return nil })
+	}()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("quit = %v, want usage deadline", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("usage recorder kept desktop quit blocked")
+	}
+	select {
+	case <-queue.Done():
+		t.Fatal("fixture unexpectedly released the recorder")
+	case <-recordCtx.Done():
+	case <-ctx.Done():
+		t.Fatal("drain timeout did not cancel collector context")
+	}
+	current, found, err := st.GetSession(ctx, rec.ID)
+	if err != nil || !found || current.Activity.State != domain.ActivityExited {
+		t.Fatalf("session after quit: state=%s found=%v err=%v", current.Activity.State, found, err)
+	}
+	var entry struct {
+		Message  string                   `json:"msg"`
+		Pending  int                      `json:"pending_events"`
+		Sessions map[domain.SessionID]int `json:"pending_by_session"`
+	}
+	if err := json.NewDecoder(&logs).Decode(&entry); err != nil || entry.Message != "usage hook drain incomplete" || entry.Pending != 2 || entry.Sessions[rec.ID] != 2 {
+		t.Fatalf("incomplete drain diagnostic = %+v, err=%v", entry, err)
 	}
 }

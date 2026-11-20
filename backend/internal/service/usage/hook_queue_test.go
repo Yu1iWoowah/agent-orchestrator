@@ -189,7 +189,7 @@ func TestHookQueueDrainsAcceptedSignalsOnCancellation(t *testing.T) {
 	}
 
 	joined := make(chan error, 1)
-	go func() { joined <- queue.CloseAndWait() }()
+	go func() { joined <- queue.CloseAndWait(testCtx) }()
 	finalizeCtx, cancelFinalize := context.WithTimeout(testCtx, 50*time.Millisecond)
 	defer cancelFinalize()
 	if err := queue.FinalizeSession(finalizeCtx, "s-1", "launch-1", 7); !errors.Is(err, context.DeadlineExceeded) {
