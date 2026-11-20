@@ -14,13 +14,13 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/caller"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
-	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
+	"github.com/aoagents/agent-orchestrator/backend/internal/daemonprobe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 )
 
 // NewDaemonClient calls the daemon the run file names, as the ao CLI does.
 func NewDaemonClient() Daemon {
-	return daemonClient{http: &http.Client{Timeout: 2 * time.Minute}}
+	return daemonClient{http: daemonprobe.Client(&http.Client{}, 2*time.Minute)}
 }
 
 type daemonClient struct{ http *http.Client }
@@ -42,8 +42,25 @@ func (d daemonClient) do(ctx context.Context, method, path string, body, out any
 	if err != nil {
 		return err
 	}
-	if info == nil || !processalive.Alive(info.PID) {
+	if info == nil {
 		return errors.New("the Orchestrator daemon is not running")
+	}
+	if info.PID <= 0 || info.Port <= 0 || info.Port > 65535 {
+		return errors.New("invalid daemon run-file: pid must be positive and port must be between 1 and 65535")
+	}
+	for _, probe := range []struct{ path, want string }{{"healthz", "ok"}, {"readyz", "ready"}} {
+		probeCtx, cancel := context.WithTimeout(ctx, daemonprobe.Timeout)
+		response, err := daemonprobe.Read(probeCtx, d.http, info.Port, probe.path)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if err := daemonprobe.VerifyOwner(response, info.PID, probe.path); err != nil {
+			return err
+		}
+		if response.Status != probe.want {
+			return fmt.Errorf("%s: status %q", probe.path, response.Status)
+		}
 	}
 	var reader io.Reader = http.NoBody
 	if body != nil {

@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 )
 
@@ -55,6 +57,24 @@ type previewCapture struct {
 
 func newFixtureServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
+	return newProbeFixture(t, handler, os.Getpid(), "ready")
+}
+
+func newProbeFixture(t *testing.T, handler http.Handler, pid int, ready string) *httptest.Server {
+	t.Helper()
+	next := handler
+	handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		status := "ok"
+		switch r.URL.Path {
+		case "/healthz":
+		case "/readyz":
+			status = ready
+		default:
+			next.ServeHTTP(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"service": daemonmeta.ServiceName, "status": status, "pid": pid})
+	})
 	srv := httptest.NewUnstartedServer(handler)
 	host, port, err := net.SplitHostPort(srv.Listener.Addr().String())
 	if err != nil || host != "127.0.0.1" || port == "3001" {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
+	"github.com/aoagents/agent-orchestrator/backend/internal/daemonprobe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 )
 
@@ -270,7 +271,7 @@ func TestOversizedHealthzBodyIsRejected(t *testing.T) {
 			return
 		}
 		_, _ = fmt.Fprintf(w, `{"status":"ok","service":%q,"pid":%d,"pad":"%s"}`,
-			daemonmeta.ServiceName, hiddenDaemonPID, strings.Repeat("x", maxProbeBody))
+			daemonmeta.ServiceName, hiddenDaemonPID, strings.Repeat("x", daemonprobe.MaxBody))
 	}))
 	t.Cleanup(srv.Close)
 	if err := runfile.Write(cfg.runFile, runfile.Info{

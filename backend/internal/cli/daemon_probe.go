@@ -2,32 +2,19 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
+	"github.com/aoagents/agent-orchestrator/backend/internal/daemonprobe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 )
 
 // daemonHTTPClient applies the connection policy only to ordinary HTTP calls.
 // In particular, stop retains the injected client's shutdown policy.
 func (c *commandContext) daemonHTTPClient(timeout time.Duration) *http.Client {
-	client := *c.deps.HTTPClient
-	transport := client.Transport
-	if transport == nil {
-		transport = http.DefaultTransport
-	}
-	if transport, ok := transport.(*http.Transport); ok {
-		local := transport.Clone()
-		local.Proxy = nil
-		client.Transport = local
-	}
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	client.Timeout = timeout
-	return &client
+	return daemonprobe.Client(c.deps.HTTPClient, timeout)
 }
 
 // inspectDaemonConnection observes HTTP identity and readiness without using
@@ -56,12 +43,12 @@ func (c *commandContext) inspectDaemonConnection(ctx context.Context) (daemonSta
 	if transport, ok := client.Transport.(*http.Transport); ok {
 		defer transport.CloseIdleConnections()
 	}
-	health, err := readConnectionProbe(ctx, client, info.Port, "healthz")
+	health, err := daemonprobe.Read(ctx, client, info.Port, "healthz")
 	if err != nil {
 		st.State, st.Error, st.probeErr = stateUnhealthy, err.Error(), err
 		return st, nil
 	}
-	if err := verifyProbeOwner(health, info.PID, "healthz"); err != nil {
+	if err := daemonprobe.VerifyOwner(health, info.PID, "healthz"); err != nil {
 		st.State, st.Error, st.probeErr = stateStale, err.Error(), err
 		return st, nil
 	}
@@ -70,12 +57,12 @@ func (c *commandContext) inspectDaemonConnection(ctx context.Context) (daemonSta
 		st.State, st.Error = stateUnhealthy, fmt.Sprintf("healthz: status %q", health.Status)
 		return st, nil
 	}
-	ready, err := readConnectionProbe(ctx, client, info.Port, "readyz")
+	ready, err := daemonprobe.Read(ctx, client, info.Port, "readyz")
 	if err != nil {
 		st.State, st.Error, st.probeErr = stateNotReady, err.Error(), err
 		return st, nil
 	}
-	if err := verifyProbeOwner(ready, info.PID, "readyz"); err != nil {
+	if err := daemonprobe.VerifyOwner(ready, info.PID, "readyz"); err != nil {
 		st.State, st.Error, st.probeErr = stateStale, err.Error(), err
 		return st, nil
 	}
@@ -86,37 +73,4 @@ func (c *commandContext) inspectDaemonConnection(ctx context.Context) (daemonSta
 	}
 	st.State = stateReady
 	return st, nil
-}
-
-func readConnectionProbe(ctx context.Context, client *http.Client, port int, path string) (probeResult, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d/%s", config.LoopbackHost, port, path), http.NoBody)
-	if err != nil {
-		return probeResult{}, err
-	}
-	resp, err := client.Do(req) // #nosec G704 -- the host is fixed loopback and the port was validated from the run-file.
-	if err != nil {
-		return probeResult{}, fmt.Errorf("%s: %w", path, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return probeResult{}, fmt.Errorf("%s: HTTP %d", path, resp.StatusCode)
-	}
-	var body probeResult
-	bodyReader := &io.LimitedReader{R: resp.Body, N: maxProbeBody + 1}
-	decoder := json.NewDecoder(bodyReader)
-	if err := decoder.Decode(&body); err != nil {
-		return probeResult{}, fmt.Errorf("%s: decode response: %w", path, err)
-	}
-	if err := decoder.Decode(new(any)); err == nil {
-		return probeResult{}, fmt.Errorf("%s: expected one JSON response", path)
-	} else if err != io.EOF {
-		return probeResult{}, fmt.Errorf("%s: decode response: %w", path, err)
-	}
-	if bodyReader.N == 0 {
-		return probeResult{}, fmt.Errorf("%s: response exceeds %d bytes", path, maxProbeBody)
-	}
-	if body.Status == "" {
-		return probeResult{}, fmt.Errorf("%s: missing status", path)
-	}
-	return body, nil
 }
