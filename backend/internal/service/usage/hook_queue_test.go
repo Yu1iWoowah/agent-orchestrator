@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"testing"
@@ -12,12 +13,26 @@ import (
 
 type blockingHookRecorder struct {
 	release chan struct{}
+	entered chan struct{}
 	mu      sync.Mutex
 	events  []string
 }
 
-func (r *blockingHookRecorder) RecordHook(_ context.Context, _ domain.SessionID, signal HookSignal) error {
-	<-r.release
+func (r *blockingHookRecorder) RecordHook(ctx context.Context, _ domain.SessionID, signal HookSignal) error {
+	if r.entered != nil {
+		select {
+		case r.entered <- struct{}{}:
+		default:
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-r.release:
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	r.events = append(r.events, signal.Event)
 	r.mu.Unlock()
@@ -138,5 +153,70 @@ func TestHookQueueFinalizeDoesNotWaitAfterRunStops(t *testing.T) {
 	}
 	if got, want := recorder.recorded(), []string{"finalize"}; !slices.Equal(got, want) {
 		t.Fatalf("recorded %v, want %v", got, want)
+	}
+}
+
+func TestHookQueueDrainsAcceptedSignalsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	recorder := &blockingHookRecorder{release: make(chan struct{}), entered: make(chan struct{}, 1)}
+	release := sync.OnceFunc(func() { close(recorder.release) })
+	defer release()
+	queue := NewHookQueue(recorder, nil)
+	go queue.Run(ctx)
+
+	testCtx, endTest := context.WithTimeout(t.Context(), 5*time.Second)
+	defer endTest()
+	if err := queue.RecordHook(testCtx, "s-1", HookSignal{Event: "session-start"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-recorder.entered:
+	case <-testCtx.Done():
+		t.Fatal("recorder did not start")
+	}
+	if err := queue.RecordHook(testCtx, "s-1", HookSignal{Event: "subagent-stop", ProviderHint: "anthropic", SubagentTranscriptPath: "subagent.jsonl"}); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case <-queue.closing:
+	case <-testCtx.Done():
+		t.Fatal("cancellation did not close admission while the recorder was blocked")
+	}
+	if err := queue.RecordHook(testCtx, "s-1", HookSignal{Event: "late"}); !errors.Is(err, ErrHookQueueClosing) {
+		t.Fatalf("late RecordHook error = %v, want %v", err, ErrHookQueueClosing)
+	}
+
+	joined := make(chan error, 1)
+	go func() { joined <- queue.CloseAndWait() }()
+	finalizeCtx, cancelFinalize := context.WithTimeout(testCtx, 50*time.Millisecond)
+	defer cancelFinalize()
+	if err := queue.FinalizeSession(finalizeCtx, "s-1", "launch-1", 7); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("FinalizeSession before drain = %v, want deadline exceeded", err)
+	}
+	select {
+	case err := <-joined:
+		t.Fatalf("worker joined before drain: %v", err)
+	default:
+	}
+
+	release()
+	select {
+	case err := <-joined:
+		if err != nil {
+			t.Fatalf("CloseAndWait: %v", err)
+		}
+	case <-testCtx.Done():
+		t.Fatal("worker did not join after the recorder was released")
+	}
+	if err := queue.FinalizeSession(testCtx, "s-1", "launch-1", 7); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := recorder.recorded(), []string{"session-start", "subagent-stop", "finalize"}; !slices.Equal(got, want) {
+		t.Fatalf("recorded %v, want %v", got, want)
+	}
+	if err := queue.RecordHook(testCtx, "s-1", HookSignal{Event: "late"}); !errors.Is(err, ErrHookQueueClosing) {
+		t.Fatalf("RecordHook after drain error = %v, want %v", err, ErrHookQueueClosing)
 	}
 }

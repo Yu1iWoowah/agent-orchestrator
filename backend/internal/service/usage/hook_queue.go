@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -14,9 +15,20 @@ import (
 type HookQueue struct {
 	next    hookRecorder
 	signals chan queuedHookSignal
+	closing chan struct{}
 	stopped chan struct{}
 	log     *slog.Logger
+
+	closeOnce sync.Once
+	senders   sync.RWMutex
+	drained   bool // Published by closing stopped.
 }
+
+var (
+	// ErrHookQueueClosing means the signal was not accepted.
+	ErrHookQueueClosing   = errors.New("usage hook queue is closing")
+	errHookQueueUndrained = errors.New("usage hook worker stopped before draining")
+)
 
 type hookRecorder interface {
 	RecordHook(ctx context.Context, id domain.SessionID, signal HookSignal) error
@@ -42,6 +54,7 @@ func NewHookQueue(next hookRecorder, log *slog.Logger) *HookQueue {
 	return &HookQueue{
 		next:    next,
 		signals: make(chan queuedHookSignal, hookQueueSize),
+		closing: make(chan struct{}),
 		stopped: make(chan struct{}),
 		log:     log,
 	}
@@ -50,12 +63,47 @@ func NewHookQueue(next hookRecorder, log *slog.Logger) *HookQueue {
 // RecordHook queues the signal. A full queue makes the caller wait for space
 // rather than record out of order.
 func (q *HookQueue) RecordHook(ctx context.Context, id domain.SessionID, signal HookSignal) error {
+	return q.enqueue(ctx, queuedHookSignal{id: id, signal: signal})
+}
+
+func (q *HookQueue) enqueue(ctx context.Context, item queuedHookSignal) error {
+	q.senders.RLock()
+	defer q.senders.RUnlock()
 	select {
-	case q.signals <- queuedHookSignal{id: id, signal: signal}:
+	case <-q.closing:
+		return ErrHookQueueClosing
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	select {
+	case q.signals <- item:
 		return nil
+	case <-q.closing:
+		return ErrHookQueueClosing
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func (q *HookQueue) closeAdmission() {
+	q.closeOnce.Do(func() {
+		// Wake callers waiting for space before taking the sender lock.
+		close(q.closing)
+		q.senders.Lock()
+		close(q.signals)
+		q.senders.Unlock()
+	})
+}
+
+// CloseAndWait stops admission and joins Run before its recorder is closed.
+func (q *HookQueue) CloseAndWait() error {
+	q.closeAdmission()
+	<-q.stopped
+	if !q.drained {
+		return errHookQueueUndrained
+	}
+	return nil
 }
 
 // FinalizeSession records every signal queued before it, then finalizes. The
@@ -68,15 +116,19 @@ func (q *HookQueue) FinalizeSession(
 	expectedSessionRevision int64,
 ) error {
 	flushed := make(chan struct{})
-	select {
-	case q.signals <- queuedHookSignal{flushed: flushed}:
-		select {
-		case <-flushed:
-		case <-q.stopped:
-		case <-ctx.Done():
-			return ctx.Err()
+	if err := q.enqueue(ctx, queuedHookSignal{flushed: flushed}); err != nil {
+		if !errors.Is(err, ErrHookQueueClosing) {
+			return err
 		}
+		// The worker must drain everything it accepted before finalization.
+		flushed = nil
+	}
+	select {
+	case <-flushed:
 	case <-q.stopped:
+		if !q.drained {
+			return errHookQueueUndrained
+		}
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -89,22 +141,25 @@ func (q *HookQueue) ReactivateSession(ctx context.Context, id domain.SessionID, 
 	return q.next.ReactivateSession(ctx, id, expectedRuntimeLaunchID)
 }
 
-// Run records queued signals one at a time until ctx is done.
+// Run records queued signals in order. Cancellation closes admission even
+// while a recording is in flight, and all accepted signals are drained.
 func (q *HookQueue) Run(ctx context.Context) {
 	defer close(q.stopped)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case item := <-q.signals:
-			if item.flushed != nil {
-				close(item.flushed)
-				continue
-			}
-			err := q.next.RecordHook(ctx, item.id, item.signal)
-			if err != nil && ctx.Err() == nil && !errors.Is(err, ErrUsageSessionNotFound) {
-				q.log.Warn("usage hook processing failed", "session", item.id, "event", item.signal.Event, "err", err)
-			}
+	defer q.closeAdmission()
+	stopWatching := context.AfterFunc(ctx, q.closeAdmission)
+	defer stopWatching()
+
+	// A hook has already been acknowledged when it reaches the recorder.
+	// Shutdown must also let the recording in progress finish.
+	recordCtx := context.WithoutCancel(ctx)
+	for item := range q.signals {
+		if item.flushed != nil {
+			close(item.flushed)
+			continue
+		}
+		if err := q.next.RecordHook(recordCtx, item.id, item.signal); err != nil && !errors.Is(err, ErrUsageSessionNotFound) {
+			q.log.Warn("usage hook processing failed", "session", item.id, "event", item.signal.Event, "err", err)
 		}
 	}
+	q.drained = true
 }

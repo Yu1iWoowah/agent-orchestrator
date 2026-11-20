@@ -2594,6 +2594,11 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 				envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "SESSION_NOT_FOUND", "Unknown session", nil)
 				return
 			}
+			if errors.Is(err, usagesvc.ErrHookQueueClosing) {
+				w.Header().Set("Retry-After", "1")
+				envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "USAGE_HOOK_QUEUE_CLOSING", "Usage hook queue is closing; retry the hook", nil)
+				return
+			}
 			slog.Default().Warn(
 				"usage hook processing failed",
 				"session", sessionID(r),

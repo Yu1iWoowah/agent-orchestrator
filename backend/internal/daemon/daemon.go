@@ -1260,6 +1260,12 @@ func Run(buildVersion string) (retErr error) {
 			defer sentryobs.RecoverBackground()
 			usageHookQueue.Run(ctx)
 		}()
+		// Join the queue before the store closes, including on startup failure.
+		defer func() {
+			if err := usageHookQueue.CloseAndWait(); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
+		}()
 		lcStack.LCM.SetUsageFinalizer(usageHookQueue)
 		if wired, ok := sessMgr.(interface {
 			SetBackgroundTaskUsage(sessionmanager.BackgroundTaskUsage)
