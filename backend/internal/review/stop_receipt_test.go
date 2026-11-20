@@ -361,6 +361,94 @@ func TestReviewerStopProcessFixture(t *testing.T) {
 	}
 }
 
+func TestReviewerStopKeepsOwnerWithoutOriginalLaunchProof(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		restart bool
+		roots   []int
+	}{
+		{name: "local pane already gone"},
+		{name: "boot with pane already gone", restart: true},
+		{name: "boot can still read old roots", restart: true, roots: []int{101}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			root := t.TempDir()
+			store, err := sqlite.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+
+			worker := liveWorker()
+			seedReviewWorker(t, store, worker)
+			now := time.Now().UTC()
+			s := lifecycleEngine{store: store, worker: worker, now: &now, ids: new(int)}
+			cfg := RunLifecycleConfig{}
+			s.restart(t, &fakeLauncher{handle: "review-mer-1", alive: true}, cfg)
+			run := s.trigger(t)
+			review := s.review(t)
+			account := domain.AgentAccount{ID: "missing-stop-source", Provider: domain.AgentAccountProviderClaude, Home: t.TempDir(), CreatedAt: now}
+			if err := store.CreateAgentAccount(ctx, account); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.BindReviewerAgentAccount(ctx, review.ID, domain.ResolvedAgentAccount{
+				AccountID: account.ID, Provider: account.Provider, Source: domain.AgentAccountSourceRole,
+			}, now); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Cancel(ctx, worker.ID); err != nil {
+				t.Fatal(err)
+			}
+			wantRun(t, s.run(t, run.ID), domain.ReviewRunCancelling, "")
+			if pending, err := store.HasReviewerStop(ctx, stopKey(review)); err != nil || pending {
+				t.Fatalf("test must start with no stop receipt: %v (%v)", pending, err)
+			}
+
+			if tc.restart {
+				if err = store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				reopened, err := sqlite.Open(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				store, s.store = reopened, reopened
+				s.advance(time.Second)
+				s.restartBeforeBoot(t, &fakeLauncher{}, cfg)
+			}
+			table := newScriptedTable("202 1 100 0:00 detached-tool")
+			if len(tc.roots) != 0 {
+				table = newScriptedTable("101 1 100 0:00 pane", "202 101 100 0:00 attached-tool")
+			}
+			// The local force-stop path can discover that roots are absent
+			// after the earlier liveness probe. The boot path sees the old
+			// supervisor gone even when a pane root is still readable.
+			rt := &rootedRuntime{fakeRuntime: &fakeRuntime{alive: !tc.restart, supervisedRecord: true}, roots: tc.roots}
+			launcher := receiptTestLauncher(root, rt, table, "")
+			launcher.forceStop.comparisonScope = func() (string, string) { return "", "" }
+			s.launcher = launcher
+			s.advance(DefaultRunLifecycleConfig().CancelTimeout)
+			s.pass(t)
+			s.pass(t)
+
+			receipts, err := store.ListReviewerStopReceipts(ctx)
+			if err != nil || len(receipts) != 1 || receipts[0].ReviewerStopKey != stopKey(review) ||
+				receipts[0].State != domain.ReviewerStopUnknown {
+				t.Fatalf("expected an unknown receipt for the exact launch: %+v (%v)", receipts, err)
+			}
+			if _, alive := table.processes[202]; !alive || len(table.killed) != 0 || len(table.frozen) != 0 || rt.destroyed != "" {
+				t.Fatal("the unproven launch was stopped or its runtime was destroyed")
+			}
+			manager := sessionmanager.New(sessionmanager.Deps{Store: store})
+			manager.SetReviewerTerminator(accountTestReviewer{s.Engine})
+			accounts := agentaccounts.New(store, []ports.AgentAccountProviderCLI{accountTestProvider{}}, root, nil, nil)
+			accounts.SetUsageOwners(manager.AccountUsageOwners)
+			assertStopOwner(t, store, accounts, account.ID, review.ID)
+		})
+	}
+}
+
 func TestReviewerStopWithDefaultHooksAndNoRecoveryScope(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

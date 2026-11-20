@@ -100,6 +100,7 @@ type suspendGap struct {
 }
 
 type runLifecycleState struct {
+	localLaunches map[string]LaunchResult         // successful launches keyed by review ID
 	localStopKeys map[domain.ReviewerStopKey]bool // value is same-daemon stop confirmation awaiting SQLite settlement
 	config        RunLifecycleConfig
 
@@ -1149,7 +1150,7 @@ func (e *Engine) sweepSessionLocked(ctx stdctx.Context, workerID domain.SessionI
 				continue
 			}
 			if _, exists := receipts[review.ID]; !exists {
-				receipt, err := e.recordReviewerStop(ctx, store, launcher, review)
+				receipt, err := launcher.recordReviewerStop(ctx, store, review)
 				if err != nil {
 					writeFailed[review.ID] = true
 					errs = append(errs, err)

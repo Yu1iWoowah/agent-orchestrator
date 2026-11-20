@@ -134,11 +134,34 @@ func durableProcesses(tree []capturedProcess) []domain.ReviewerStopProcess {
 	return out
 }
 
+func (e *Engine) rememberLocalReviewerLaunch(reviewID string, launch LaunchResult) {
+	if launch.LaunchID == "" || launch.HandleID == "" {
+		return
+	}
+	e.runs.mu.Lock()
+	defer e.runs.mu.Unlock()
+	if e.runs.localLaunches == nil {
+		e.runs.localLaunches = make(map[string]LaunchResult)
+	}
+	e.runs.localLaunches[reviewID] = launch
+}
+
 func (e *Engine) beginDurableReviewerStop(ctx context.Context, store reviewerStopStore, launcher *agentLauncher, review domain.Review) (bool, error) {
-	receipt, err := e.recordReviewerStop(ctx, store, launcher, review)
+	receipt, err := launcher.recordReviewerStop(ctx, store, review)
 	if err != nil {
 		return false, err
 	}
+	// A receipt can be created long after its reviewer launched. Writing it
+	// cannot grant permission to stop a launch inherited from another daemon.
+	e.runs.mu.Lock()
+	launch, local := e.runs.localLaunches[receipt.ReviewID]
+	if local && launch.LaunchID == receipt.LaunchID && launch.HandleID == receipt.HandleID {
+		if e.runs.localStopKeys == nil {
+			e.runs.localStopKeys = make(map[domain.ReviewerStopKey]bool)
+		}
+		e.runs.localStopKeys[receipt.ReviewerStopKey] = false
+	}
+	e.runs.mu.Unlock()
 	// An unavailable initial probe with a known scope can be retried next
 	// pass. It must not enter the same-daemon fallback for an absent scope.
 	if receipt.State == domain.ReviewerStopUnknown && hasReviewerRecoveryScope(receipt) {
@@ -147,17 +170,11 @@ func (e *Engine) beginDurableReviewerStop(ctx context.Context, store reviewerSto
 	return true, e.advanceReviewerStop(ctx, store, launcher, receipt)
 }
 
-func (e *Engine) recordReviewerStop(ctx context.Context, store reviewerStopStore, launcher *agentLauncher, review domain.Review) (domain.ReviewerStopReceipt, error) {
-	receipt := launcher.captureStopReceipt(ctx, review)
+func (l *agentLauncher) recordReviewerStop(ctx context.Context, store reviewerStopStore, review domain.Review) (domain.ReviewerStopReceipt, error) {
+	receipt := l.captureStopReceipt(ctx, review)
 	if err := store.BeginReviewerStop(ctx, receipt); err != nil {
 		return receipt, err
 	}
-	e.runs.mu.Lock()
-	if e.runs.localStopKeys == nil {
-		e.runs.localStopKeys = make(map[domain.ReviewerStopKey]bool)
-	}
-	e.runs.localStopKeys[receipt.ReviewerStopKey] = false
-	e.runs.mu.Unlock()
 	return receipt, nil
 }
 

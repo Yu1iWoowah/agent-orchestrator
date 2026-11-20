@@ -949,6 +949,7 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		if launch.LaunchID != "" {
 			reviewRow.ReviewerLaunchID = launch.LaunchID
 		}
+		e.rememberLocalReviewerLaunch(reviewRow.ID, launch)
 		if launch.AgentSessionID != "" {
 			persistedAgentSessionID = launch.AgentSessionID
 		}
@@ -1709,6 +1710,7 @@ func (e *Engine) restoreReviewerLocked(
 		}
 		return RestoreReviewerResult{}, restoreErr
 	}
+	e.rememberLocalReviewerLaunch(reviewRow.ID, launch)
 	if !launch.NativeResumed {
 		reason := errors.New("reviewer native conversation was unavailable during restore; retry the review")
 		if err := e.failRuns(ctx, previousRuns, domain.ReviewFailureProcessExited, reason); err != nil {

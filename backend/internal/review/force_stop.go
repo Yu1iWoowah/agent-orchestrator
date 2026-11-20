@@ -147,6 +147,10 @@ func (l *agentLauncher) forceStopTerminal(ctx context.Context, handleID string, 
 		return false, fmt.Errorf("capture reviewer process tree: %w", captureErr)
 	}
 	tree = mergeCaptured(previous, tree)
+	if len(tree) == 0 && hooks.record != nil {
+		// An absent pane provides no lineage for the durable receipt.
+		return false, nil
+	}
 	if hooks.freeze != nil {
 		// The reviewer keeps running between the capture and its teardown and
 		// may spawn a tool there, possibly in its own session. Once its
