@@ -1950,20 +1950,15 @@ func Run(buildVersion string) (retErr error) {
 	drainUsage := closeUsageHooks
 	closeUsageHooks = nil
 	if srv.StopAgentsRequested() {
-		if err := stopDesktopControllers(max(cfg.ShutdownTimeout, 30*time.Second), cfg.ShutdownTimeout, drainUsage, sessMgr.StopAgentsForQuit, chatSvc.TerminateAll); err != nil {
+		if err := stopControllersAfterUsageDrain(max(cfg.ShutdownTimeout, 30*time.Second), cfg.ShutdownTimeout, drainUsage, sessMgr.StopAgentsForQuit, chatSvc.TerminateAll); err != nil {
 			log.Error("desktop quit controller shutdown", "err", err)
 			runErr = errors.Join(runErr, err)
 		}
 	} else {
-		chatStopCtx, chatCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		if drainUsage != nil {
-			runErr = errors.Join(runErr, drainUsage(chatStopCtx))
-		}
-		if err := chatSvc.StopAll(chatStopCtx); err != nil {
-			log.Error("chat shutdown not settled; original providers retained", "error", err)
+		if err := stopControllersAfterUsageDrain(cfg.ShutdownTimeout, cfg.ShutdownTimeout, drainUsage, chatSvc.StopAll); err != nil {
+			log.Error("daemon replacement controller shutdown", "error", err)
 			runErr = errors.Join(runErr, err)
 		}
-		chatCancel()
 	}
 	if usageDone != nil {
 		<-usageDone
@@ -1998,20 +1993,30 @@ func Run(buildVersion string) (retErr error) {
 	return runErr
 }
 
-func stopDesktopControllers(timeout, drainTimeout time.Duration, drainUsage, stopAgents, stopChats func(context.Context) error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	// ExitAgent commits ActivityExited. The collector rejects ordinary hooks
-	// for exited sessions. Drain first, within the existing shutdown budget.
-	var usageErr error
-	if drainUsage != nil {
-		drainCtx, cancelDrain := context.WithTimeout(ctx, drainTimeout)
-		if err := drainUsage(drainCtx); err != nil {
-			usageErr = fmt.Errorf("drain usage hooks before desktop quit: %w", err)
-		}
-		cancelDrain()
+func stopControllersAfterUsageDrain(timeout, drainLimit time.Duration, drainUsage func(context.Context) error, stops ...func(context.Context) error) error {
+	remaining := timeout
+	runStep := func(budget time.Duration, step func(context.Context) error) error {
+		started := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		defer cancel()
+		err := step(ctx)
+		remaining -= min(time.Since(started), budget)
+		return err
 	}
-	return errors.Join(usageErr, stopAgents(ctx), stopChats(ctx))
+	// ExitAgent commits ActivityExited. The collector rejects ordinary hooks
+	// for exited sessions. Drain first and reserve half the budget for stops.
+	var shutdownErr error
+	if drainUsage != nil {
+		if err := runStep(min(drainLimit, timeout/2), drainUsage); err != nil {
+			shutdownErr = fmt.Errorf("drain usage hooks before stopping controllers: %w", err)
+		}
+	}
+	for index, stop := range stops {
+		// Give every stop its own live deadline, including when an earlier stop
+		// exhausts its share. An early return leaves the unused time available.
+		shutdownErr = errors.Join(shutdownErr, runStep(remaining/time.Duration(len(stops)-index), stop))
+	}
+	return shutdownErr
 }
 
 func telemetryAppVersion(configured, buildVersion string) string {
