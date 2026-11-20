@@ -4,17 +4,19 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || format('{0}-{1}', github.event_name, github.ref) }}
+  # Title/body edits and retargets handled by the legacy workflow must not cancel CI.
+  group: ci-${{ (github.event.action != 'edited' || (github.event.changes.base && github.base_ref == 'ao/upsync2-design/upsync2-integration' && github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && (github.event.pull_request.number || format('{0}-{1}', github.event_name, github.ref)) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
+    if: github.event.action != 'edited' || (github.event.changes.base && github.base_ref == 'ao/upsync2-design/upsync2-integration' && github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -27,6 +29,20 @@ jobs:
       vitest: ${{ steps.pick.outputs.vitest }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify the integration merge commit
+        if: github.event_name == 'pull_request' && github.base_ref == 'ao/upsync2-design/upsync2-integration' && !github.event.pull_request.draft
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          test "$GITHUB_REF" = "refs/pull/$PR/merge"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          parents=$(git cat-file commit HEAD | sed -n '/^$/q; s/^parent //p')
+          test "$parents" = "$(printf '%s\n%s' "$BASE_SHA" "$HEAD_SHA")"
+          git show -s --format='merge=%H tree=%T parents=%P' HEAD
 
       - name: Pick lanes
         id: pick
@@ -78,7 +94,8 @@ jobs:
         run: node --test scripts/ci-lanes.test.mjs scripts/ci-sharding.test.mjs scripts/create-migration.test.mjs
 
   ci-ok:
-    if: always()
+    name: ${{ needs.changes.result == 'skipped' && 'CI eligibility' || 'ci-ok' }}
+    if: always() && needs.changes.result != 'skipped'
     needs: [changes, go, cli-e2e, frontend, mobile, config]
     runs-on: ubuntu-latest
     timeout-minutes: 5

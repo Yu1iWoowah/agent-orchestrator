@@ -208,3 +208,54 @@ revision、版本、檔案 SHA256 與 updater 目標；`AO_RELEASE_REPO` 限定�
 一致備份、校驗包、安裝、核版本與 schema、恢復工作。u3 的「只換程式回滾」
 不適用：PR1 引入的 table rebuild 與資料變更使 schema 無法倒退，
 回滾要依上方「Rollback 與換版」成對還原程式與備份資料。
+
+## UPSYNC2 A 段
+
+整合分支 `ao/upsync2-design/upsync2-integration` 從 fork 的
+`3beedae6eff6ea2299f2345a41a87b6fa7312658`（F）開始。A 的合併 commit 以 F 為第一親、
+上游 `fc15acf55a68d530a4b71b5ee357ffd8a6ad36a8`（U）為第二親，涵蓋共同祖先
+`53a545ad20fcd300c7c989f175f9a5c5d90fe58e` 之後 U 的 150 個 commit。
+保留雙親能讓後續同步以真實的共同祖先計算差異。
+
+### 保留與後續接點
+
+| 下一段 | A 段保留的行為與路徑 |
+|---|---|
+| B | 284 份 F migration 與既有 goose、query、sqlc 和 SQLite store。Reviewer／report、帳號占用、側終端、新 harness、PR 歷史列表及 preview poller 仍走 F 的 schema 與 caller。18 份新 SQL 與其呼叫端在 B 一起啟用。 |
+| C | 保留 `ao chat-host`、`ao mcp` 以及原 build、bundle 與啟動路徑。Provider switch 的直接 HTTP／CLI 入口與 force 留待 C 的 replacement 准入驗證。沿用 fork 的 turn receipt、恢復與停止語意，以及工作樹擁有權檢查。 |
+| D | 保留 desktop 的 early supervisor、Cloud 公開分享、project 顯式儲存、remote 改位址及帳號身分規則。會觸及這些邊界的 IPC、上傳、mobile 和 renderer caller 跟隨各功能閉包。 |
+| E | 保留 fork 文件、專案 Setup、`predev` 及既有版號。`dev:warm` 連同 fork 本機模組的快取輸入在 E 接入。 |
+
+CLI 仍走 daemon HTTP，Cloud、HCG 與 `go.work` 保留 fork 原來源。LAN 保留整個
+帳號 API prefix 的封鎖，以及原 loopback 與 LAN auth 邊界。Conductor 的 skill
+和說明頁維持刪除，先前排除的 offline triage 仍維持原裁決。
+
+### CI 與差異審查
+
+新整合分支的 ready PR 使用全量 lane。同一 fork 的 ready PR 改到此 base 時，
+由新的 `pull_request.edited` 事件執行 CI。Changes job 核對 merge ref、checkout SHA、
+事件的 base 和 head 父節點，並印出 tree。原本的 retarget workflow 繼續處理
+`main` 與前一輪的整合分支。
+
+- 用 `git diff -M F A` 核對 A 的實際影響，用 `git diff -M U A` 找 fork 保留及後段處置。
+- 用 `git ls-tree -r` 比對各路徑的 mode 和 blob。A 與 U 一致且和 F 有差異的路徑，
+  由 Git 清單記錄一次。rename 與刪除沿 `git diff -M --name-status` 記錄。
+- A 的實作報告附原始衝突裁決與差異清單。後續以 `git diff -M A <head>` 核對，
+  追加變動的處置和證據。
+
+### A 段第一層審查處置
+
+| PR #134 thread | A 段處置 | 後段驗收 |
+|---|---|---|
+| `PRRT_kwDOVZZGR8652AK2` | 設定各語系與 CLI 文件恢復 F 的刪除語意。封存自動清理目前會刪除 artifact 檔。 | B 一起接入封存保留、CLI／HTTP 參數、儲存與測試，再更新使用者文案。 |
+| `PRRT_kwDOVZZGR8652AK7` | 恢復 F 的 Kimi hooks 與 lifecycle。撤回 `1a5d2647` 已匯入的 callback、reducer 及對應測試。 | C 接入同一提交的 CLI scoped approval identity、真實 payload 的 CLI→HTTP 測試與 reducer。 |
+| `PRRT_kwDOVZZGR8652ALA` | 把逐 harness 的驗證錯誤傳給共用 `describeHarness`。父元件測試實際觸發 Check again，驗 Health、Account 與成功重試。 | A 驗證。 |
+| `PRRT_kwDOVZZGR8652ALF` | 恢復 F 的 minimap E2E，配對 A 現有 inspector 行為。 | D 將按 chat 寬度顯示的實作與 E2E 一起接入。 |
+
+### A 段 audit 處置
+
+| 發現 | A 段處置 | 驗收 |
+|---|---|---|
+| I1 | `ed765f56bb` 的 23 條路徑恢復 F，包括 TLS 表單、解析器、新增／編輯呼叫端與測試。 | D.02 一起接入位址推導 TLS、wire 與呼叫端驗收。 |
+| I2 | 撤回 `4b5d3d3f80` 的九條手勢路徑。ChatMarkdown 已維持 F，ChatTimelineItems 的手勢 hunk 也已維持 F，保留 A 的時間格式匯出。 | D.01 一起接入 #8709 的 wheel ownership、通知、圖片、程式碼、表格與 timeline 呼叫端。 |
+| I3 | 舊 retarget 由同一 head 選取實際執行 `changes` 的 run。 | 雙 run fixture 核對略過新 skipped run。新整合分支以 fresh merge ref 驗收。 |

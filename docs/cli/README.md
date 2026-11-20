@@ -93,6 +93,7 @@ without a terminal runs it in the background and reads its output; see
 | `ao spawn`                          | Targeted launch ensure, then `POST /api/v1/sessions` |
 | `ao session ls`                     | `GET /api/v1/sessions` plus per-session PR summaries; shows branch, PR, CI, review, unresolved threads, activity, and age. |
 | `ao session get <id>`               | `GET /api/v1/sessions/{id}`. `--transcript N` also reads `GET /api/v1/sessions/{id}/conversation` for chat sessions on the local daemon. |
+| `ao session interrupt <id>`         | `POST /api/v1/sessions/{id}/conversation/interrupt` |
 | `ao session kill <id>`              | `POST /api/v1/sessions/{id}/kill`              |
 | `ao session restore <id>`           | `POST /api/v1/sessions/{id}/restore`           |
 | `ao session exit-agent <id>`        | `POST /api/v1/sessions/{id}/exit-agent`        |
@@ -104,6 +105,7 @@ without a terminal runs it in the background and reads its output; see
 | `ao pr merge <pr-number> --pr-url <url> --expected-head <sha>` | `POST /api/v1/prs/{id}/merge` |
 
 | `ao session fork <id> [--check]` | `POST /api/v1/sessions/{id}/fork`             |
+| `ao session switch <id> [agent]` / `--from <agent> [agent]` `[--model <m>] [--effort <e>] [--permission <p>] [--force] [-m <text>]` | `--from` lists via `GET /api/v1/sessions?active=true`; each switch is `POST /api/v1/sessions/{id}/provider-switch`, then `POST /api/v1/sessions/{id}/send` for `-m` |
 | `ao orchestrator ls`                | `GET /api/v1/orchestrators`                    |
 | `ao orchestrator replace` | `POST /api/v1/projects/{id}/orchestrator/replacements` (durable acceptance) |
 | `ao orchestrator replacement get/retry/cancel/prepared/intake` | `GET/POST /api/v1/orchestrator/replacements/{id}[/{action}]` |
@@ -135,6 +137,18 @@ branch, issue, or PR-claim options.
 explicitly with `ao session claim-pr <session-id> <pr-ref>`. The explicit form
 remains supported for backward compatibility and cross-session coordination.
 
+To review someone else's PR, claim it as a review:
+`ao session claim-pr <pr-ref> --no-takeover --review`, or
+`ao spawn --claim-pr <pr-ref> --no-takeover --review`. Before the claim, the CLI
+turns off the session's automatic CI and review-comment fixing
+(`PATCH /api/v1/sessions/{id}/auto-inject-ci` and `.../auto-inject-review`) and
+its native auto-review (`PUT /api/v1/sessions/{id}/auto-review`), so the session
+gets none of the PR's CI failures, merge conflicts, or review comments. These
+switches cover every PR the session owns; if the claim is refused, the CLI puts
+them back. `--review` implies `--no-takeover`, so it never takes the PR from a
+session that is working on it. To take the PR over, run `ao session claim-pr <pr-ref> --review=false`,
+which turns CI and review-comment fixing back on.
+
 Both `ao session claim-pr` and `ao spawn --claim-pr` claim ownership metadata
 only. The claim step does not check out a branch or change HEAD, so
 `branchChanged: false` renders as `checkout: not performed; workspace unchanged`
@@ -147,7 +161,9 @@ together.
 `ao report` persists a worker-originated coordination claim before reporting
 success. Checkpoints, free-form messages, and output-only reports batch until
 another flush or the first report's one-hour fallback. The first `--done`
-report opens a fixed five-minute settlement window. `--needs-input` delivers
+report opens a five-minute settlement window. AO tries to deliver the batch about 15
+seconds after no other worker of the project is still working, and at the
+latest when the window closes. `--needs-input` delivers
 immediately without interrupting current orchestrator work. `--stuck` requests
 an interrupt at most once per worker every three minutes and coalesces equal
 repeats. Reports route to the active project orchestrator at each attempt and
