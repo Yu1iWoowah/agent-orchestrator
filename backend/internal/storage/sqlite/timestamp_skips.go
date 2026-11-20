@@ -17,7 +17,7 @@ func newTimestampRepairState() *timestampRepairState {
 }
 
 func (s *timestampRepairState) skip(table string, rowID any, err error) {
-	if !preserveRejectedTimestamp(err) {
+	if !preserveRejectedTimestamp(table, err) {
 		s.retry[table] = true
 	}
 	s.Skipped++

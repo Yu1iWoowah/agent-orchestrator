@@ -380,7 +380,7 @@ func repairTimestampKeyBatch(ctx context.Context, db *sql.DB, columns []timestam
 					}
 				}
 				if rowErr != nil {
-					if !preserveRejectedTimestamp(rowErr) {
+					if !preserveRejectedTimestamp(columns[0].table, rowErr) {
 						return 0, rowErr
 					}
 					if _, err := tx.ExecContext(ctx, "ROLLBACK TO timestamp_row"); err != nil {
@@ -441,12 +441,21 @@ func repairTimestampKeyBatch(ctx context.Context, db *sql.DB, columns []timestam
 
 // A representation change must not discard execution history or rewrite a row
 // into a CHECK violation. Other failures still abort repair and startup.
-func preserveRejectedTimestamp(err error) bool {
+func preserveRejectedTimestamp(table string, err error) bool {
 	if errors.Is(err, errTimestampPolicySkip) {
 		return true
 	}
 	var constraint *modernsqlite.Error
-	return errors.As(err, &constraint) && constraint.Code() == 275 // SQLITE_CONSTRAINT_CHECK
+	if !errors.As(err, &constraint) {
+		return false
+	}
+	if constraint.Code() == 275 { // SQLITE_CONSTRAINT_CHECK
+		return true
+	}
+	// The fork's custody guards protect raw held input, including its time
+	// representation. Keep it unchanged until the authoritative hold ends.
+	return constraint.Code() == 1811 && strings.HasSuffix(constraint.Error(), ": INPUT_HELD (1811)") &&
+		(table == "conversation_turns" || table == "conversation_messages" || table == "conversation_activities")
 }
 
 // applyTimestampUpdate counts only direct writes and the session revision

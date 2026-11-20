@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -286,9 +287,10 @@ type TriggerOptions struct {
 	// reject a different identity instead of changing a live conversation.
 	AgentAccountID string
 	// Harness and Config override the resolved reviewer for this pass only.
-	Harness domain.ReviewerHarness
-	Config  domain.AgentConfig
-	Source  domain.ReviewTriggerSource
+	Harness            domain.ReviewerHarness
+	Config             domain.AgentConfig
+	RequesterSessionID domain.SessionID
+	Source             domain.ReviewTriggerSource
 	// InterfaceMode chooses Chat or Terminal for the reviewer; empty keeps the
 	// reviewer's persisted surface or the adapter default.
 	InterfaceMode domain.ReviewerInterfaceMode
@@ -361,6 +363,20 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 	}
 	if !ok {
 		return TriggerResult{}, fmt.Errorf("%w: worker session %q", ErrNotFound, workerID)
+	}
+	if opts.RequesterSessionID != "" {
+		if source != domain.ReviewTriggerAgent {
+			return TriggerResult{}, fmt.Errorf("%w: only agent triggers can specify a requesting session", ErrInvalid)
+		}
+		if opts.RequesterSessionID != workerID {
+			caller, found, err := e.sessions.GetSession(ctx, opts.RequesterSessionID)
+			if err != nil {
+				return TriggerResult{}, err
+			}
+			if !found || caller.ProjectID != worker.ProjectID || caller.IsTerminated {
+				return TriggerResult{}, fmt.Errorf("%w: requesting session must be active in this project", ErrInvalid)
+			}
+		}
 	}
 	if source == domain.ReviewTriggerAuto {
 		if reason := autoReviewSessionReason(worker, e.clock()); reason != "" {
@@ -562,6 +578,11 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		return TriggerResult{}, err
 	}
 
+	releaseAccount, err := e.holdReviewerAccount(ctx)
+	if err != nil {
+		return TriggerResult{}, err
+	}
+	defer releaseAccount()
 	if err := e.validateReviewerModels(ctx, harness, config); err != nil {
 		return TriggerResult{}, err
 	}
@@ -622,20 +643,22 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 			config = reviewerSelectionConfig(config, *initial.Settings)
 		}
 		run := domain.ReviewRun{
-			ID:            e.newID(),
-			ReviewID:      reviewRow.ID,
-			SessionID:     workerID,
-			BatchID:       batchID,
-			Harness:       harness,
-			TriggerSource: source,
-			PRURL:         reviewState.PRURL,
-			TargetSHA:     reviewState.TargetSHA,
-			Status:        domain.ReviewRunQueued,
-			Verdict:       domain.VerdictNone,
-			CreatedAt:     now,
+			ID:                 e.newID(),
+			ReviewID:           reviewRow.ID,
+			SessionID:          workerID,
+			BatchID:            batchID,
+			Harness:            harness,
+			TriggerSource:      source,
+			RequesterSessionID: opts.RequesterSessionID,
+			PRURL:              reviewState.PRURL,
+			TargetSHA:          reviewState.TargetSHA,
+			Status:             domain.ReviewRunQueued,
+			Verdict:            domain.VerdictNone,
+			CreatedAt:          now,
 			// Completion refreshes this snapshot before delivery. Keeping the
 			// trigger-time value also makes a running pass truthful in the API.
 			AutoInjectReview: worker.AutoInjectReview,
+			ReviewerModel:    config.Model,
 		}
 		if _, supported := e.store.(ports.ReviewerAgentSettingsStore); supported {
 			initial := reviewerSelectionSettings(config)
@@ -698,17 +721,20 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		return TriggerResult{Run: firstReusableRun(reviews), ReviewerHandleID: legacyReviewerHandle(reviewRow), Created: false, Reviews: reviews, Runs: runs, ReviewerSurface: reviewerSurface(reviewRow)}, nil
 	}
 
-	failRuns := func(reason domain.ReviewFailureReason, err error) error {
-		if failErr := e.failRuns(ctx, created, reason, err); failErr != nil {
+	failRunsWithContext := func(settleCtx stdctx.Context, reason domain.ReviewFailureReason, err error) error {
+		if failErr := e.failRuns(settleCtx, created, reason, err); failErr != nil {
 			err = errors.Join(err, failErr)
 		}
 		// A restarted pass whose replacement did not start is still served by
 		// the previous reviewer. If that reviewer was stopped, rollback has
 		// already failed it and this is a no-op.
-		if revertErr := e.revertRelaunch(ctx, restarted); revertErr != nil {
+		if revertErr := e.revertRelaunch(settleCtx, restarted); revertErr != nil {
 			err = errors.Join(err, revertErr)
 		}
 		return err
+	}
+	failRuns := func(reason domain.ReviewFailureReason, err error) error {
+		return failRunsWithContext(ctx, reason, err)
 	}
 
 	previousHandleID := reviewRow.ReviewerHandleID
@@ -725,13 +751,13 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 				cause = errors.Join(cause, fmt.Errorf("cleanup replacement reviewer: %w", cleanupErr))
 			}
 		}
+		rollbackCtx, cancel := stdctx.WithTimeout(stdctx.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
 		if hasReview {
 			if previousStopped {
 				previousReview.ControllerGeneration = ""
 				previousReview.ReviewerActivityState = domain.ActivityExited
 			}
-			rollbackCtx, cancel := stdctx.WithTimeout(stdctx.WithoutCancel(ctx), 5*time.Second)
-			defer cancel()
 			if previousReview.IsArchived || modeChanging || (hasConfigOverride && selectedMode == domain.ReviewerInterfaceChat) {
 				if ok, rollbackErr := e.store.RestoreReviewLaunchState(rollbackCtx, previousReview, rollbackNow); rollbackErr != nil {
 					cause = errors.Join(cause, fmt.Errorf("restore previous reviewer surface: %w", rollbackErr))
@@ -743,11 +769,11 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 			}
 		}
 		if previousStopped {
-			if err := e.failRuns(ctx, restarted, domain.ReviewFailureLaunchFailed, cause); err != nil {
+			if err := e.failRuns(rollbackCtx, restarted, domain.ReviewFailureLaunchFailed, cause); err != nil {
 				cause = errors.Join(cause, err)
 			}
 		}
-		return failRuns(domain.ReviewFailureLaunchFailed, cause)
+		return failRunsWithContext(rollbackCtx, domain.ReviewFailureLaunchFailed, cause)
 	}
 
 	queueRuns := append([]domain.ReviewRun{}, restarted...)
@@ -799,7 +825,7 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		}
 		// A restarted pass is now waiting on the replacement launch, so a hung
 		// launch is bounded by LaunchTimeout like a new one.
-		if err := e.markRunsRelaunching(ctx, restarted, launchID); err != nil {
+		if err := e.markRunsRelaunching(ctx, restarted, launchID, config.Model); err != nil {
 			return TriggerResult{}, rollbackReplacement(err)
 		}
 		reviewRow, err = e.upsertReview(ctx, worker, harness, reviewRow.ReviewerHandleID, launchAgentSessionID, launchID, "", now)
@@ -1387,6 +1413,11 @@ func (e *Engine) restorePersistedChatReviewerLocked(ctx stdctx.Context, worker d
 	if err != nil {
 		return RestoreReviewerResult{}, err
 	}
+	releaseAccount, err := e.holdReviewerAccount(ctx)
+	if err != nil {
+		return RestoreReviewerResult{}, err
+	}
+	defer releaseAccount()
 	launch, err := e.launcher.RestoreTerminal(ctx, LaunchSpec{ReviewSessionID: review.ID, LaunchID: launchID, WorkerID: worker.ID, ProjectID: worker.ProjectID, ProjectEnv: projectEnv, Harness: review.Harness, AgentConfig: config, WorkspacePath: worker.Metadata.WorkspacePath, AgentSessionID: review.AgentSessionID, ProviderConversationID: review.ProviderConversationID, PinnedSettings: pinned, RequireNativeHistory: pinned != nil && (review.AgentSessionID != "" || review.ProviderConversationID != ""), PreviousRuns: previousRuns, InterfaceMode: review.InterfaceMode})
 	if err != nil {
 		return RestoreReviewerResult{}, fmt.Errorf("restore reviewer: %w", err)
@@ -1466,6 +1497,11 @@ func (e *Engine) restoreReviewerLocked(
 	if err != nil {
 		return RestoreReviewerResult{}, err
 	}
+	releaseAccount, err := e.holdReviewerAccount(ctx)
+	if err != nil {
+		return RestoreReviewerResult{}, err
+	}
+	defer releaseAccount()
 	// Keep a rejected restore read-only for the existing reviewer and its
 	// passes. After admission, settle dead passes before starting a new launch.
 	if settled, err := e.evaluateSessionLocked(ctx, workerID); err != nil {
@@ -1849,7 +1885,12 @@ type reviewChatProbe interface {
 // worker so account owner checks see only reviewers that still have a process.
 // It never waits for chat recovery: a recovering chat keeps its host.
 func (e *Engine) ReconcileReviewers(ctx stdctx.Context, workerID domain.SessionID) error {
-	unlock := e.lockWorker(workerID)
+	unlock, acquired := e.tryLockWorker(workerID)
+	if !acquired {
+		// The mutation caller re-reads durable owners. A launch still holding
+		// this lock also keeps its short account lease through finalization.
+		return nil
+	}
 	defer unlock()
 	runs, err := e.store.ListReviewRunsBySession(ctx, workerID)
 	if err != nil {
@@ -1879,35 +1920,41 @@ func (e *Engine) reconcileReviewerRuntime(ctx stdctx.Context, review *domain.Rev
 	if review.ID == "" || review.IsArchived {
 		return false, nil
 	}
-	hasRunning := false
-	for _, run := range runs {
-		if run.ReviewID == review.ID && run.Status == domain.ReviewRunRunning {
-			hasRunning = true
-			break
-		}
-	}
-	if review.ReviewerActivityState == domain.ActivityExited && !hasRunning {
+	ownsPass := slices.ContainsFunc(runs, func(run domain.ReviewRun) bool {
+		return run.ReviewID == review.ID && run.Status.IsActive() && run.Status != domain.ReviewRunQueued
+	})
+	if review.ReviewerActivityState == domain.ActivityExited && !ownsPass && review.ReviewerHandleID == "" {
 		return false, nil
 	}
-	// No handle with a running pass is a launch before its handle is committed,
-	// or a chat reviewer waiting for recovery.
-	if review.ReviewerHandleID == "" && hasRunning {
-		return false, nil
-	}
-	if !e.reviewerGone(ctx, *review) {
+	// An uncommitted native handle or recovering Chat controller is not proof
+	// that an active pass can release its profile.
+	if (review.ReviewerHandleID == "" && ownsPass) || !e.reviewerGone(ctx, *review) {
 		return false, nil
 	}
 	now := e.clock()
 	for _, run := range runs {
-		if run.ReviewID != review.ID || run.Status != domain.ReviewRunRunning {
+		if run.ReviewID != review.ID {
 			continue
 		}
-		if _, err := e.transitionRun(ctx, run, []domain.ReviewRunStatus{domain.ReviewRunRunning}, domain.ReviewRunFailed, domain.ReviewRunPatch{FailureReason: domain.ReviewFailureProcessExited, EndedAt: &now}); err != nil {
+		patch := domain.ReviewRunPatch{EndedAt: &now}
+		next := domain.ReviewRunFailed
+		switch run.Status {
+		case domain.ReviewRunLaunching:
+			patch.FailureReason = domain.ReviewFailureExitedDuringLaunch
+		case domain.ReviewRunRunning:
+			patch.FailureReason = domain.ReviewFailureProcessExited
+		case domain.ReviewRunCancelling:
+			next = domain.ReviewRunCancelled
+		default:
+			continue
+		}
+		if _, err := e.transitionRun(ctx, run, []domain.ReviewRunStatus{run.Status}, next, patch); err != nil {
 			return false, err
 		}
 	}
 	review.ReviewerActivityState = domain.ActivityExited
-	review.UpdatedAt = e.clock()
+	review.ReviewerHandleID = ""
+	review.UpdatedAt = now
 	if err := e.store.UpsertReview(ctx, *review); err != nil {
 		return false, err
 	}

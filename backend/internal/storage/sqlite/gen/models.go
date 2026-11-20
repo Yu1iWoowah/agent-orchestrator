@@ -1295,7 +1295,7 @@ type ReviewRun struct {
 	FirstActivityAt         sql.NullTime
 	CancelRequestedAt       sql.NullTime
 	EndedAt                 sql.NullTime
-	RequesterSessionID      string
+	RequesterSessionID      domain.SessionID
 }
 
 type ReviewerAgentAccount struct {
