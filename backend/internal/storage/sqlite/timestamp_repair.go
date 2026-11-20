@@ -233,6 +233,7 @@ func repairTimestampKeyBatch(ctx context.Context, db *sql.DB, columns []timestam
 		}
 	}
 	keyList := strings.Join(keyColumns, ",")
+	//nolint:gosec // G202: identifiers come from quoted schema names and cursor values are bound.
 	queryRows := "SELECT " + keyList + "," + strings.Join(fields, ",") + " FROM " + table +
 		" WHERE " + keyRange + filter + " ORDER BY " + keyList + " LIMIT ?"
 	queryArgs := append(append([]any(nil), cursor...), timestampRepairBatch)
@@ -298,6 +299,7 @@ func repairTimestampKeyBatch(ctx context.Context, db *sql.DB, columns []timestam
 		for i, column := range keyColumns {
 			keyChecks[i] = column + "=?"
 		}
+		//nolint:gosec // G202: identifiers come from quoted schema names and all row values are bound.
 		query := "UPDATE " + table + " SET " + strings.Join(sets, ",") +
 			" WHERE " + strings.Join(keyChecks, " AND ") + " AND " + strings.Join(checks, " AND ")
 		if columns[0].table == "sessions" {

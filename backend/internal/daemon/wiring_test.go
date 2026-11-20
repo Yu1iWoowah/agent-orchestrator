@@ -953,8 +953,6 @@ type fakeSessionLifecycle struct {
 	reconcileErr              error
 	restoreErr                error
 	sends                     []string
-	interrupted               domain.SessionID
-	interruptErr              error
 }
 
 func (f *fakeSessionLifecycle) Send(_ context.Context, _ domain.SessionID, message string, _ *ports.SpawnAttachment) error {
