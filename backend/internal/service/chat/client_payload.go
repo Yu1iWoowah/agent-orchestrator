@@ -2,8 +2,10 @@ package chat
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -77,4 +79,55 @@ func legacyMessageMatches(existing domain.ConversationMessage, msg ports.ChatUse
 	}
 	canonical, err := json.Marshal(clientPayloadContent(stored))
 	return err == nil && bytes.Equal(canonical, content)
+}
+
+// sentMessageReceipt validates a retry without starting or contacting its provider.
+func sentMessageReceipt(ctx context.Context, st Store, conversationID string, msg ports.ChatUserMessage, recoverOnly bool) (domain.ConversationTurn, bool, error) {
+	if existing, found, err := st.ConversationMessageByClientID(
+		ctx, conversationID, msg.ClientMessageID,
+	); err != nil {
+		return domain.ConversationTurn{}, false, fmt.Errorf("recover sent message: %w", err)
+	} else if found {
+		if !recoverOnly && len(msg.Excerpts) > 0 {
+			if !fileReferenceContentsMatch(existing.DeliveryContentJSON, msg.Content) {
+				return domain.ConversationTurn{}, false, domain.ErrClientMessageConflict
+			}
+			if err := validateSnapshotRetry(msg, existing); err != nil {
+				return domain.ConversationTurn{}, false, err
+			}
+		} else if !recoverOnly {
+			hash, err := clientPayloadHash(msg)
+			if err != nil {
+				return domain.ConversationTurn{}, false, err
+			}
+			if existing.ClientPayloadHash != "" {
+				if existing.ClientPayloadHash != hash {
+					return domain.ConversationTurn{}, false, domain.ErrClientMessageConflict
+				}
+			} else if !legacyMessageMatches(existing, msg) {
+				return domain.ConversationTurn{}, false, domain.ErrClientMessageConflict
+			}
+		}
+		turn, err := st.TurnByID(ctx, existing.TurnID)
+		if err != nil {
+			return domain.ConversationTurn{}, false, fmt.Errorf("recover sent turn: %w", err)
+		}
+		return turn, true, nil
+	}
+
+	return domain.ConversationTurn{}, false, nil
+}
+
+func (s *Service) replaySendReceipt(ctx context.Context, id domain.SessionID, msg ports.ChatUserMessage) (domain.ConversationTurn, bool, error) {
+	if msg.ClientMessageID == "" {
+		return domain.ConversationTurn{}, false, nil
+	}
+	conversation, err := s.store.ConversationForSession(ctx, id)
+	if err != nil {
+		if errors.Is(err, domain.ErrNoConversation) {
+			return domain.ConversationTurn{}, false, nil
+		}
+		return domain.ConversationTurn{}, false, fmt.Errorf("recover sent conversation: %w", err)
+	}
+	return sentMessageReceipt(ctx, s.store, conversation.ID, msg, false)
 }

@@ -102,7 +102,8 @@ func readConnectionProbe(ctx context.Context, client *http.Client, port int, pat
 		return probeResult{}, fmt.Errorf("%s: HTTP %d", path, resp.StatusCode)
 	}
 	var body probeResult
-	decoder := json.NewDecoder(resp.Body)
+	bodyReader := &io.LimitedReader{R: resp.Body, N: maxProbeBody + 1}
+	decoder := json.NewDecoder(bodyReader)
 	if err := decoder.Decode(&body); err != nil {
 		return probeResult{}, fmt.Errorf("%s: decode response: %w", path, err)
 	}
@@ -110,6 +111,9 @@ func readConnectionProbe(ctx context.Context, client *http.Client, port int, pat
 		return probeResult{}, fmt.Errorf("%s: expected one JSON response", path)
 	} else if err != io.EOF {
 		return probeResult{}, fmt.Errorf("%s: decode response: %w", path, err)
+	}
+	if bodyReader.N == 0 {
+		return probeResult{}, fmt.Errorf("%s: response exceeds %d bytes", path, maxProbeBody)
 	}
 	if body.Status == "" {
 		return probeResult{}, fmt.Errorf("%s: missing status", path)

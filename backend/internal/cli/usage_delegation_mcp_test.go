@@ -10,7 +10,36 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/mcpserver"
 )
+
+type mcpReply struct {
+	ID     json.RawMessage `json:"id"`
+	Result struct {
+		ProtocolVersion string                     `json:"protocolVersion"`
+		Capabilities    map[string]json.RawMessage `json:"capabilities"`
+		ServerInfo      struct{ Name string }      `json:"serverInfo"`
+		Tools           []struct {
+			Name        string
+			InputSchema struct {
+				Properties map[string]map[string]any
+				Required   []string
+			}
+			Annotations map[string]any
+		} `json:"tools"`
+		Content []struct {
+			Type, Text, MimeType, Data string
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	} `json:"result"`
+	Error *mcpserver.RPCError `json:"error"`
+}
+
+func mcpCall(tool string, args map[string]any) string {
+	params, _ := json.Marshal(map[string]any{"name": tool, "arguments": args})
+	return `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":` + string(params) + `}`
+}
 
 func TestHCGDelegationMCPFixedToolAndCancellation(t *testing.T) {
 	cfg := setConfigEnv(t)

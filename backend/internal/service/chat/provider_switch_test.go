@@ -15,6 +15,36 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
+func TestForcedProviderSwitchKeepsUnsettledDeliveryAndQueue(t *testing.T) {
+	h, _, driver := newEditHarness(t, false)
+	ctx := t.Context()
+	active, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "original work", ClientMessageID: "original-force"})
+	if err != nil || active.ID == "" {
+		t.Fatalf("start original work: %+v %v", active, err)
+	}
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, active.ID)
+	if err != nil || attempt.ExecutionSettled || attempt.Disposition != domain.ChatDeliveryAccepted {
+		t.Fatalf("expected accepted/unsettled delivery: %+v %v", attempt, err)
+	}
+	queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "queued work", ClientMessageID: "queued-force"})
+	if err != nil || queued.State != domain.TurnStateQueued {
+		t.Fatalf("queue original input: %+v %v", queued, err)
+	}
+	_, err = h.svc.SwitchProviderReport(ctx, testSession, domain.ProviderSwitchRequest{TargetHarness: domain.HarnessClaudeCode, Force: true})
+	var refused *domain.ProviderSwitchError
+	if !errors.As(err, &refused) || refused.Kind != domain.ProviderSwitchRefusalBusy {
+		t.Fatalf("force = %v, want busy refusal", err)
+	}
+	saved, err := h.st.ChatDeliveryAttempt(ctx, testSession, attempt.ID)
+	if err != nil || saved.ExecutionSettled || saved.Disposition != attempt.Disposition {
+		t.Fatalf("force changed acceptance: %+v %v", saved, err)
+	}
+	follower, err := h.st.TurnByID(ctx, queued.ID)
+	if err != nil || follower.State != domain.TurnStateQueued || len(h.conv.sentTexts()) != 1 || lastStart(driver).Harness != domain.HarnessCodex {
+		t.Fatalf("force mutated source work: follower=%+v sends=%v err=%v", follower, h.conv.sentTexts(), err)
+	}
+}
+
 func TestProviderSwitchPublishesApproximateBranch(t *testing.T) {
 	h, _, driver := newEditHarness(t, false)
 	ctx := context.Background()
@@ -93,8 +123,8 @@ func TestProviderSwitchPublishesApproximateBranch(t *testing.T) {
 		IdempotencyKey: "switch-once",
 	})
 	var refusal *domain.ProviderSwitchError
-	if !errors.As(err, &refusal) || refusal.Kind != domain.ProviderSwitchRefusalUnsupported {
-		t.Fatalf("repeated switch error = %v, want an unsupported refusal", err)
+	if !errors.As(err, &refusal) || refusal.Kind != domain.ProviderSwitchRefusalAlreadyActive {
+		t.Fatalf("repeated switch error = %v, want an already-active refusal", err)
 	}
 
 	record, found, err := h.st.GetSession(ctx, testSession)

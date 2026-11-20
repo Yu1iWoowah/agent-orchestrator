@@ -108,6 +108,7 @@ class ProtocolTests(unittest.TestCase):
             fail = False
             last_received = 0
             data_dir = self.root
+            worker_binaries = WORKER_BINARIES
 
             def call(self, args, timeout=30, deadline=None, on_dispatch=None, **kwargs):
                 if on_dispatch:
@@ -1615,6 +1616,7 @@ class FlowFixture:
         self.run.sleep = self.dispatch_actor
         self.transport = ActorTransport(self)
         self.executable = self.transport.cli
+        self.worker_binaries = WORKER_BINARIES
         self.sha256 = h.digest(self.executable.read_bytes())
         self.run_file = self.transport.run_file
         journal = h.Journal(self.data_dir, self.run_id)
@@ -2080,8 +2082,13 @@ class SpeedPreparationTests(unittest.TestCase):
         self.assertEqual(fake.mutations, [])
 
 
+WORKER_BINARIES = {name: ("/usr/bin/" + name, 1, i)
+                   for i, name in enumerate(("ao", "ao-chat-host", "ao-mcp"), start=10)}
+
+
 def proc(ppid, argv, cwd=None, start=100.0, terminal=False):
-    return dict(ppid=ppid, tick=int(start * 100), start=start, cwd=cwd, argv=argv, terminal=terminal)
+    exe = WORKER_BINARIES.get(Path(argv[0]).name) if argv else None
+    return dict(ppid=ppid, tick=int(start * 100), start=start, cwd=cwd, argv=argv, terminal=terminal, exe=exe)
 
 
 def fixture_proc_table(*pids):
@@ -2102,7 +2109,7 @@ class OSProcessTests(unittest.TestCase):
             10: proc(1, ["/usr/bin/ao", "chat-host", "worker", data, ws, "acp", "fp", "--", "node", "index.js"]),  # B1
             11: proc(10, ["node", "/x/claude-agent-acp/dist/index.js"], start=100.0),  # B2
             12: proc(11, ["/home/u/.local/bin/claude", "--setting-sources=user,project,local"], start=101.0),  # B3
-            13: proc(12, ["/usr/bin/ao", "mcp"]),  # B4
+            13: proc(12, ["/usr/bin/ao", "mcp"], start=102.0),  # B4
             14: proc(12, ["npx", "user-mcp"], start=102.0),  # B10 when started before the baseline
             15: proc(12, ["/bin/bash", "-c", "npm run dev"], start=300.0),  # a tool: work
             16: proc(15, ["claude"], start=301.0),  # same name, parent is not the provider: work
@@ -2171,7 +2178,7 @@ class OSProcessTests(unittest.TestCase):
         with fixture_proc_table(child.pid), patch.object(h.os, "readlink", side_effect=hidden):
             table = h.proc_table()
         self.assertTrue(table[child.pid]["cwd_unknown"])
-        work = h.os_work_processes({child.pid: dict(table[child.pid], ppid=1)}, "worker", "/data", Path("/wt/worker"), lambda *a: None)
+        work = h.os_work_processes({child.pid: dict(table[child.pid], ppid=1)}, "worker", "/data", Path("/wt/worker"), lambda *a: None, WORKER_BINARIES)
         self.assertEqual([x["pid"] for x in work], [child.pid])
 
     def test_unreaped_zombie_is_kept_for_traversal_but_is_not_work(self):
@@ -2189,18 +2196,18 @@ class OSProcessTests(unittest.TestCase):
         # Under a provider (B10 MCP server) the zombie is still walked but never listed as work.
         tree = {10: proc(1, ["ao", "chat-host", "worker", "/data", "/wt/worker"]), 11: proc(10, ["codex", "app-server"]),
                 parent.pid: dict(table[parent.pid], ppid=11, start=50.0), zombie: dict(table[zombie], start=60.0)}
-        self.assertEqual(h.os_work_processes(tree, "worker", "/data", Path("/wt/worker"), lambda *a: 100.0), [])
+        self.assertEqual(h.os_work_processes(tree, "worker", "/data", Path("/wt/worker"), lambda *a: 100.0, WORKER_BINARIES), [])
 
     def test_claude_tree_terminal_reviewer_and_reparented_attribution(self):
         calls = []
         def base_of(pid, tick, started):
             calls.append((pid, tick, started))
             return 200.0
-        work = h.os_work_processes(self.table(), "worker", "/data", Path("/wt/worker"), base_of)
+        work = h.os_work_processes(self.table(), "worker", "/data", Path("/wt/worker"), base_of, WORKER_BINARIES)
         self.assertEqual(work, [dict(pid=15, exe="bash"), dict(pid=16, exe="claude"), dict(pid=17, exe="ao"), dict(pid=40, exe="node")])
         self.assertEqual(calls, [(11, 10000, 100.0)])
         # Without a baseline the user's MCP server is fail-closed work; RH itself is excluded (B8).
-        work = h.os_work_processes(self.table(), "worker", "/data", Path("/wt/worker"), lambda *a: None, exclude=[40])
+        work = h.os_work_processes(self.table(), "worker", "/data", Path("/wt/worker"), lambda *a: None, WORKER_BINARIES, exclude=[40])
         self.assertEqual([x["pid"] for x in work], [14, 15, 16, 17])
 
     def test_codex_tree_and_B10_second_boundary(self):
@@ -2208,8 +2215,29 @@ class OSProcessTests(unittest.TestCase):
                  21: proc(20, ["codex", "app-server"]), 22: proc(21, ["/opt/codex/node_repl"]), 23: proc(21, ["node", "./mcp/launch.mjs"]),
                  24: proc(21, ["/bin/bash", "-lc", "pytest"], start=300.0), 25: proc(21, ["user-mcp"], start=199.9),
                  26: proc(21, ["exec-session"], start=200.0)}
-        work = h.os_work_processes(table, "cworker", "/data", Path("/wt/c"), lambda *a: 200.0)
+        work = h.os_work_processes(table, "cworker", "/data", Path("/wt/c"), lambda *a: 200.0, WORKER_BINARIES)
         self.assertEqual([x["pid"] for x in work], [24, 26])
+
+    def test_packaged_helpers_own_the_same_scope_without_a_B10_baseline(self):
+        for host in (["ao", "chat-host"], ["ao-chat-host"]):
+            for mcp in (["ao", "mcp"], ["ao-mcp"]):
+                with self.subTest(host=host, mcp=mcp):
+                    table = {
+                        10: proc(1, host + ["worker", "/data", "/wt/worker"]),
+                        11: proc(10, ["codex", "app-server"], start=101),
+                        12: proc(11, mcp, start=102),
+                        13: dict(proc(11, ["ao-mcp"], start=103), exe=("/foreign/ao-mcp", 1, 19)),
+                        14: proc(11, ["bash", "-c", "run-test"], start=104),
+                    }
+                    work, live = h.inspect_worker_processes(
+                        table, "worker", "/data", Path("/wt/worker"), lambda *a: None, WORKER_BINARIES)
+                    self.assertTrue(live)
+                    self.assertEqual([row["pid"] for row in work], [13, 14])
+                    table[10]["exe"] = ("/foreign/ao-chat-host", 1, 19)
+                    work, live = h.inspect_worker_processes(
+                        table, "worker", "/data", Path("/wt/worker"), lambda *a: 200, WORKER_BINARIES)
+                    self.assertFalse(live)
+                    self.assertEqual([row["pid"] for row in work], [10, 11, 12, 13, 14])
 
     def test_baseline_pages_back_to_the_provider_start_and_fails_closed(self):
         pages = {None: dict(conversationId="c", hasMoreBefore=True, next=dict(before=50), turns=[
@@ -2295,6 +2323,16 @@ class OSProcessTests(unittest.TestCase):
         with patch.object(h, "validate_stop"), patch.object(h, "git_snapshot", return_value=dict(sha256="s")), \
                 self.assertRaisesRegex(h.Stop, "worker processes still running: worker: 12 bash"):
             run.worker_stop({"id": "worker"})
+
+    def test_reserved_stop_uses_the_same_snapshot_as_work_classification(self):
+        table, ws = self.worker_table()
+        table[10] = proc(1, ["ao-chat-host", "worker", str(self.root), ws])
+        table[12] = proc(11, ["/bin/bash", "-lc", "npm run dev"], start=10 ** 10)
+        run = self.stop_run(table)
+        with patch.object(h, "proc_table", side_effect=[table]) as capture:
+            self.assertFalse(run.worker_stop({"id": "worker"}))
+        self.assertEqual(capture.call_count, 1)
+        self.assertEqual(len([args for args in run.cli.calls if args[0] == "send"]), 1)
 
     def test_processes_without_reserved_D_or_agent_stop_immediately(self):
         table, ws = self.worker_table((40, proc(1, ["node", "server.js"], cwd=self.ws())))
