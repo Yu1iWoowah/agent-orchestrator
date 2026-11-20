@@ -3161,7 +3161,7 @@
 	"settings.versionRefresh.label": "Mover sessões abertas para novas versões automaticamente",
 	"settings.versionRefresh.description": "Após atualizar um agente, sessões ociosas reiniciam na nova versão em vez de esperar que você as reinicie.",
 	"settings.sessionRetention.label": "Excluir sessões arquivadas",
-	"settings.sessionRetention.description": "Sessões arquivadas com o worktree limpo são excluídas de vez depois desse tempo. Branches, pull requests e totais de uso são mantidos. Os artefatos delas são mantidos, só para visualização, na página Artefatos.",
+	"settings.sessionRetention.description": "Sessões arquivadas com o worktree limpo são excluídas de vez depois desse tempo. Branches, pull requests e totais de uso são mantidos.",
 	"settings.sessionRetention.never": "Nunca",
 	"settings.sessionRetention.afterDays": "Após {{days}} dias",
 	"chat.versionSwitch.pending": "Mudando para {{version}}…",

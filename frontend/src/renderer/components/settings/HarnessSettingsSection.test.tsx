@@ -950,17 +950,21 @@ describe("HarnessSettingsSection", () => {
 		await waitFor(() => expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("Source: ~/.missing/auth.json")));
 	});
 
-	it("retains a failed auth request's correlation facts without copying the server message", async () => {
+	it("clears the connected indicators after a failed auth check and restores them on retry", async () => {
 		mockInstalledOperations("npm");
 		renderSection();
 		const page = await findAgentRow("codex");
+		const connectedIndicator = () => within(page).getByText("Connected").querySelector(".bg-success");
+		expect(connectedIndicator()).toBeInTheDocument();
 		await userEvent.click(within(page).getByRole("tab", { name: "Health" }));
+		expect(connectedIndicator()).toBeInTheDocument();
 		const post = vi.mocked(apiClient.POST).getMockImplementation()!;
 		vi.mocked(apiClient.POST).mockImplementation(async (path, options) => path === "/api/v1/agents/{agent}/probe"
 			? { error: { code: "AGENT_CHECK_FAILED", requestId: "request-123", message: "secret-token" }, response: { status: 503 } } as never
 			: (post as (path: string, options: unknown) => Promise<never>)(path, options));
 		await userEvent.click(within(page).getByRole("button", { name: "Check again" }));
 		expect(await within(page).findByRole("alert")).toHaveTextContent("Could not complete the check.");
+		expect(connectedIndicator()).toBeNull();
 		expect(within(page).queryByText(/AGENT_CHECK_FAILED/)).toBeNull();
 		await userEvent.click(within(page).getByRole("button", { name: "Copy diagnostics" }));
 		await waitFor(() => expect(window.ao!.clipboard.writeText).toHaveBeenCalled());
@@ -969,6 +973,15 @@ describe("HarnessSettingsSection", () => {
 		expect(report).toContain("request request-123");
 		expect(report).not.toContain("secret-token");
 		expect(report).toContain("Authentication: authorized");
+		await userEvent.click(within(page).getByRole("tab", { name: "Account" }));
+		expect(connectedIndicator()).toBeNull();
+		await userEvent.click(within(page).getByRole("tab", { name: "Health" }));
+		vi.mocked(apiClient.POST).mockImplementation(post);
+		await userEvent.click(within(page).getByRole("button", { name: "Check again" }));
+		await waitFor(() => expect(connectedIndicator()).toBeInTheDocument());
+		expect(within(page).queryByText("Could not complete the check. Try again or copy diagnostics.")).toBeNull();
+		await userEvent.click(within(page).getByRole("tab", { name: "Account" }));
+		expect(connectedIndicator()).toBeInTheDocument();
 	});
 
 	it.each(["unauthorized", "configured"])("confirms logout and rechecks readiness without assuming success: %s", async (authStatus) => {
