@@ -105,6 +105,8 @@ type LaunchResult struct {
 	HandleID       string
 	LaunchID       string
 	AgentSessionID string
+	// LiveReconnect means the controller attached to a surviving provider.
+	LiveReconnect bool
 	// NativeResumed reports whether the launch resumed the provider-native
 	// conversation instead of falling back to a fresh reviewer process.
 	NativeResumed bool
@@ -134,8 +136,8 @@ type ReviewerChatStart struct {
 type ReviewerChatController interface {
 	SupportsReviewChat(domain.AgentHarness) bool
 	PreflightReviewChat(context.Context, domain.AgentHarness) error
-	StartReviewChat(context.Context, ReviewerChatStart) (string, error)
-	RestoreReviewChat(context.Context, ReviewerChatStart) (string, error)
+	StartReviewChat(context.Context, ReviewerChatStart) (ports.ChatControllerStarted, error)
+	RestoreReviewChat(context.Context, ReviewerChatStart) (ports.ChatControllerStarted, error)
 	SendReviewChat(context.Context, string, string, string) error
 	ReviewChatAlive(string) bool
 	InterruptReviewChat(context.Context, string) error
@@ -622,15 +624,16 @@ func (l *agentLauncher) startReviewerChat(ctx context.Context, spec LaunchSpec, 
 		return LaunchResult{}, envErr
 	}
 	start := ReviewerChatStart{BatchID: spec.BatchID, ReviewID: spec.ReviewSessionID, WorkerID: spec.WorkerID, ProjectID: spec.ProjectID, Harness: profile.ReviewChatHarness(), Model: spec.AgentConfig.Model, Effort: spec.AgentConfig.Effort, FastMode: spec.AgentConfig.FastMode, PinnedSettings: spec.PinnedSettings, DataDir: l.dataDir, WorkspacePath: spec.WorkspacePath, Env: env, Prompt: prompt, SystemPrompt: string(systemPrompt), ProviderConversationID: providerID}
+	launch := l.chat.StartReviewChat
 	if restore {
-		providerID, err = l.chat.RestoreReviewChat(ctx, start)
-	} else {
-		providerID, err = l.chat.StartReviewChat(ctx, start)
+		launch = l.chat.RestoreReviewChat
 	}
+	started, err := launch(ctx, start)
 	if err != nil {
 		return LaunchResult{}, agentlaunch.RedactError(err, spec.ProjectEnv)
 	}
-	return LaunchResult{HandleID: reviewerChatHandlePrefix + spec.ReviewSessionID, LaunchID: strings.TrimSpace(spec.LaunchID), AgentSessionID: providerID}, nil
+	return LaunchResult{HandleID: reviewerChatHandlePrefix + spec.ReviewSessionID, LaunchID: strings.TrimSpace(spec.LaunchID),
+		AgentSessionID: started.ProviderConversationID, LiveReconnect: started.LiveReconnect}, nil
 }
 
 func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec LaunchSpec, inv ports.ReviewInvocation, restoring bool) (LaunchResult, error) {

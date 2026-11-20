@@ -363,11 +363,13 @@ func TestReviewerStopProcessFixture(t *testing.T) {
 
 func TestReviewerStopKeepsOwnerWithoutOriginalLaunchProof(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		restart bool
-		roots   []int
+		name          string
+		restart       bool
+		roots         []int
+		lostAfterSave bool
 	}{
 		{name: "local pane already gone"},
+		{name: "local root exits after capturing and forking", roots: []int{101}, lostAfterSave: true},
 		{name: "boot with pane already gone", restart: true},
 		{name: "boot can still read old roots", restart: true, roots: []int{101}},
 	} {
@@ -421,12 +423,33 @@ func TestReviewerStopKeepsOwnerWithoutOriginalLaunchProof(t *testing.T) {
 			if len(tc.roots) != 0 {
 				table = newScriptedTable("101 1 100 0:00 pane", "202 101 100 0:00 attached-tool")
 			}
+			if tc.lostAfterSave {
+				table = newScriptedTable("101 1 100 0:00 pane")
+			}
 			// The local force-stop path can discover that roots are absent
 			// after the earlier liveness probe. The boot path sees the old
 			// supervisor gone even when a pane root is still readable.
 			rt := &rootedRuntime{fakeRuntime: &fakeRuntime{alive: !tc.restart, supervisedRecord: true}, roots: tc.roots}
 			launcher := receiptTestLauncher(root, rt, table, "")
 			launcher.forceStop.comparisonScope = func() (string, string) { return "", "" }
+			if tc.lostAfterSave {
+				reads := 0
+				launcher.forceStop.identities = func(ctx context.Context) (map[int]procmem.Identity, error) {
+					reads++
+					if reads == 2 {
+						members, err := store.ListReviewerStopProcesses(ctx, stopKey(review))
+						if err != nil || len(members) != 1 || members[0].PID != 101 {
+							t.Fatalf("expected root to be committed before it forked and exited: %+v (%v)", members, err)
+						}
+						table.processes[202] = procmem.Process{PID: 202, PPID: 101}
+						table.started[202] = "late-tool"
+						delete(table.processes, 101)
+						table.processes[202] = procmem.Process{PID: 202, PPID: 1}
+						rt.roots = nil
+					}
+					return table.identities(ctx)
+				}
+			}
 			s.launcher = launcher
 			s.advance(DefaultRunLifecycleConfig().CancelTimeout)
 			s.pass(t)
@@ -449,13 +472,132 @@ func TestReviewerStopKeepsOwnerWithoutOriginalLaunchProof(t *testing.T) {
 	}
 }
 
+func TestRecoveredChatToTerminalReviewerCanForceStop(t *testing.T) {
+	ctx := t.Context()
+	s := newLifecycleEngine(t, &fakeLauncher{
+		handle: "review-chat:id-1", interfaceMode: domain.ReviewerInterfaceChat, alive: true,
+	})
+	oldRun := s.trigger(t)
+	old := s.review(t)
+	if old.InterfaceMode != domain.ReviewerInterfaceChat {
+		t.Fatalf("expected a persisted Chat reviewer, got %+v", old)
+	}
+	if ok, err := s.store.ClaimReviewChatController(ctx, old.ID, "old-provider", "old-generation", *s.now); err != nil || !ok {
+		t.Fatalf("seed recoverable Chat controller: %v (%v)", ok, err)
+	}
+
+	s.advance(time.Second)
+	s.restartBeforeBoot(t, &fakeLauncher{}, RunLifecycleConfig{})
+	rt := &rootedRuntime{fakeRuntime: &fakeRuntime{supervisedRecord: true}, roots: []int{101}}
+	table := newScriptedTable("101 1 100 0:00 new-pane", "202 101 100 0:00 provider", "303 1 100 0:00 unrelated")
+	root := t.TempDir()
+	launcher := receiptTestLauncher(root, rt, table, "")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewer := &struct {
+		fakeReviewerWithLaunchSpec
+		fakeCancellableReviewer
+	}{fakeReviewerWithLaunchSpec: fakeReviewerWithLaunchSpec{spec: ports.ReviewCommandSpec{
+		Argv: []string{exe}, AgentSessionID: "new-terminal-native",
+	}}}
+	launcher.reviewers = fakeReviewerResolver{reviewer: reviewer, ok: true}
+	launcher.executable = os.Executable
+	s.launcher = launcher
+	if err := s.RecoverChatReviewers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	review := s.review(t)
+	if !rt.created || review.InterfaceMode != domain.ReviewerInterfaceTUI || review.ReviewerLaunchID == old.ReviewerLaunchID {
+		t.Fatalf("startup recovery did not create the new terminal launch: %+v", review)
+	}
+	wantRun(t, s.run(t, oldRun.ID), domain.ReviewRunFailed, domain.ReviewFailureProcessExited)
+	rt.alive = true
+	s.pass(t)
+	s.prs = prAt("sha2")
+	run := s.trigger(t)
+	if rt.sentTo != review.ReviewerHandleID || run.LaunchID != review.ReviewerLaunchID {
+		t.Fatalf("expected Notify to reuse restored launch: sentTo=%q run=%+v", rt.sentTo, run)
+	}
+	rt.destroyed = ""
+	if _, err := s.Cancel(ctx, s.worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	s.advance(DefaultRunLifecycleConfig().CancelTimeout)
+	s.pass(t)
+	wantRun(t, s.run(t, run.ID), domain.ReviewRunCancelled, "")
+	if rt.destroyed != review.ReviewerHandleID || len(table.killed) != 2 {
+		t.Fatalf("the new launch was not stopped: destroyed=%q killed=%v", rt.destroyed, table.killed)
+	}
+	if pending, err := s.store.HasReviewerStop(ctx, stopKey(review)); err != nil || pending {
+		t.Fatalf("finished stop remains pending: %v (%v)", pending, err)
+	}
+}
+
+type recoveringStopChat struct {
+	countingAccountReviewChat
+	stops int
+}
+
+func (c *recoveringStopChat) RestoreReviewChat(context.Context, ReviewerChatStart) (ports.ChatControllerStarted, error) {
+	c.restores++
+	return ports.ChatControllerStarted{ProviderConversationID: "old-provider", LiveReconnect: true}, nil
+}
+
+func (c *recoveringStopChat) ReviewChatAlive(string) bool { return c.restores != 0 }
+
+func (*recoveringStopChat) ReviewChatStopScope(context.Context, string, string) (*domain.CompactionProcessScope, error) {
+	return nil, nil
+}
+
+func (c *recoveringStopChat) StopReviewChatGeneration(context.Context, string, string) error {
+	c.stops++
+	return nil
+}
+
+func TestRecoveredLiveChatIsObservedWithoutLocalStop(t *testing.T) {
+	ctx := t.Context()
+	s := newLifecycleEngine(t, &fakeLauncher{
+		handle: "review-chat:id-1", interfaceMode: domain.ReviewerInterfaceChat, alive: true,
+	})
+	s.trigger(t)
+	old := s.review(t)
+	if ok, err := s.store.ClaimReviewChatController(ctx, old.ID, "old-provider", "old-generation", *s.now); err != nil || !ok {
+		t.Fatalf("seed recoverable Chat controller: %v (%v)", ok, err)
+	}
+	s.advance(time.Second)
+	s.restartBeforeBoot(t, &fakeLauncher{}, RunLifecycleConfig{})
+	chat := &recoveringStopChat{}
+	launcher := receiptTestLauncher(t.TempDir(), &fakeRuntime{}, newScriptedTable(), "")
+	launcher.reviewers = singleReviewerResolver{reviewer: chatReviewAdapter{}}
+	launcher.executable = os.Executable
+	launcher.chat = chat
+	s.launcher = launcher
+	if err := s.RecoverChatReviewers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	review := s.review(t)
+	if chat.restores != 1 || review.ReviewerLaunchID == old.ReviewerLaunchID || review.ControllerGeneration == "" {
+		t.Fatalf("expected an attached older provider under recovered reviewer: %+v", review)
+	}
+	if written, err := s.beginDurableReviewerStop(ctx, s.store, launcher, review); err != nil || !written {
+		t.Fatalf("could not record observer-only stop: %v (%v)", written, err)
+	}
+	if pending, err := s.store.HasReviewerStop(ctx, stopKey(review)); err != nil || !pending || chat.stops != 0 {
+		t.Fatalf("reconnected provider gained local stop authority: pending=%v stops=%d (%v)", pending, chat.stops, err)
+	}
+}
+
 func TestReviewerStopWithDefaultHooksAndNoRecoveryScope(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		destroyErr error
+		name        string
+		destroyErr  error
+		noSealProbe bool
 	}{
-		{"confirmed in this daemon", nil},
-		{"unconfirmed across daemon restart", errors.New("cannot confirm runtime teardown")},
+		{name: "confirmed in this daemon"},
+		{name: "unconfirmed across daemon restart", destroyErr: errors.New("cannot confirm runtime teardown")},
+		{name: "native stop without seal probe keeps owner", noSealProbe: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -516,6 +658,10 @@ func TestReviewerStopWithDefaultHooksAndNoRecoveryScope(t *testing.T) {
 			launcher := &agentLauncher{
 				dataDir: dataDir, runtime: rt, reviewers: fakeReviewerResolver{reviewer: &fakeReviewer{}, ok: true},
 			}
+			if tc.noSealProbe {
+				launcher.forceStop = defaultForceStopHooks()
+				launcher.forceStop.stopped = nil
+			}
 			s.launcher = launcher
 			s.advance(DefaultRunLifecycleConfig().CancelTimeout)
 			s.pass(t)
@@ -531,7 +677,7 @@ func TestReviewerStopWithDefaultHooksAndNoRecoveryScope(t *testing.T) {
 				t.Fatalf("force-stop did not run the original runtime teardown: %q", rt.destroyed)
 			}
 
-			if tc.destroyErr == nil {
+			if tc.destroyErr == nil && launcher.forceStopHooks().stopped != nil {
 				wantRun(t, s.run(t, run.ID), domain.ReviewRunCancelled, "")
 				if pending, err := store.HasReviewerStop(ctx, stopKey(review)); err != nil || pending {
 					t.Fatalf("confirmed stop left a receipt: %v (%v)", pending, err)

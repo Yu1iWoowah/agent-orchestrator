@@ -135,7 +135,7 @@ func durableProcesses(tree []capturedProcess) []domain.ReviewerStopProcess {
 }
 
 func (e *Engine) rememberLocalReviewerLaunch(reviewID string, launch LaunchResult) {
-	if launch.LaunchID == "" || launch.HandleID == "" {
+	if launch.LiveReconnect || launch.LaunchID == "" || launch.HandleID == "" {
 		return
 	}
 	e.runs.mu.Lock()
@@ -280,8 +280,7 @@ func (e *Engine) observeReviewerStop(ctx context.Context, store reviewerStopStor
 			return receipt, false, nil
 		}
 		if !hasRecoveryScope {
-			ended, err := launcher.stopReviewerWithoutRecoveryScope(ctx, store, receipt)
-			return receipt, ended, err
+			return launcher.stopReviewerWithoutRecoveryScope(ctx, store, receipt)
 		}
 		captured := launcher.captureStopReceipt(ctx, original)
 		if captured.State != domain.ReviewerStopCapturing || captured.DataRoot != receipt.DataRoot ||
@@ -301,22 +300,31 @@ func (e *Engine) observeReviewerStop(ctx context.Context, store reviewerStopStor
 	return launcher.advanceTerminalStop(ctx, store, receipt, local, current)
 }
 
-func (l *agentLauncher) stopReviewerWithoutRecoveryScope(ctx context.Context, store reviewerStopStore, receipt domain.ReviewerStopReceipt) (bool, error) {
+func (l *agentLauncher) stopReviewerWithoutRecoveryScope(ctx context.Context, store reviewerStopStore, receipt domain.ReviewerStopReceipt) (domain.ReviewerStopReceipt, bool, error) {
 	if receipt.InterfaceMode == domain.ReviewerInterfaceChat {
 		chat, ok := l.chat.(reviewerChatStopScope)
 		if !ok || receipt.ControllerGeneration == "" {
-			return false, nil
+			return receipt, false, nil
 		}
 		if err := chat.StopReviewChatGeneration(ctx, receipt.ReviewID, receipt.ControllerGeneration); err != nil {
-			return false, err
+			return receipt, false, err
 		}
-		return !l.chat.ReviewChatAlive(receipt.ReviewID), nil
-	}
-	tree, err := recordedStopProcesses(ctx, store, receipt.ReviewerStopKey)
-	if err != nil {
-		return false, err
+		return receipt, !l.chat.ReviewChatAlive(receipt.ReviewID), nil
 	}
 	hooks := l.forceStopHooks()
+	if hooks.freeze != nil && hooks.stopped != nil {
+		return l.advanceTerminalStop(ctx, store, receipt, true, true)
+	}
+	// The native path can attempt the stop on platforms without a seal
+	// probe. Its result cannot prove the unsealed lineage has fully exited.
+	tree, err := recordedStopProcesses(ctx, store, receipt.ReviewerStopKey)
+	if err != nil {
+		return receipt, false, err
+	}
+	if err := updateStopReason(ctx, store, receipt, "stop_probe_unavailable"); err != nil {
+		return receipt, false, err
+	}
+	receipt.Reason = "stop_probe_unavailable"
 	seen := make(map[capturedProcess]struct{}, len(tree))
 	for _, process := range tree {
 		seen[process] = struct{}{}
@@ -339,7 +347,8 @@ func (l *agentLauncher) stopReviewerWithoutRecoveryScope(ctx context.Context, st
 		}
 		return nil
 	}
-	return l.forceStopTerminal(ctx, receipt.HandleID, tree, hooks)
+	_, err = l.forceStopTerminal(ctx, receipt.HandleID, tree, hooks)
+	return receipt, false, err
 }
 
 func (l *agentLauncher) observeChatStop(ctx context.Context, receipt domain.ReviewerStopReceipt, stop bool) (bool, error) {
@@ -390,7 +399,7 @@ func (l *agentLauncher) advanceTerminalStop(ctx context.Context, store reviewerS
 	}
 	hooks := l.forceStopHooks()
 	handle := ports.RuntimeHandle{ID: receipt.HandleID}
-	if receipt.State == domain.ReviewerStopCapturing {
+	if receipt.State != domain.ReviewerStopSealed {
 		if !current {
 			return receipt, false, updateStopReason(ctx, store, receipt, "lineage_unavailable")
 		}
@@ -398,7 +407,9 @@ func (l *agentLauncher) advanceTerminalStop(ctx context.Context, store reviewerS
 		if err != nil || len(tree) == 0 {
 			return receipt, false, err
 		}
-		receipt.State = domain.ReviewerStopSealed
+		if hasReviewerRecoveryScope(receipt) {
+			receipt.State = domain.ReviewerStopSealed
+		}
 	}
 	observe := hooks.identities
 	hooks.identities = func(ctx context.Context) (map[int]procmem.Identity, error) {
@@ -513,6 +524,11 @@ func (l *agentLauncher) sealTerminalStop(ctx context.Context, store reviewerStop
 					if !hooks.stopped(process.pid, process.start) {
 						return nil, updateStopReason(ctx, store, receipt, "freeze_unconfirmed")
 					}
+				}
+				if !hasReviewerRecoveryScope(receipt) {
+					// This proof is valid only in the current daemon. The
+					// receipt cannot be recovered as sealed without scope.
+					return tree, nil
 				}
 				return tree, store.UpdateReviewerStop(ctx, receipt, domain.ReviewerStopSealed, "", nil)
 			}

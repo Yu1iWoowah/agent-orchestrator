@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -42,11 +43,15 @@ type forceStopHooks struct {
 const maxFreezeRounds = 32
 
 func defaultForceStopHooks() forceStopHooks {
+	var stopped func(int, string) bool
+	if runtime.GOOS == "linux" {
+		stopped = procmem.AllThreadsStopped
+	}
 	return forceStopHooks{
 		identities:      procmem.Identities,
 		comparisonScope: processscope.CurrentScope,
 		chatEnded:       processscope.Ended,
-		stopped:         procmem.AllThreadsStopped,
+		stopped:         stopped,
 		kill: func(pid int) error {
 			process, err := os.FindProcess(pid)
 			if err != nil {
@@ -135,6 +140,9 @@ func (l *agentLauncher) forceStopTerminal(ctx context.Context, handleID string, 
 	handle := ports.RuntimeHandle{ID: handleID}
 	tree, captureErr := l.captureReviewerTree(ctx, handle, hooks)
 	if captureErr != nil {
+		if hooks.record != nil {
+			return false, fmt.Errorf("capture reviewer process tree: %w", captureErr)
+		}
 		// Nothing trustworthy is known about the runtime's current tree, and
 		// tearing it down now would lose its roots for good. That holds even
 		// with survivors from an earlier attempt: a torn-down runtime reports
@@ -146,11 +154,11 @@ func (l *agentLauncher) forceStopTerminal(ctx context.Context, handleID string, 
 		}
 		return false, fmt.Errorf("capture reviewer process tree: %w", captureErr)
 	}
-	tree = mergeCaptured(previous, tree)
-	if len(tree) == 0 && hooks.record != nil {
-		// An absent pane provides no lineage for the durable receipt.
+	if hooks.record != nil && (len(tree) == 0 || !capturesContain(tree, previous)) {
+		// A partial capture is insufficient to stop an unsealed runtime.
 		return false, nil
 	}
+	tree = mergeCaptured(previous, tree)
 	if hooks.freeze != nil {
 		// The reviewer keeps running between the capture and its teardown and
 		// may spawn a tool there, possibly in its own session. Once its
@@ -181,6 +189,19 @@ func (l *agentLauncher) forceStopTerminal(ctx context.Context, handleID string, 
 		return false, destroyErr
 	}
 	return true, nil
+}
+
+func capturesContain(current, previous []capturedProcess) bool {
+	members := make(map[int]string, len(current))
+	for _, process := range current {
+		members[process.pid] = process.start
+	}
+	for _, process := range previous {
+		if members[process.pid] != process.start {
+			return false
+		}
+	}
+	return true
 }
 
 // freezeTree stops every process in tree and keeps re-reading until no new
@@ -325,7 +346,7 @@ func (l *agentLauncher) captureReviewerTree(ctx context.Context, handle ports.Ru
 	if err != nil {
 		return nil, err
 	}
-	return capturedFromRoots(bounded, identities, false)
+	return capturedFromRoots(bounded, identities, hooks.record != nil)
 }
 
 func capturedFromRoots(bounded []ports.ProcessRoot, identities map[int]procmem.Identity, requireAll bool) ([]capturedProcess, error) {

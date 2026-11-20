@@ -105,13 +105,13 @@ func (*countingAccountReviewChat) SupportsReviewChat(domain.AgentHarness) bool {
 func (*countingAccountReviewChat) PreflightReviewChat(context.Context, domain.AgentHarness) error {
 	return nil
 }
-func (c *countingAccountReviewChat) StartReviewChat(context.Context, ReviewerChatStart) (string, error) {
+func (c *countingAccountReviewChat) StartReviewChat(context.Context, ReviewerChatStart) (ports.ChatControllerStarted, error) {
 	c.starts++
-	return "fake-conversation", nil
+	return ports.ChatControllerStarted{ProviderConversationID: "fake-conversation"}, nil
 }
-func (c *countingAccountReviewChat) RestoreReviewChat(context.Context, ReviewerChatStart) (string, error) {
+func (c *countingAccountReviewChat) RestoreReviewChat(context.Context, ReviewerChatStart) (ports.ChatControllerStarted, error) {
 	c.restores++
-	return "fake-conversation", nil
+	return ports.ChatControllerStarted{ProviderConversationID: "fake-conversation"}, nil
 }
 
 func TestReviewerChatRefusesKnownUnusableBindingOnLaunchAndRestore(t *testing.T) {

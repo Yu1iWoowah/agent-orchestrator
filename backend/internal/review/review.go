@@ -1547,6 +1547,7 @@ func (e *Engine) restorePersistedChatReviewerLocked(ctx stdctx.Context, worker d
 		_ = e.launcher.Destroy(ctx, launch.HandleID)
 		return RestoreReviewerResult{}, err
 	}
+	e.rememberLocalReviewerLaunch(review.ID, launch)
 	return RestoreReviewerResult{ReviewerHandleID: launch.HandleID, Restored: true}, nil
 }
 

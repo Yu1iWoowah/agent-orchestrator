@@ -443,14 +443,14 @@ func (c sqliteReviewChatController) SupportsReviewChat(domain.AgentHarness) bool
 func (c sqliteReviewChatController) PreflightReviewChat(context.Context, domain.AgentHarness) error {
 	return nil
 }
-func (c sqliteReviewChatController) StartReviewChat(ctx context.Context, cfg ReviewerChatStart) (string, error) {
+func (c sqliteReviewChatController) StartReviewChat(ctx context.Context, cfg ReviewerChatStart) (ports.ChatControllerStarted, error) {
 	if c.started != nil {
 		*c.started = cfg
 	}
 	_, err := c.store.CreateReviewConversation(ctx, "review-conversation", cfg.ReviewID, cfg.ProjectID, cfg.WorkerID, time.Now().UTC())
-	return "provider-conversation", err
+	return ports.ChatControllerStarted{ProviderConversationID: "provider-conversation"}, err
 }
-func (c sqliteReviewChatController) RestoreReviewChat(ctx context.Context, cfg ReviewerChatStart) (string, error) {
+func (c sqliteReviewChatController) RestoreReviewChat(ctx context.Context, cfg ReviewerChatStart) (ports.ChatControllerStarted, error) {
 	return c.StartReviewChat(ctx, cfg)
 }
 func (sqliteReviewChatController) SendReviewChat(context.Context, string, string, string) error {
