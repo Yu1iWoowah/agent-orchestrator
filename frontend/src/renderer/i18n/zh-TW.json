@@ -5753,7 +5753,7 @@
 	"inspector.review.failedRetry": "審查失敗，請重試。",
 	"inspector.review.activeReviewers": "活躍的 reviewer",
 	"inspector.review.retry": "重試",
-	"inspector.review.starting": "正在啓動審查...",
+	"inspector.review.starting": "正在啟動審查…",
 	"inspector.review.superseded": "已被更新的提交取代",
 	"inspector.review.waitingForInput": "等待輸入",
 	"inspector.commentedAt": "{{time}}評論",
