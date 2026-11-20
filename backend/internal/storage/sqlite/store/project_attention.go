@@ -97,7 +97,7 @@ func (s *Store) projectAttentionSources(ctx context.Context, project domain.Proj
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := gen.New(tx)
+	q := s.txQueries(tx)
 	if _, err = q.GetProject(ctx, project); errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrAttentionQuestionNotFound
 	} else if err != nil {

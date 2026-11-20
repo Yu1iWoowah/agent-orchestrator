@@ -27,7 +27,7 @@ func (s *Store) CaptureTranscriptSourceCutoff(ctx context.Context, id domain.Ses
 		return domain.TranscriptSourceCutoff{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	cut, err := transcriptSourceCutoff(ctx, gen.New(tx), id)
+	cut, err := transcriptSourceCutoff(ctx, s.txQueries(tx), id)
 	if err != nil {
 		return cut, err
 	}
@@ -85,7 +85,7 @@ func (s *Store) LoadTranscriptSourceSnapshot(ctx context.Context, id domain.Sess
 		return out, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := gen.New(tx)
+	q := s.txQueries(tx)
 	session, err := q.GetSession(ctx, id)
 	if err != nil {
 		return out, err

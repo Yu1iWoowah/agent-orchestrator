@@ -139,9 +139,11 @@ func RunSuite(t *testing.T, normalize func(Input) ports.ChatEvent) {
 		}
 		cmd := process.Command(bin, action, dir)
 		cmd.Stdin = bytes.NewReader(raw)
-		out, err := cmd.CombinedOutput()
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
 		if err != nil {
-			http.Error(w, string(out), http.StatusInternalServerError)
+			http.Error(w, err.Error()+"\n"+stderr.String(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

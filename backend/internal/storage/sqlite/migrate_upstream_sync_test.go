@@ -265,15 +265,25 @@ func upstreamSyncSchema(t *testing.T, db *sql.DB) map[string]string {
 
 func assertUpstreamSyncLedger(t *testing.T, db *sql.DB) {
 	t.Helper()
+	assertUpstreamSyncLedgerThrough(t, db, goose.MaxVersion)
+}
+
+func assertUpstreamSyncLedgerThrough(t *testing.T, db *sql.DB, lastVersion int64) {
+	t.Helper()
 	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
 		t.Fatal(err)
 	}
+	var checked int
 	for _, entry := range entries {
 		version, err := strconv.ParseInt(strings.SplitN(entry.Name(), "_", 2)[0], 10, 64)
 		if err != nil {
 			t.Fatal(err)
 		}
+		if version > lastVersion {
+			continue
+		}
+		checked++
 		var applied, total int
 		if err := db.QueryRow(`SELECT count(*),COALESCE(sum(is_applied),0) FROM goose_db_version WHERE version_id=?`, version).Scan(&total, &applied); err != nil {
 			t.Fatal(err)
@@ -300,7 +310,7 @@ func assertUpstreamSyncLedger(t *testing.T, db *sql.DB) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("all %d embedded migrations have exactly one applied receipt", len(entries))
+	t.Logf("verified one applied receipt for each of %d migrations", checked)
 }
 
 func assertUpstreamSyncConstraints(t *testing.T, db *sql.DB) {
@@ -399,7 +409,7 @@ func TestUpstreamSyncSchemaAdoptsCRLF(t *testing.T) {
 	if got := upstreamSyncRows(t, db, query); got != before {
 		t.Fatalf("CRLF adoption changed values: %s -> %s", before, got)
 	}
-	assertUpstreamSyncLedger(t, db)
+	assertUpstreamSyncLedgerThrough(t, db, upstreamSyncSchemaVersion)
 	assertUpstreamSyncConstraints(t, db)
 }
 

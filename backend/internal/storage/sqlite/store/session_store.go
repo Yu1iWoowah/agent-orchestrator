@@ -399,7 +399,7 @@ func (s *Store) DeleteTaskPreparation(ctx context.Context, id domain.SessionID) 
 		return false, fmt.Errorf("begin delete task preparation %s: %w", id, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := s.qw.WithTx(tx)
+	q := s.txQueries(tx)
 	row, err := q.GetSession(ctx, id)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, fmt.Errorf("read task preparation %s: %w", id, err)

@@ -2493,7 +2493,7 @@ func (s *Store) ConfirmConversationLogin(ctx context.Context, conversationID str
 func (s *Store) RequireSessionLogin(ctx context.Context, id domain.SessionID, reason string, now time.Time) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return s.inTx(ctx, "require session login", func(q *gen.Queries) error {
+	return s.inTxDB(ctx, "require session login", func(q *gen.Queries, db gen.DBTX) error {
 		row, err := q.SelectConversationBySession(ctx, &id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -2510,7 +2510,7 @@ func (s *Store) RequireSessionLogin(ctx context.Context, id domain.SessionID, re
 			account = *record.Account
 		}
 		account.RequireLogin(reason, uuid.NewString(), now)
-		return s.RecordAccount(context.WithValue(ctx, conversationProjectionTxKey{}, q), record.ID, account, now)
+		return s.RecordAccount(projectionContext(ctx, q, db), record.ID, account, now)
 	})
 }
 
@@ -3442,8 +3442,8 @@ func (s *Store) UpsertActivity(
 	defer unlock()
 
 	if activity.Kind == domain.ActivityKindPlan {
-		return s.inTx(ctx, "project plan activity", func(txq *gen.Queries) error {
-			txctx := context.WithValue(ctx, conversationProjectionTxKey{}, txq)
+		return s.inTxDB(ctx, "project plan activity", func(txq *gen.Queries, db gen.DBTX) error {
+			txctx := projectionContext(ctx, txq, db)
 			return s.upsertActivity(txctx, txq, conversationID, providerTurnID, activity, now)
 		})
 	}

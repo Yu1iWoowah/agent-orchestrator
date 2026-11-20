@@ -425,10 +425,18 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		return TriggerResult{}, fmt.Errorf("%w: reviewer config: %w", ErrInvalid, err)
 	}
 
-	// A draft-only automatic sweep cannot start a pass. Read-only projection
-	// also preserves any active run for the reaper to observe and finish.
+	// A draft-only automatic sweep may observe existing runs but cannot
+	// change reviewer settings or plan new work.
 	if source == domain.ReviewTriggerAuto && len(prs) > 0 &&
 		!slices.ContainsFunc(prs, func(pr domain.PullRequest) bool { return !pr.Draft }) {
+		if settled, err := e.evaluateSessionLocked(ctx, workerID); err != nil {
+			return TriggerResult{}, err
+		} else if settled {
+			runs, err = e.store.ListReviewRunsBySession(ctx, workerID)
+			if err != nil {
+				return TriggerResult{}, err
+			}
+		}
 		return TriggerResult{Reviews: PlanAuto(prs, runs), Runs: runs}, nil
 	}
 

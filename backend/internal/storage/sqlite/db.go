@@ -2308,7 +2308,18 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 		if _, err := db.Exec(`UPDATE sqlite_master SET sql = replace(sql, '''hermes'', ', '') WHERE type = 'table' AND name = 'sessions'`); err != nil {
 			return fmt.Errorf("schema repair: normalize Hermes constraint: %w", err)
 		}
+		schema = strings.ReplaceAll(schema, "'hermes', ", "")
 		needsNativeAssistant = true
+	}
+	// B's immutable tail migrations can already have widened a known older
+	// CHECK. Carry the exact suffix through the historical repairs.
+	const harnessTail = "'fake'))"
+	tail := harnessTail
+	for _, harness := range []string{"tau", "open-interpreter", "minimax-code", "docker-agent", "stakpak"} {
+		widened := "'" + harness + "', " + tail
+		if strings.Contains(schema, widened) {
+			tail = widened
+		}
 	}
 	type replacement struct {
 		old string
@@ -2426,6 +2437,10 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 		repairs = append(repairs, replacement{"'fake'))", "'memcode', 'fake'))"})
 	}
 	for _, r := range repairs {
+		if strings.HasPrefix(r.old, "CHECK (harness IN (") {
+			r.old = strings.Replace(r.old, harnessTail, tail, 1)
+			r.new = strings.Replace(r.new, harnessTail, tail, 1)
+		}
 		if _, err := db.Exec(
 			`UPDATE sqlite_master
 SET sql = replace(sql, ?, ?)
