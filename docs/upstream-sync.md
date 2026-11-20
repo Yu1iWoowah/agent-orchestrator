@@ -251,3 +251,11 @@ CLI 仍走 daemon HTTP，Cloud、HCG 與 `go.work` 保留 fork 原來源。LAN �
 | `PRRT_kwDOVZZGR8652AK7` | 恢復 F 的 Kimi hooks 與 lifecycle。撤回 `1a5d2647` 已匯入的 callback、reducer 及對應測試。 | C 接入同一提交的 CLI scoped approval identity、真實 payload 的 CLI→HTTP 測試與 reducer。 |
 | `PRRT_kwDOVZZGR8652ALA` | 把逐 harness 的驗證錯誤傳給共用 `describeHarness`。父元件測試實際觸發 Check again，驗 Health、Account 與成功重試。 | A 驗證。 |
 | `PRRT_kwDOVZZGR8652ALF` | 恢復 F 的 minimap E2E，配對 A 現有 inspector 行為。 | D 將按 chat 寬度顯示的實作與 E2E 一起接入。 |
+
+### A 段 audit 處置
+
+| 發現 | A 段處置 | 驗收 |
+|---|---|---|
+| I1 | `ed765f56bb` 的 23 條路徑恢復 F，包括 TLS 表單、解析器、新增／編輯呼叫端與測試。 | D.02 一起接入位址推導 TLS、wire 與呼叫端驗收。 |
+| I2 | 撤回 `4b5d3d3f80` 的九條手勢路徑。ChatMarkdown 已維持 F，ChatTimelineItems 的手勢 hunk 也已維持 F，保留 A 的時間格式匯出。 | D.01 一起接入 #8709 的 wheel ownership、通知、圖片、程式碼、表格與 timeline 呼叫端。 |
+| I3 | 舊 retarget 由同一 head 選取實際執行 `changes` 的 run。 | 雙 run fixture 核對略過新 skipped run。新整合分支以 fresh merge ref 驗收。 |

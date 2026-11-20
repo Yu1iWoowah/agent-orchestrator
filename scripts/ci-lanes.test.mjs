@@ -162,11 +162,56 @@ test('retarget permits our own fork repository but refuses an external head', ()
   github.event.pull_request.head.repo.full_name = github.repository;
   github.base_ref = 'main';
   assert.equal(eligible(), true);
+  github.base_ref = 'ao/upsync2-design/upsync2-integration';
+  assert.equal(eligible(), false);
   github.base_ref = 'ao/upsync-design/upsync-integration-other';
   assert.equal(eligible(), false);
   github.base_ref = 'main';
   delete github.event.changes.base;
   assert.equal(eligible(), false);
+});
+
+test('legacy retarget reruns the CI with jobs when a newer run on the same head skipped them', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/ci-retarget.yml', import.meta.url), 'utf8');
+  const rerun = workflow.split('        run: |\n')[1];
+  assert.ok(rerun);
+  const fakeGitHub = `
+    gh() {
+      local filter
+      for filter; do :; done
+      case "$1 $2" in
+        "run list")
+          printf '141\\n'
+          ;;
+        "api repos/example/fork/actions/workflows/ci.yml/runs")
+          [[ "$*" == *"head_sha=$SHA"* && "$*" == *"event=pull_request"* ]]
+          jq -r "$filter" <<< '{"workflow_runs":[{"id":141},{"id":140}]}'
+          ;;
+        "run watch")
+          ;;
+        "run view")
+          local conclusion=success
+          if [ "$3" = 141 ]; then conclusion=skipped; fi
+          printf '{"jobs":[{"name":"changes","conclusion":"%s"}]}' "$conclusion" | jq -r "$filter"
+          ;;
+        "api repos/example/fork/pulls/42")
+          printf '%s\\n' "$SHA"
+          ;;
+        "run rerun")
+          printf 'rerun: %s\\n' "$3"
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    }
+  `;
+  const result = spawnSync('bash', ['-e', '-c', fakeGitHub + rerun], {
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_REPOSITORY: 'example/fork', PR: '42', SHA: 'fixture-head' },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'rerun: 140');
 });
 
 test('UPSYNC2 retarget runs fresh CI on same-repository ready base changes', () => {
