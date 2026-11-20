@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -16,73 +17,35 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-// These are U=53a545ad's files absent from F1=b2c8f3bb. Removing them
-// reconstructs the shipped fork, rather than approximating it by MAX(version).
-var upstreamSyncImportedVersions = map[int64]bool{
-	20261023123504180: true,
-	20261026083409462: true,
-	20261026185532680: true,
-	20261028124744441: true,
-	20261028180000000: true,
-	20261028224250364: true,
-	20261028233910979: true,
-	20261029072736970: true,
-	20261029191416441: true,
-	20261030044053264: true,
-	20261030120740000: true,
-	20261030141527623: true,
-	20261030182857119: true,
-	20261030182857237: true,
-	20261030182857344: true,
-	20261030230920365: true,
-	20261030234657125: true,
-	20261031021251693: true,
-	20261031173315209: true,
-	20261031173316629: true,
-	20261101055144579: true,
-	20261101102149555: true,
-	20261101145613011: true,
-	20261101192928401: true,
-	20261102100313400: true,
-	20261102164353715: true,
-	20261103000000000: true,
-	20261103030401452: true,
-	20261103094403671: true,
-	20261105105237146: true,
-	20261107181854835: true,
-	20261109072438921: true,
-	20261109094334974: true,
-	20261109120000000: true,
-	20261109153109361: true,
-	20261110172911382: true,
-	20261111145612313: true,
-	20261113111818788: true,
-	20261113173435236: true,
-	20261114072016988: true,
-	20261114182101000: true,
-}
+// Captured from 0ea30936 (u3), b2c8f3bb (F1), and 816d7820 (F).
+// u4 a74c4d4493 has identical migration paths and bytes as F. By pinning
+// the sets, a later import with an old version cannot enter an older fixture.
+//
+//go:embed testdata/upstream_sync_fixture_migrations.tsv
+var upstreamSyncFixtureMigrations string
 
 func upstreamSyncLegacyDatabase(t *testing.T, dir string, version int64) map[string]string {
 	t.Helper()
 	legacy := fstest.MapFS{}
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		id, err := strconv.ParseInt(strings.SplitN(entry.Name(), "_", 2)[0], 10, 64)
-		if err != nil {
-			t.Fatal(err)
+	for _, entry := range strings.Split(strings.TrimSpace(upstreamSyncFixtureMigrations), "\n") {
+		snapshot, filename, ok := strings.Cut(entry, "\t")
+		firstSeen, err := strconv.ParseInt(snapshot, 10, 64)
+		if !ok || err != nil {
+			t.Fatalf("invalid historical fixture entry %q", entry)
 		}
-		if id > version || upstreamSyncImportedVersions[id] {
+		if firstSeen > version {
 			continue
 		}
-		name := "migrations/" + entry.Name()
+		name := "migrations/" + filename
 		data, err := migrationsFS.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		legacy[name] = &fstest.MapFile{Data: data}
+	}
+	want := map[int64]int{20261114020404081: 241, 20261115050041608: 242, 20261116001259486: 284}[version]
+	if want == 0 || len(legacy) != want {
+		t.Fatalf("historical fixture %d has %d migrations, want %d", version, len(legacy), want)
 	}
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "ao.db")+snapshotDSN)
 	if err != nil {
@@ -111,7 +74,7 @@ func TestUpstreamSyncInstallsAndUpgrades(t *testing.T) {
 		name    string
 		version int64
 	}{
-		{"fresh", 0}, {"u3", 20261114020404081}, {"F1", 20261115050041608},
+		{"fresh", 0}, {"u3", 20261114020404081}, {"F1", 20261115050041608}, {"u4-and-F", 20261116001259486},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -232,7 +195,7 @@ func TestUpstreamSyncRebuildPreservesNonEmptyValues(t *testing.T) {
 func upstreamSyncSchema(t *testing.T, db *sql.DB) map[string]string {
 	t.Helper()
 	result := sharedInputObjects(t, db)
-	for _, table := range []string{"app_settings", "conversation_turns", "model_usage_events"} {
+	for _, table := range []string{"app_settings", "conversation_turns", "model_usage_events", "review_run", "shell_terminals"} {
 		key := "table:" + table
 		statement := result[key]
 		start, end := strings.IndexByte(statement, '('), strings.LastIndexByte(statement, ')')
