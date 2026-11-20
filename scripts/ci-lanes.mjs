@@ -11,7 +11,8 @@ export const LANES = {
   boundary: [FRONTEND, /^backend\/internal\/httpd\//],
   cloud: [/^packages\/cloud-client\//, /^contracts\/cloud\//],
   'product-ui': [/^packages\/product-ui\//],
-  mobile: [/^packages\/(mobile|shared)\//],
+  // The app copies the desktop's harness marks; its parity test reads them and the daemon's harness list.
+  mobile: [/^packages\/(mobile|shared)\//, /^frontend\/src\/renderer\/(assets\/agents\/|components\/AgentAvatar\.tsx$)/, /^backend\/internal\/domain\/harness\.go$/],
   'mac-native': [/^frontend\/native\//, /^frontend\/scripts\/build-(mac|update|wake|dictation)/, /^frontend\/assets\/(icon\.icns$|dmg\/)/],
   config: [/^\.github\//, /^scripts\//],
 };
@@ -23,7 +24,8 @@ const ALL_VITEST = /^(frontend\/(package(-lock)?\.json|vite[^/]*\.ts|vitest[^/]*
 const FILE_LIMIT = 3000;
 
 export function pickLanes({ event, draft = false, base = 'main', fork = false, labels = [], files = [] }) {
-  const integration = base === 'ao/upsync-design/upsync-integration';
+  const integration = base === 'ao/upsync-design/upsync-integration'
+    || (base === 'ao/upsync2-design/upsync2-integration' && !fork);
   const validatedBase = base === 'main' || integration;
   if (event === 'pull_request' && !draft && !validatedBase && fork) {
     throw new Error(`This fork PR targets ${base}. CI cannot re-run it when it moves to main, so ci-ok stays red: target main and push again.`);

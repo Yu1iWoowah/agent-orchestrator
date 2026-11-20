@@ -3,7 +3,7 @@ name: Pricing catalog validation
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [main, ao/upsync-design/upsync-integration]
+    branches: [main, ao/upsync-design/upsync-integration, ao/upsync2-design/upsync2-integration]
     paths:
       - "backend/internal/pricing/**"
       - ".github/workflows/pricing-catalog-validate.yml"

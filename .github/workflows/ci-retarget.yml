@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   rerun:
+    # UPSYNC2 uses CI's fresh pull_request.edited event and its new merge SHA.
     if: github.event.changes.base && (github.base_ref == 'main' || github.base_ref == 'ao/upsync-design/upsync-integration') && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 90
