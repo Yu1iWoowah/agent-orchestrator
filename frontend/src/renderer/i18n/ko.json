@@ -2133,7 +2133,6 @@
 	"artifacts.archivedSession": "보관됨",
 	"artifacts.noProject": "프로젝트 없음",
 	"artifacts.deletedSession": "세션 삭제됨",
-	"artifacts.removedProject": "프로젝트 제거됨",
 	"artifacts.startSession": "이것으로 세션 시작",
 	"artifacts.startSessionPrompt": "이 파일을 바탕으로 작업해 주세요: {{path}}",
 	"artifacts.startSessionFailed": "이 파일로 세션을 시작할 수 없습니다",

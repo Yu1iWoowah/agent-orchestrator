@@ -5775,7 +5775,6 @@
 	"artifacts.archivedSession": "已歸檔",
 	"artifacts.noProject": "無專案",
 	"artifacts.deletedSession": "session 已刪除",
-	"artifacts.removedProject": "專案已移除",
 	"artifacts.startSession": "用它開始一個 session",
 	"artifacts.startSessionPrompt": "請基於這個檔案工作：{{path}}",
 	"artifacts.startSessionFailed": "無法用這個檔案開始 session",

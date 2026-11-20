@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionartifacts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 	sqlitestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
@@ -133,7 +134,7 @@ func TestDeleteKeepingArtifactsKeepsTheFilesUntilEachIsDeleted(t *testing.T) {
 		t.Fatalf("kept sets = %+v, %v", sets, err)
 	}
 	set := sets[0]
-	if set.SessionID != id || set.ProjectID != "mer" || set.Title != "Quarterly report" || !set.SessionDeleted || !set.At.Equal(f.now) {
+	if set.SessionID != id || set.ProjectID != "mer" || set.Title != "Quarterly report" || !set.At.Equal(f.now) {
 		t.Fatalf("kept set = %+v", set)
 	}
 	var paths []string
@@ -224,24 +225,45 @@ func TestDeleteExpiredKeepsArtifactsOfTheSessionsItDeletes(t *testing.T) {
 	}
 }
 
-// A removed project's sessions keep their rows, which no project lists, so
-// their artifacts are listed as kept, with no project.
-func TestListKeptArtifactsIncludesRemovedProjectSessions(t *testing.T) {
-	ctx := context.Background()
-	f := newKeptFixture(t)
-	id := f.archivedSession(t, "Report", "report.md")
-	f.archivedSession(t, "Nothing")
-	if sets, err := f.svc.ListKeptArtifacts(ctx); err != nil || len(sets) != 0 {
-		t.Fatalf("kept sets before removal = %+v, %v", sets, err)
-	}
-	if ok, err := f.store.ArchiveProject(ctx, "mer", f.now); err != nil || !ok {
-		t.Fatalf("archive project = %v, %v", ok, err)
-	}
-	sets, err := f.svc.ListKeptArtifacts(ctx)
-	if err != nil || len(sets) != 1 {
-		t.Fatalf("kept sets = %+v, %v", sets, err)
-	}
-	if set := sets[0]; set.SessionID != id || set.ProjectID != "" || set.SessionDeleted || set.Title != "Report" || len(set.Files) != 1 {
-		t.Fatalf("kept set = %+v", set)
+func TestKeepingDeleteRejectsNonDefaultArtifactDir(t *testing.T) {
+	for _, name := range []string{"manual", "archive retention"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			f := newKeptFixture(t)
+			id := f.archivedSession(t, "Old report", "report.md")
+			defaultDir := sessionartifacts.Dir(f.dataDir, id)
+			storedDir := filepath.Join(f.dataDir, "legacy-artifact-dir")
+			if err := os.Rename(defaultDir, storedDir); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(defaultDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if updated, err := f.store.UpdateSessionArtifactOutput(ctx, id, storedDir, domain.SessionOutputArtifact); err != nil || !updated {
+				t.Fatalf("update stored artifact directory = %v, %v", updated, err)
+			}
+			before, err := f.svc.Get(ctx, id)
+			if err != nil || len(before.ArtifactFiles) != 1 || !before.ArtifactFiles[0].Registered {
+				t.Fatalf("get session before delete = %+v, %v", before.ArtifactFiles, err)
+			}
+			if name == "manual" {
+				err = f.svc.DeleteKeepingArtifacts(ctx, id, false)
+			} else {
+				f.svc.clock = func() time.Time { return f.now.AddDate(0, 0, 60) }
+				err = f.svc.DeleteExpired(ctx, 30)
+			}
+			var apiErr *apierr.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != "ARTIFACT_DIR_UNSUPPORTED" {
+				t.Fatalf("delete error = %v, want unsupported artifact directory", err)
+			}
+			after, kept, err := f.svc.ArtifactSession(ctx, id)
+			if err != nil || kept || after.Metadata.ArtifactDir != storedDir || len(after.ArtifactFiles) != 1 ||
+				after.ArtifactFiles[0].ID != before.ArtifactFiles[0].ID || !after.ArtifactFiles[0].Registered {
+				t.Fatalf("session/artifact registration after refused delete = %+v, kept=%v, err=%v", after, kept, err)
+			}
+			if content, err := os.ReadFile(filepath.Join(storedDir, "report.md")); err != nil || string(content) != "x" {
+				t.Fatalf("stored artifact after refused delete = %q, %v", content, err)
+			}
+		})
 	}
 }

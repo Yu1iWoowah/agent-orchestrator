@@ -6,17 +6,12 @@ import { toSessionArtifact } from "./useWorkspaceQuery";
 
 export const keptArtifactsQueryKey = ["kept-artifacts"] as const;
 
-/**
- * Artifacts no session or project lists: those of a session deleted with its
- * artifacts kept, and of a session in a removed project. They are view only.
- */
+/** Read-only artifacts kept when their session was deleted. */
 export type KeptArtifactSet = {
 	sessionId: string;
 	/** The session's project; undefined once it has none. */
 	projectId?: string;
 	title: string;
-	/** Set when the session itself was deleted; otherwise its project was removed. */
-	sessionDeleted: boolean;
 	artifactFiles: SessionArtifact[];
 };
 
@@ -27,7 +22,6 @@ async function fetchKeptArtifacts(): Promise<KeptArtifactSet[]> {
 		sessionId: set.sessionId,
 		...(set.projectId ? { projectId: set.projectId } : {}),
 		title: set.title || set.sessionId,
-		sessionDeleted: set.sessionDeleted,
 		artifactFiles: set.artifactFiles.map(toSessionArtifact),
 	}));
 }

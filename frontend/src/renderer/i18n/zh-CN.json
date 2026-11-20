@@ -2117,7 +2117,6 @@
 	"artifacts.archivedSession": "已归档",
 	"artifacts.noProject": "无项目",
 	"artifacts.deletedSession": "会话已删除",
-	"artifacts.removedProject": "项目已移除",
 	"artifacts.startSession": "用它开始一个会话",
 	"artifacts.startSessionPrompt": "请基于这个文件工作：{{path}}",
 	"artifacts.startSessionFailed": "无法用这个文件开始会话",

@@ -1947,7 +1947,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List the artifacts no session or project lists: those of sessions deleted with their artifacts kept, and of sessions in removed projects */
+        /** List artifacts kept when their sessions were deleted */
         get: operations["listKeptArtifacts"];
         put?: never;
         post?: never;
@@ -8243,11 +8243,10 @@ export interface components {
             artifactFiles: components["schemas"]["SessionArtifact"][];
             /**
              * Format: date-time
-             * @description When the session was deleted, or last updated.
+             * @description When the session was deleted.
              */
             at: string;
             projectId?: string;
-            sessionDeleted: boolean;
             sessionId: string;
             title: string;
         };

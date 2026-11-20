@@ -3976,7 +3976,7 @@ func sessionOperations() []operation {
 		},
 		{
 			method: http.MethodGet, path: "/api/v1/kept-artifacts", id: "listKeptArtifacts", tag: "sessions",
-			summary: "List the artifacts no session or project lists: those of sessions deleted with their artifacts kept, and of sessions in removed projects",
+			summary: "List artifacts kept when their sessions were deleted",
 			resps: []respUnit{
 				{http.StatusOK, controllers.ListKeptArtifactsResponse{}},
 				{http.StatusInternalServerError, envelope.APIError{}},

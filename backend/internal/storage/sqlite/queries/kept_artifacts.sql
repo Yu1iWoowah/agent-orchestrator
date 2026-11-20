@@ -43,11 +43,3 @@ WHERE session_id = sqlc.arg(session_id) AND path = sqlc.arg(path);
 
 -- name: DeleteKeptArtifactSession :exec
 DELETE FROM kept_artifact_sessions WHERE session_id = sqlc.arg(session_id);
-
--- name: ListRemovedProjectSessionIDs :many
--- Sessions of a removed project. Their rows stay, but no project lists them.
-SELECT s.id
-FROM sessions AS s
-JOIN projects AS p ON p.id = s.project_id
-WHERE p.archived_at IS NOT NULL
-ORDER BY s.id;

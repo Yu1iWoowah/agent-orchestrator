@@ -2167,7 +2167,6 @@
 	"artifacts.archivedSession": "Arquivado",
 	"artifacts.noProject": "Sem projeto",
 	"artifacts.deletedSession": "Sessão excluída",
-	"artifacts.removedProject": "Projeto removido",
 	"artifacts.startSession": "Iniciar uma sessão com isto",
 	"artifacts.startSessionPrompt": "Trabalhe a partir deste arquivo: {{path}}",
 	"artifacts.startSessionFailed": "Não foi possível iniciar uma sessão com este arquivo",

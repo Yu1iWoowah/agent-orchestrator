@@ -1543,20 +1543,16 @@ type ListKeptArtifactsResponse struct {
 	Sets []KeptArtifactsView `json:"sets"`
 }
 
-// KeptArtifactsView is one set of artifacts no session or project lists: a
-// session deleted with its artifacts kept, or a session in a removed project.
+// KeptArtifactsView is the artifact set of a deleted session.
 // Its files are view only; DELETE /api/v1/sessions/{sessionId}/artifact-files
 // deletes one.
 type KeptArtifactsView struct {
 	SessionID domain.SessionID `json:"sessionId"`
 	// ProjectID is the session's project; absent when it has none any more.
-	ProjectID domain.ProjectID `json:"projectId,omitempty"`
-	Title     string           `json:"title"`
-	// SessionDeleted is set when the session itself was deleted; otherwise
-	// its project was removed.
-	SessionDeleted bool                  `json:"sessionDeleted"`
-	At             time.Time             `json:"at" description:"When the session was deleted, or last updated."`
-	ArtifactFiles  []SessionArtifactView `json:"artifactFiles"`
+	ProjectID     domain.ProjectID      `json:"projectId,omitempty"`
+	Title         string                `json:"title"`
+	At            time.Time             `json:"at" description:"When the session was deleted."`
+	ArtifactFiles []SessionArtifactView `json:"artifactFiles"`
 }
 
 // DeleteSessionResponse is the body of DELETE /api/v1/sessions/{sessionId}.

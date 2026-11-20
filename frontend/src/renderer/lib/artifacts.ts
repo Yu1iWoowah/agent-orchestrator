@@ -55,7 +55,7 @@ export type ArtifactRow = {
 	 * deleted with its artifacts kept, or its project was removed. It opens no
 	 * session; a new one can start from it.
 	 */
-	kept?: "session-deleted" | "project-removed";
+	kept?: "session-deleted";
 };
 
 /**
@@ -200,19 +200,19 @@ function keptArtifactRows(set: KeptArtifactSet, projectId: string | undefined): 
 		...(artifact.shareUrl ? { shareUrl: artifact.shareUrl } : {}),
 		...(artifact.shareUrl && artifact.shareAccess ? { shareAccess: artifact.shareAccess } : {}),
 		archived: true,
-		kept: set.sessionDeleted ? "session-deleted" : "project-removed",
+		kept: "session-deleted",
 	}));
 }
 
 /**
  * Where a row comes from, after its name: its project and session, and why it
  * is view only. An archived session's files stay listed, and so do those of a
- * deleted session or removed project that were kept.
+ * deleted session whose artifacts were kept.
  */
 export function artifactContext(t: TFunction, row: Pick<ArtifactRow, "archived" | "kept" | "sessionTitle">, projectName: string): string {
 	const reason = row.kept === "session-deleted"
 		? t("artifacts.deletedSession")
-		: row.kept === "project-removed" ? t("artifacts.removedProject") : row.archived ? t("artifacts.archivedSession") : "";
+		: row.archived ? t("artifacts.archivedSession") : "";
 	return reason ? `${projectName} · ${row.sessionTitle} · ${reason}` : `${projectName} · ${row.sessionTitle}`;
 }
 

@@ -268,3 +268,21 @@ CLI 仍走 daemon HTTP，Cloud、HCG 與 `go.work` 保留 fork 原來源。LAN �
 | .03 | UTC startup fence 與背景修復使用同一儲存邊界。保留 Guardian trigger 產生的 UTC 表示，以及有 active hold 的 conversation queue 順序。WITHOUT ROWID 表以主鍵分批續跑。 | 合成同 instant 帳號碰撞依較高 rowid 保留，記錄修復前後 effective owner 與來源。不同 automation 執行和不允許改寫的列保留並記 skip。AU1 實測政策，AU2 在首次寫入前重新做適用性檢查。 |
 | .04、.07 | review run 狀態機、draft guard、terminal notice、report retry 與 DB trigger CDC 一起接入。保留 fork reviewer 帳號設定與既有 process ownership 判定。 | 兩個帳號使用查詢以 launch reservation 區分 queued，launch、cancel、cleanup 與既有未 exited reviewer 一起驗。 |
 | .08 | 依 `upsync2-pr2-q1=a_include` 接入本機刪除預設保留、封存清理、HTTP／CLI 參數、Artifacts 頁面與文案。 | 註冊檔案與獨立檔案由原 artifact 目錄供唯讀檢視及明確刪除。Cloud share 與 remote artifact 的上游差異留 D。 |
+
+#### B 段第一層審查處置（D-12）
+
+| 發現 | 處置 | 回歸驗證 |
+|---|---|---|
+| P1 · .04／.07 | 帳號 reconcile 遇到 pending stop 時保留 reviewer handle 與 SQLite owner；reaper 以子程序停止確認結算。force-stop 未確認的重試不依 pane 是否存在判定。 | pane 已拆除但仍有 survivor 時，帳號查詢顯示 blocking owner，移除被拒；停止確認後兩個儲存查詢均解除占用。 |
+| P2 · .04 | reviewer 派送只納入取得 launching 的 run。全部 CAS 落空時提早返回持久狀態，跳過 Spawn／Notify。 | SQLite CAS 暫停時並行取消，涵蓋新啟動與重用 reviewer。 |
+| P2 · .04 | Mobile 讀取 daemon 的 `completed` 與 `failureReason`，保留舊 daemon 與 Cloud 的 `complete`／`delivered`。 | 手機 local API 的完成結果可送 worker，無 body 的失敗可顯示原因，並驗 Cloud 映射。 |
+| P2 · .02／.04 | 依有效 claim token 固定 batch 的第一次 render；同一 id 在重啟後送相同文字。新增 fork additive SQL `20261120084919464_report_delivery_payloads.sql`。 | 真實 Chat 收下含失敗摘要的訊息後模擬 ack 中斷，新 coordinator 重試及結算，Chat 只有原本一則。 |
+
+#### B 段 audit 處置（D-13）
+
+| 發現 | 處置 | 驗證接點 |
+|---|---|---|
+| I1 · .08 | 保留刪除先讀 session 的 artifact 目錄。遇到非預設路徑時拒絕，保留 session、登錄及檔案。 | 預設目錄為空且原檔仍可見時，手動保留刪除與封存自動清理均保留原資料。 |
+| I2 · .08 | 已移除 project 的未刪除 session 投影未採用，超出 .08 核准範圍。已刪除 session 的實際 kept 登錄仍可在無 project 群組開啟。 | 只讀 kept 登錄，移除 archived project 掃描、`project-removed` 表示及專用測例。 |
+| M1 | 實作報告的證據索引改列實際壓縮檔名與各自的受測 SHA。 | 按 test 與 package 核對壓縮輸出的通過事件。 |
+| M2 | 既有 Chat queued excerpt 時序已列 backlog。 | 保留全量原始結果。 |

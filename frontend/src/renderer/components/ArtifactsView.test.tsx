@@ -323,7 +323,6 @@ describe("ArtifactsView", () => {
 		mocks.kept = [{
 			sessionId: "gone",
 			title: "Finished work",
-			sessionDeleted: true,
 			artifactFiles: [{
 				kind: "markdown", path: "kept-notes.md", name: "kept-notes.md", size: 4,
 				registered: true, updatedAt: "2026-11-16T10:00:00Z",

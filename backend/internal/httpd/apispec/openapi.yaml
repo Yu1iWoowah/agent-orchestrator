@@ -5434,8 +5434,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: 'List the artifacts no session or project lists: those of sessions
-        deleted with their artifacts kept, and of sessions in removed projects'
+      summary: List artifacts kept when their sessions were deleted
       tags:
       - sessions
   /api/v1/link-preview:
@@ -25693,13 +25692,11 @@ components:
             $ref: '#/components/schemas/SessionArtifact'
           type: array
         at:
-          description: When the session was deleted, or last updated.
+          description: When the session was deleted.
           format: date-time
           type: string
         projectId:
           type: string
-        sessionDeleted:
-          type: boolean
         sessionId:
           type: string
         title:
@@ -25707,7 +25704,6 @@ components:
       required:
       - sessionId
       - title
-      - sessionDeleted
       - at
       - artifactFiles
       type: object

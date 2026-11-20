@@ -2513,7 +2513,6 @@
 	"artifacts.archivedSession": "Archived",
 	"artifacts.noProject": "No project",
 	"artifacts.deletedSession": "Session deleted",
-	"artifacts.removedProject": "Project removed",
 	"artifacts.startSession": "Start a session with this",
 	"artifacts.startSessionPrompt": "Work from this file: {{path}}",
 	"artifacts.startSessionFailed": "Unable to start a session from this file",

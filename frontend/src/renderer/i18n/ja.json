@@ -2133,7 +2133,6 @@
 	"artifacts.archivedSession": "アーカイブ済み",
 	"artifacts.noProject": "プロジェクトなし",
 	"artifacts.deletedSession": "セッション削除済み",
-	"artifacts.removedProject": "プロジェクト削除済み",
 	"artifacts.startSession": "これでセッションを開始",
 	"artifacts.startSessionPrompt": "このファイルをもとに作業してください: {{path}}",
 	"artifacts.startSessionFailed": "このファイルでセッションを開始できませんでした",

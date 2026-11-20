@@ -66,7 +66,7 @@ func TestSessionsAPI_KeptArtifacts(t *testing.T) {
 	svc := newFakeSessionService()
 	svc.keptSessions = map[domain.SessionID]domain.Session{"ao-gone": stand}
 	svc.keptSets = []sessionsvc.KeptArtifacts{{
-		SessionID: "ao-gone", ProjectID: "mer", Title: "Report", SessionDeleted: true,
+		SessionID: "ao-gone", ProjectID: "mer", Title: "Report",
 		At: time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC), Files: []domain.SessionArtifactFile{file},
 	}}
 	srv := newSessionTestServer(t, svc)
@@ -77,11 +77,10 @@ func TestSessionsAPI_KeptArtifacts(t *testing.T) {
 	}
 	var list struct {
 		Sets []struct {
-			SessionID      string `json:"sessionId"`
-			ProjectID      string `json:"projectId"`
-			Title          string `json:"title"`
-			SessionDeleted bool   `json:"sessionDeleted"`
-			ArtifactFiles  []struct {
+			SessionID     string `json:"sessionId"`
+			ProjectID     string `json:"projectId"`
+			Title         string `json:"title"`
+			ArtifactFiles []struct {
 				Path       string `json:"path"`
 				Registered bool   `json:"registered"`
 				RawURL     string `json:"rawUrl"`
@@ -89,7 +88,7 @@ func TestSessionsAPI_KeptArtifacts(t *testing.T) {
 		} `json:"sets"`
 	}
 	mustJSON(t, body, &list)
-	if len(list.Sets) != 1 || list.Sets[0].SessionID != "ao-gone" || list.Sets[0].ProjectID != "mer" || !list.Sets[0].SessionDeleted ||
+	if len(list.Sets) != 1 || list.Sets[0].SessionID != "ao-gone" || list.Sets[0].ProjectID != "mer" ||
 		len(list.Sets[0].ArtifactFiles) != 1 || !list.Sets[0].ArtifactFiles[0].Registered || list.Sets[0].ArtifactFiles[0].RawURL == "" {
 		t.Fatalf("list = %+v", list)
 	}

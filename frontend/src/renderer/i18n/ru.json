@@ -2590,7 +2590,6 @@
 	"artifacts.archivedSession": "В архиве",
 	"artifacts.noProject": "Без проекта",
 	"artifacts.deletedSession": "Сессия удалена",
-	"artifacts.removedProject": "Проект удалён",
 	"artifacts.startSession": "Начать сессию с этим",
 	"artifacts.startSessionPrompt": "Работай с этим файлом: {{path}}",
 	"artifacts.startSessionFailed": "Не удалось начать сессию с этим файлом",

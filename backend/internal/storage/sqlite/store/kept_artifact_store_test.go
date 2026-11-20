@@ -2,7 +2,6 @@ package store_test
 
 import (
 	"context"
-	"slices"
 	"testing"
 	"time"
 
@@ -16,12 +15,8 @@ func TestKeptArtifactsOutliveTheirSession(t *testing.T) {
 	ctx := context.Background()
 	seedProject(t, s, "kep")
 	sess := terminalSession(t, s, "kep", 0)
-	other := terminalSession(t, s, "kep", 0)
 	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
 	if _, _, err := s.AddSessionArtifacts(ctx, sess.ID, []domain.SessionArtifactRegistration{{Path: "report.html"}}, now); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := s.AddSessionArtifacts(ctx, other.ID, []domain.SessionArtifactRegistration{{Path: "other.md"}}, now); err != nil {
 		t.Fatal(err)
 	}
 	before, err := s.ListSessionArtifacts(ctx, sess.ID)
@@ -62,10 +57,6 @@ func TestKeptArtifactsOutliveTheirSession(t *testing.T) {
 	got, found, err := s.GetKeptArtifactSession(ctx, sess.ID)
 	if err != nil || !found || got.ProjectID != "" {
 		t.Fatalf("after project removal = %+v, %v, %v; want no project", got, found, err)
-	}
-	removed, err := s.ListRemovedProjectSessionIDs(ctx)
-	if err != nil || !slices.Equal(removed, []domain.SessionID{other.ID}) {
-		t.Fatalf("removed project sessions = %v, %v; want %s", removed, err, other.ID)
 	}
 
 	if err := s.RemoveKeptArtifact(ctx, sess.ID, "report.html"); err != nil {

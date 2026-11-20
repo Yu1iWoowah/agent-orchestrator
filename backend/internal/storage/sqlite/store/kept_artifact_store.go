@@ -110,13 +110,3 @@ func (s *Store) ForgetKeptArtifactSession(ctx context.Context, id domain.Session
 	}
 	return nil
 }
-
-// ListRemovedProjectSessionIDs returns the sessions of removed projects. Their
-// rows stay, but no project lists them.
-func (s *Store) ListRemovedProjectSessionIDs(ctx context.Context) ([]domain.SessionID, error) {
-	ids, err := s.qr.ListRemovedProjectSessionIDs(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list removed project sessions: %w", err)
-	}
-	return ids, nil
-}

@@ -2133,7 +2133,6 @@
 	"artifacts.archivedSession": "Archiviert",
 	"artifacts.noProject": "Kein Projekt",
 	"artifacts.deletedSession": "Sitzung gelöscht",
-	"artifacts.removedProject": "Projekt entfernt",
 	"artifacts.startSession": "Sitzung damit starten",
 	"artifacts.startSessionPrompt": "Arbeite mit dieser Datei: {{path}}",
 	"artifacts.startSessionFailed": "Mit dieser Datei konnte keine Sitzung gestartet werden",

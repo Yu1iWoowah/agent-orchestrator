@@ -3463,8 +3463,7 @@ func (c *SessionsController) artifactSession(ctx context.Context, id domain.Sess
 	return sess, false, err
 }
 
-// listKeptArtifacts lists the artifacts no session or project lists: those of
-// sessions deleted with their artifacts kept, and of sessions in removed projects.
+// listKeptArtifacts lists artifacts kept when their sessions were deleted.
 func (c *SessionsController) listKeptArtifacts(w http.ResponseWriter, r *http.Request) {
 	if requestscope.IsLAN(r.Context()) {
 		envelope.WriteError(w, r, apierr.NotFound("ROUTE_NOT_FOUND", "Not found"))
@@ -3485,12 +3484,11 @@ func (c *SessionsController) listKeptArtifacts(w http.ResponseWriter, r *http.Re
 		files := domain.Session{ArtifactFiles: set.Files}
 		files.ID = set.SessionID
 		out = append(out, KeptArtifactsView{
-			SessionID:      set.SessionID,
-			ProjectID:      set.ProjectID,
-			Title:          set.Title,
-			SessionDeleted: set.SessionDeleted,
-			At:             set.At,
-			ArtifactFiles:  sessionArtifactFiles(r, files),
+			SessionID:     set.SessionID,
+			ProjectID:     set.ProjectID,
+			Title:         set.Title,
+			At:            set.At,
+			ArtifactFiles: sessionArtifactFiles(r, files),
 		})
 	}
 	envelope.WriteJSON(w, http.StatusOK, ListKeptArtifactsResponse{Sets: out})

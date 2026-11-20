@@ -167,38 +167,6 @@ func (q *Queries) ListKeptArtifacts(ctx context.Context, sessionID string) ([]Ke
 	return items, nil
 }
 
-const listRemovedProjectSessionIDs = `-- name: ListRemovedProjectSessionIDs :many
-SELECT s.id
-FROM sessions AS s
-JOIN projects AS p ON p.id = s.project_id
-WHERE p.archived_at IS NOT NULL
-ORDER BY s.id
-`
-
-// Sessions of a removed project. Their rows stay, but no project lists them.
-func (q *Queries) ListRemovedProjectSessionIDs(ctx context.Context) ([]domain.SessionID, error) {
-	rows, err := q.db.QueryContext(ctx, listRemovedProjectSessionIDs)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []domain.SessionID{}
-	for rows.Next() {
-		var id domain.SessionID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const upsertKeptArtifactSession = `-- name: UpsertKeptArtifactSession :exec
 INSERT INTO kept_artifact_sessions (session_id, project_id, title, kept_at)
 VALUES (?1, ?2, ?3, ?4)

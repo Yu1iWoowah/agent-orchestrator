@@ -307,10 +307,10 @@ describe("withKeptArtifacts", () => {
 
 	it("puts a kept set under its live project, or under one group with no project", () => {
 		const out = withKeptArtifacts(groups, [
-			{ sessionId: "ao-7", projectId: "ao", title: "Old report", sessionDeleted: true, artifactFiles: [{ ...artifact("report.md", "2026-10-05T00:00:00Z"), registered: true }, artifact("scratch.md", "2026-10-06T00:00:00Z")] },
-			{ sessionId: "docs-2", projectId: "docs", title: "Guide", sessionDeleted: true, artifactFiles: [artifact("guide.md", "2026-10-01T00:00:00Z")] },
-			{ sessionId: "gone-3", title: "Removed work", sessionDeleted: false, artifactFiles: [artifact("plan.md", "2026-10-04T00:00:00Z")] },
-			{ sessionId: "ao-9", projectId: "unknown", title: "Lost", sessionDeleted: true, artifactFiles: [artifact("lost.md", "2026-10-03T00:00:00Z")] },
+			{ sessionId: "ao-7", projectId: "ao", title: "Old report", artifactFiles: [{ ...artifact("report.md", "2026-10-05T00:00:00Z"), registered: true }, artifact("scratch.md", "2026-10-06T00:00:00Z")] },
+			{ sessionId: "docs-2", projectId: "docs", title: "Guide", artifactFiles: [artifact("guide.md", "2026-10-01T00:00:00Z")] },
+			{ sessionId: "gone-3", title: "Kept work", artifactFiles: [artifact("plan.md", "2026-10-04T00:00:00Z")] },
+			{ sessionId: "ao-9", projectId: "unknown", title: "Lost", artifactFiles: [artifact("lost.md", "2026-10-03T00:00:00Z")] },
 		], projects, "No project");
 
 		expect(out.map((group) => [group.id, group.name, group.rows.map((row) => row.path)])).toEqual([
@@ -321,7 +321,7 @@ describe("withKeptArtifacts", () => {
 		]);
 		const kept = out[0].rows[0];
 		expect(kept).toMatchObject({ sessionId: "ao-7", sessionTitle: "Old report", projectId: "ao", archived: true, kept: "session-deleted" });
-		expect(out[1].rows[0]).toMatchObject({ kept: "project-removed", archived: true });
+		expect(out[1].rows[0]).toMatchObject({ kept: "session-deleted", archived: true });
 		expect(out[1].rows[0].projectId).toBeUndefined();
 		// The input groups are not changed.
 		expect(groups[0].rows.map((row) => row.path)).toEqual(["live.md"]);
@@ -332,9 +332,9 @@ describe("withKeptArtifacts", () => {
 	});
 
 	it("names why a row is view only", () => {
-		const t = ((key: string) => ({ "artifacts.deletedSession": "Session deleted", "artifacts.removedProject": "Project removed", "artifacts.archivedSession": "Archived" })[key] ?? key) as never;
+		const t = ((key: string) => ({ "artifacts.deletedSession": "Session deleted", "artifacts.archivedSession": "Archived" })[key] ?? key) as never;
 		expect(artifactContext(t, { sessionTitle: "Report", archived: true, kept: "session-deleted" }, "ao")).toBe("ao · Report · Session deleted");
-		expect(artifactContext(t, { sessionTitle: "Report", archived: true, kept: "project-removed" }, "No project")).toBe("No project · Report · Project removed");
+		expect(artifactContext(t, { sessionTitle: "Report", archived: true, kept: "session-deleted" }, "No project")).toBe("No project · Report · Session deleted");
 		expect(artifactContext(t, { sessionTitle: "Report", archived: true }, "ao")).toBe("ao · Report · Archived");
 		expect(artifactContext(t, { sessionTitle: "Report" }, "ao")).toBe("ao · Report");
 	});
