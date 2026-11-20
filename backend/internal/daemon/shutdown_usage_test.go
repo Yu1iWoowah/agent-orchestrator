@@ -49,7 +49,7 @@ func (quitUsageRuntime) ProbeFencedRuntime(context.Context, ports.FencedRuntimeR
 	return ports.FencedProbeResult{Liveness: ports.FencedDead}
 }
 
-func seedDesktopQuitSession(t *testing.T, ctx context.Context) (*sqlite.Store, domain.SessionRecord) {
+func seedDesktopQuitSession(ctx context.Context, t *testing.T) (*sqlite.Store, domain.SessionRecord) {
 	t.Helper()
 	st, err := sqlitetest.Open(t.TempDir())
 	if err != nil {
@@ -74,7 +74,7 @@ func seedDesktopQuitSession(t *testing.T, ctx context.Context) (*sqlite.Store, d
 func TestDesktopQuitDrainsUsageBeforeExitAgent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	st, rec := seedDesktopQuitSession(t, ctx)
+	st, rec := seedDesktopQuitSession(ctx, t)
 	root := t.TempDir()
 	path := filepath.Join(root, "project", "native-quit", "subagents", "agent-sub-1.jsonl")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -173,7 +173,7 @@ func TestDesktopQuitDrainsUsageBeforeExitAgent(t *testing.T) {
 func TestDesktopQuitFinishesWhenUsageRecorderStaysBlocked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	st, rec := seedDesktopQuitSession(t, ctx)
+	st, rec := seedDesktopQuitSession(ctx, t)
 	blocked := &quitUsageStore{
 		Store: st, entered: make(chan struct{}), release: make(chan struct{}), recordCtx: make(chan context.Context, 1),
 	}

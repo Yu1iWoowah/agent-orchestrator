@@ -1998,7 +1998,7 @@ func Run(buildVersion string) (retErr error) {
 	return runErr
 }
 
-func stopDesktopControllers(timeout, drainTimeout time.Duration, drainUsage func(context.Context) error, stopAgents, stopChats func(context.Context) error) error {
+func stopDesktopControllers(timeout, drainTimeout time.Duration, drainUsage, stopAgents, stopChats func(context.Context) error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	// ExitAgent commits ActivityExited. The collector rejects ordinary hooks
