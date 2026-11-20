@@ -439,9 +439,6 @@ func TestReportRetryBudgetSurvivesCoordinatorAndStoreRestart(t *testing.T) {
 	if err != nil || !ok || rec.DeliveryState != domain.ReportFailed || rec.DeliveryAttempts != 6 {
 		t.Fatalf("after restart: report=%+v, ok=%v, err=%v", rec, ok, err)
 	}
-	if c.UndeliveredCount("ao") != 1 {
-		t.Fatal("terminal transition did not record failure notice")
-	}
 	submissions := delivery.submissions
 	if _, err := c.RunDue(ctx); err != nil {
 		t.Fatal(err)

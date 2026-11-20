@@ -145,27 +145,3 @@ SET unacknowledged_attempts = unacknowledged_attempts + 1
 WHERE project_id = sqlc.arg(project_id) AND delivery_state = 'claimed'
   AND claim_token = sqlc.arg(claim_token)
 RETURNING unacknowledged_attempts;
-
--- name: InsertReportDeliveryPayload :execrows
-INSERT INTO report_delivery_payloads(batch_id, project_id, body)
-SELECT r.delivery_batch_id, r.project_id, sqlc.arg(body)
-FROM reports r
-WHERE r.project_id = sqlc.arg(project_id)
-  AND r.claim_token = sqlc.arg(claim_token)
-  AND r.delivery_state = 'claimed'
-  AND r.delivery_batch_id <> ''
-LIMIT 1
-ON CONFLICT(batch_id) DO NOTHING;
-
--- name: GetClaimedReportDeliveryPayload :one
-SELECT p.body
-FROM report_delivery_payloads p
-WHERE p.project_id = sqlc.arg(project_id)
-  AND p.batch_id = (
-    SELECT r.delivery_batch_id
-    FROM reports r
-    WHERE r.project_id = sqlc.arg(project_id)
-      AND r.claim_token = sqlc.arg(claim_token)
-      AND r.delivery_state = 'claimed'
-    LIMIT 1
-  );

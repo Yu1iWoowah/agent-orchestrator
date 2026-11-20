@@ -286,3 +286,11 @@ CLI 仍走 daemon HTTP，Cloud、HCG 與 `go.work` 保留 fork 原來源。LAN �
 | I2 · .08 | 已移除 project 的未刪除 session 投影未採用，超出 .08 核准範圍。已刪除 session 的實際 kept 登錄仍可在無 project 群組開啟。 | 只讀 kept 登錄，移除 archived project 掃描、`project-removed` 表示及專用測例。 |
 | M1 | 實作報告的證據索引改列實際壓縮檔名與各自的受測 SHA。 | 按 test 與 package 核對壓縮輸出的通過事件。 |
 | M2 | 既有 Chat queued excerpt 時序已列 backlog。 | 保留全量原始結果。 |
+
+#### B 段差異審查處置（D-14／D-15）
+
+| 發現 | 處置 | 驗證接點 |
+|---|---|---|
+| D-14 P1 · .07 | B 的 `cancel_unconfirmed` 與 captured survivor 新增了跨重啟清理義務。持久化方案待裁決。 | F 與 A 的相關路徑相同。B 的 boot reaper 只讀 active runs，現有帳號查詢以 review 當前 launch 與 handle 保持占用。 |
+| D-14 P2 · .07 | 已領取而尚無 handle 的 pass 進入 cancelling。Trigger 於 Preflight 返回後和派送前重查，略過已結束或正在取消的工作。已進入 Spawn 的 pass 交回 handle 後可中斷，等待停止確認。 | SQLite barrier 分別驗 Preflight 前後與 in-flight Spawn，並保留 before-CAS 測例。 |
+| D-15 R1-I1 · .02／.04 | 移除暫加的 report payload 表，恢復原定 302 份 migrations。新文字只取既有 report 內容與固定 session ID。Chat 重送沿用既有已接受訊息的 bytes。 | ACK 前中斷、改名、重啟後驗同一 key 和文字、只一則訊息與結算。測例涵蓋新舊 renderer。 |

@@ -160,34 +160,6 @@ func (s *Store) ClaimPendingReportBatch(ctx context.Context, projectID domain.Pr
 	return s.reportsWithOutputs(ctx, orderedReportRows(rows))
 }
 
-// SnapshotReportDelivery returns the first payload recorded for this batch.
-// Only the current claim can create or read the snapshot.
-func (s *Store) SnapshotReportDelivery(ctx context.Context, projectID domain.ProjectID, token, body string) (string, bool, error) {
-	if projectID == "" || token == "" || body == "" {
-		return "", false, domain.ErrInvalidReport
-	}
-	if err := s.writeMu.LockContext(ctx); err != nil {
-		return "", false, err
-	}
-	defer s.writeMu.Unlock()
-	var payload string
-	var inserted int64
-	err := s.inTx(ctx, "snapshot project report delivery", func(q *gen.Queries) error {
-		var err error
-		inserted, err = q.InsertReportDeliveryPayload(ctx, gen.InsertReportDeliveryPayloadParams{
-			ProjectID: string(projectID), ClaimToken: token, Body: body,
-		})
-		if err != nil {
-			return err
-		}
-		payload, err = q.GetClaimedReportDeliveryPayload(ctx, gen.GetClaimedReportDeliveryPayloadParams{
-			ProjectID: string(projectID), ClaimToken: token,
-		})
-		return err
-	})
-	return payload, inserted > 0, err
-}
-
 // AcknowledgeReportBatch completes only the project batch holding token.
 func (s *Store) AcknowledgeReportBatch(ctx context.Context, projectID domain.ProjectID, token string, at time.Time) (int, error) {
 	if projectID == "" || token == "" || at.IsZero() {

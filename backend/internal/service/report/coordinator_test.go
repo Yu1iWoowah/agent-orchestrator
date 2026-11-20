@@ -227,11 +227,11 @@ func TestCoordinatorRefusedSubmitDoesNotBlockOtherProjects(t *testing.T) {
 	}
 }
 
-func TestReportSessionLinkUsesDisplayName(t *testing.T) {
+func TestReportSessionLinkUsesStableSessionID(t *testing.T) {
 	got := reportSessionLink(domain.ReportRecord{
-		SessionID: "worker/1", ProjectID: "proj 1", SessionDisplayName: "Backend [worker]",
+		SessionID: "worker/1", ProjectID: "proj 1",
 	})
-	want := `[Backend \[worker\]](ao://sessions/proj%201/worker%2F1)`
+	want := `[worker/1](ao://sessions/proj%201/worker%2F1)`
 	if got != want {
 		t.Fatalf("link = %q, want %q", got, want)
 	}
@@ -601,121 +601,6 @@ func TestCoordinatorBusyUnavailableToUnacknowledgedTransition(t *testing.T) {
 	}
 }
 
-func TestCoordinatorSurfacesFailedReportsInNextDelivery(t *testing.T) {
-	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
-	store := newCoordinatorStore(now)
-	store.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
-	store.add(reportAt("rep-1", "worker", now, now, "fails"))
-	delivery := &coordinatorDelivery{submitErr: ErrUnacknowledgedDelivery}
-	c := NewCoordinator(CoordinatorDeps{
-		Store:               store,
-		Delivery:            delivery,
-		Now:                 func() time.Time { return now },
-		RetryDelay:          time.Second,
-		MaxDeliveryAttempts: 2,
-		Expiry:              time.Hour,
-	})
-
-	// Fail rep-1 across 2 unacknowledged attempts
-	_, _ = c.RunDue(context.Background())
-	now = now.Add(time.Second)
-	_, _ = c.RunDue(context.Background())
-	if store.reports[0].DeliveryState != domain.ReportFailed {
-		t.Fatalf("rep-1 state = %s, want %s", store.reports[0].DeliveryState, domain.ReportFailed)
-	}
-
-	// Now add a healthy report rep-2
-	delivery.submitErr = nil
-	now = now.Add(time.Second)
-	store.add(reportAt("rep-2", "worker", now, now, "healthy update"))
-
-	if _, err := c.RunDue(context.Background()); err != nil {
-		t.Fatalf("RunDue failed: %v", err)
-	}
-	if len(delivery.submissions) != 1 {
-		t.Fatalf("submissions = %d, want 1", len(delivery.submissions))
-	}
-	sub := delivery.submissions[0].message
-	if !strings.Contains(sub, "healthy update") {
-		t.Fatalf("submission = %q, want healthy update", sub)
-	}
-	if !strings.Contains(sub, "Note: 1 report could not be delivered.") {
-		t.Fatalf("submission = %q, want undelivered reports note", sub)
-	}
-
-	// Next delivery rep-3 should no longer have the note
-	now = now.Add(time.Second)
-	store.add(reportAt("rep-3", "worker", now, now, "another update"))
-	if _, err := c.RunDue(context.Background()); err != nil {
-		t.Fatalf("RunDue failed: %v", err)
-	}
-	if len(delivery.submissions) != 2 {
-		t.Fatalf("submissions = %d, want 2", len(delivery.submissions))
-	}
-	sub2 := delivery.submissions[1].message
-	if strings.Contains(sub2, "could not be delivered") {
-		t.Fatalf("submission 2 = %q, should not contain cleared note", sub2)
-	}
-}
-
-func TestCoordinatorClearsOnlyIncludedFailureCountOnAcknowledgment(t *testing.T) {
-	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
-	store := newCoordinatorStore(now)
-	store.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
-	store.add(reportAt("rep-1", "worker", now, now, "fails first"))
-	c := NewCoordinator(CoordinatorDeps{
-		Store:               store,
-		Delivery:            &coordinatorDelivery{submitErr: ErrUnacknowledgedDelivery},
-		Now:                 func() time.Time { return now },
-		MaxDeliveryAttempts: 1,
-		Expiry:              time.Hour,
-	})
-
-	// Fail rep-1
-	_, _ = c.RunDue(context.Background())
-	if store.reports[0].DeliveryState != domain.ReportFailed {
-		t.Fatalf("rep-1 state = %s, want %s", store.reports[0].DeliveryState, domain.ReportFailed)
-	}
-	if c.UndeliveredCount("p") != 1 {
-		t.Fatalf("undeliveredCount = %d, want 1", c.UndeliveredCount("p"))
-	}
-
-	// Prepare batch A for rep-2 (capturing UndeliveredReports = 1)
-	store.add(reportAt("rep-2", "worker", now, now, "piggyback batch"))
-	batchA, err := c.PreparePiggyback(context.Background(), "orch")
-	if err != nil || len(batchA.Reports) != 1 {
-		t.Fatalf("PreparePiggyback batchA err = %v, reports = %d", err, len(batchA.Reports))
-	}
-	if batchA.UndeliveredReports != 1 {
-		t.Fatalf("batchA.UndeliveredReports = %d, want 1", batchA.UndeliveredReports)
-	}
-
-	// Fail another report rep-3 while batch A is in flight
-	batchB := PreparedBatch{
-		ProjectID: "p",
-		Token:     "token-b",
-		Reports:   []domain.ReportRecord{reportAt("rep-3", "worker", now, now, "fails later")},
-	}
-	store.reports = append(store.reports, reportAt("rep-3", "worker", now, now, "fails later"))
-	store.reports[len(store.reports)-1].DeliveryState = domain.ReportClaimed
-	store.reports[len(store.reports)-1].ClaimToken = "token-b"
-	cause := errors.New("another failure")
-	if err := c.fail(context.Background(), batchB, cause); !errors.Is(err, cause) {
-		t.Fatalf("fail batchB: %v", err)
-	}
-	if c.UndeliveredCount("p") != 2 {
-		t.Fatalf("undeliveredCount after batchB = %d, want 2", c.UndeliveredCount("p"))
-	}
-
-	// Accept batch A: must clear only batchA's captured count (1), retaining the 1 failure from batchB
-	if err := c.AcceptPiggyback(context.Background(), batchA); err != nil {
-		t.Fatalf("AcceptPiggyback batchA: %v", err)
-	}
-	if c.UndeliveredCount("p") != 1 {
-		t.Fatalf("undeliveredCount after accepting batchA = %d, want 1", c.UndeliveredCount("p"))
-	}
-}
-
 func TestCoordinatorFailDoesNotRecordNoticeWhenStoreFails(t *testing.T) {
 	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
 	store := newCoordinatorStore(now)
@@ -739,9 +624,6 @@ func TestCoordinatorFailDoesNotRecordNoticeWhenStoreFails(t *testing.T) {
 	}
 	if onFailedCalled {
 		t.Fatal("onBatchFailed should not be called when FailReportBatch fails")
-	}
-	if c.UndeliveredCount("p") != 0 {
-		t.Fatalf("undeliveredCount = %d, want 0 when store fails", c.UndeliveredCount("p"))
 	}
 }
 
@@ -781,116 +663,6 @@ func TestCoordinatorCallsOnBatchFailedWhenBatchFails(t *testing.T) {
 	}
 }
 
-func TestCoordinatorOverlappingBatchesFailureNoticeCheckpoint(t *testing.T) {
-	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
-	store := newCoordinatorStore(now)
-	store.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
-	store.add(reportAt("rep-1", "worker", now, now, "fails first"))
-	c := NewCoordinator(CoordinatorDeps{
-		Store:               store,
-		Delivery:            &coordinatorDelivery{submitErr: ErrUnacknowledgedDelivery},
-		Now:                 func() time.Time { return now },
-		MaxDeliveryAttempts: 1,
-		Expiry:              time.Hour,
-	})
-
-	// Fail rep-1
-	_, _ = c.RunDue(context.Background())
-	if store.reports[0].DeliveryState != domain.ReportFailed {
-		t.Fatalf("rep-1 state = %s, want %s", store.reports[0].DeliveryState, domain.ReportFailed)
-	}
-	if c.UndeliveredCount("p") != 1 {
-		t.Fatalf("undeliveredCount = %d, want 1", c.UndeliveredCount("p"))
-	}
-
-	// Prepare batch A for rep-2 (capturing UndeliveredReports = 1, FailureCheckpoint = 1)
-	store.add(reportAt("rep-2", "worker", now, now, "piggyback batch A"))
-	batchA, err := c.PreparePiggyback(context.Background(), "orch")
-	if err != nil || len(batchA.Reports) != 1 {
-		t.Fatalf("PreparePiggyback batchA err = %v, reports = %d", err, len(batchA.Reports))
-	}
-	if batchA.UndeliveredReports != 1 || batchA.FailureCheckpoint != 1 {
-		t.Fatalf("batchA undelivered = %d, checkpoint = %d, want 1, 1", batchA.UndeliveredReports, batchA.FailureCheckpoint)
-	}
-
-	// Prepare batch B for rep-3 while batch A is in flight (also capturing UndeliveredReports = 1, FailureCheckpoint = 1)
-	store.add(reportAt("rep-3", "worker", now, now, "piggyback batch B"))
-	batchB, err := c.PreparePiggyback(context.Background(), "orch")
-	if err != nil || len(batchB.Reports) != 1 {
-		t.Fatalf("PreparePiggyback batchB err = %v, reports = %d", err, len(batchB.Reports))
-	}
-	if batchB.UndeliveredReports != 1 || batchB.FailureCheckpoint != 1 {
-		t.Fatalf("batchB undelivered = %d, checkpoint = %d, want 1, 1", batchB.UndeliveredReports, batchB.FailureCheckpoint)
-	}
-
-	// Deliver and accept batch B
-	if err := c.AcceptPiggyback(context.Background(), batchB); err != nil {
-		t.Fatalf("AcceptPiggyback batchB: %v", err)
-	}
-	if c.UndeliveredCount("p") != 0 {
-		t.Fatalf("undeliveredCount after batchB = %d, want 0", c.UndeliveredCount("p"))
-	}
-
-	// Intervening failure: rep-4 fails while batch A is still in flight
-	batchFail := PreparedBatch{
-		ProjectID: "p",
-		Token:     "tok-fail",
-		Reports:   []domain.ReportRecord{reportAt("rep-4", "worker", now, now, "intervening failure")},
-	}
-	store.reports = append(store.reports, reportAt("rep-4", "worker", now, now, "intervening failure"))
-	store.reports[len(store.reports)-1].DeliveryState = domain.ReportClaimed
-	store.reports[len(store.reports)-1].ClaimToken = "tok-fail"
-	cause := errors.New("intervening error")
-	if err := c.fail(context.Background(), batchFail, cause); !errors.Is(err, cause) {
-		t.Fatalf("fail batchFail: %v", err)
-	}
-	if c.UndeliveredCount("p") != 1 {
-		t.Fatalf("undeliveredCount after intervening failure = %d, want 1", c.UndeliveredCount("p"))
-	}
-
-	// Zero-row acknowledgment test: accepting a stale batch affecting zero rows must not consume notice
-	staleBatch := PreparedBatch{
-		ProjectID:          "p",
-		Token:              "stale-token-not-in-store",
-		Reports:            []domain.ReportRecord{reportAt("rep-stale", "worker", now, now, "stale")},
-		UndeliveredReports: 1,
-		FailureCheckpoint:  2,
-	}
-	if err := c.AcceptPiggyback(context.Background(), staleBatch); err != nil {
-		t.Fatalf("AcceptPiggyback staleBatch: %v", err)
-	}
-	if c.UndeliveredCount("p") != 1 {
-		t.Fatalf("undeliveredCount after zero-row staleBatch = %d, want 1", c.UndeliveredCount("p"))
-	}
-
-	// Accept batch A: batchA carries FailureCheckpoint = 1, but failureAckedSeq is already 1.
-	// Accepting A must not subtract its stale snapshot and must preserve rep-4's failure!
-	if err := c.AcceptPiggyback(context.Background(), batchA); err != nil {
-		t.Fatalf("AcceptPiggyback batchA: %v", err)
-	}
-	if c.UndeliveredCount("p") != 1 {
-		t.Fatalf("undeliveredCount after accepting batchA = %d, want 1 (must not erase intervening failure)", c.UndeliveredCount("p"))
-	}
-
-	// Verify next prepared batch includes the intervening failure notice
-	store.add(reportAt("rep-5", "worker", now, now, "batch C"))
-	batchC, err := c.PreparePiggyback(context.Background(), "orch")
-	if err != nil || len(batchC.Reports) != 1 {
-		t.Fatalf("PreparePiggyback batchC err = %v, reports = %d", err, len(batchC.Reports))
-	}
-	if batchC.UndeliveredReports != 1 || batchC.FailureCheckpoint != 2 {
-		t.Fatalf("batchC undelivered = %d, checkpoint = %d, want 1, 2", batchC.UndeliveredReports, batchC.FailureCheckpoint)
-	}
-
-	// Deliver and accept batch C
-	if err := c.AcceptPiggyback(context.Background(), batchC); err != nil {
-		t.Fatalf("AcceptPiggyback batchC: %v", err)
-	}
-	if c.UndeliveredCount("p") != 0 {
-		t.Fatalf("undeliveredCount after batchC = %d, want 0", c.UndeliveredCount("p"))
-	}
-}
-
 type coordinatorStore struct {
 	unacknowledgedAttempts map[string]int
 	mu                     sync.Mutex
@@ -898,13 +670,12 @@ type coordinatorStore struct {
 	reports                []domain.ReportRecord
 	sessions               []domain.SessionRecord
 	interrupts             map[domain.SessionID]time.Time
-	deliveryPayloads       map[string]string
 	acked                  int
 	failReportErr          error
 }
 
 func newCoordinatorStore(now time.Time) *coordinatorStore {
-	return &coordinatorStore{unacknowledgedAttempts: map[string]int{}, now: now, interrupts: map[domain.SessionID]time.Time{}, deliveryPayloads: map[string]string{}}
+	return &coordinatorStore{unacknowledgedAttempts: map[string]int{}, now: now, interrupts: map[domain.SessionID]time.Time{}}
 }
 
 func reportAt(id string, worker domain.SessionID, created, available time.Time, note string) domain.ReportRecord {
@@ -1007,21 +778,6 @@ func (s *coordinatorStore) ClaimPendingReportBatch(_ context.Context, project do
 	sortReports(claimed)
 	return claimed, nil
 }
-func (s *coordinatorStore) SnapshotReportDelivery(_ context.Context, project domain.ProjectID, token, body string) (string, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, report := range s.reports {
-		if report.ProjectID == project && report.DeliveryState == domain.ReportClaimed && report.ClaimToken == token {
-			if saved, ok := s.deliveryPayloads[report.DeliveryBatchID]; ok {
-				return saved, false, nil
-			}
-			s.deliveryPayloads[report.DeliveryBatchID] = body
-			return body, true, nil
-		}
-	}
-	return "", false, domain.ErrInvalidReport
-}
-
 func (s *coordinatorStore) AcknowledgeReportBatch(_ context.Context, project domain.ProjectID, token string, at time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -58,13 +58,17 @@ type DeliveryStore interface {
 	ListPendingReportSchedule(context.Context, int64) ([]domain.ReportRecord, error)
 	ListPendingReportsOfDoneProjects(context.Context) ([]domain.ReportRecord, error)
 	ClaimPendingReportBatch(context.Context, domain.ProjectID, string, time.Time) ([]domain.ReportRecord, error)
-	SnapshotReportDelivery(context.Context, domain.ProjectID, string, string) (string, bool, error)
 	AcknowledgeReportBatch(context.Context, domain.ProjectID, string, time.Time) (int, error)
 	ReleaseReportBatch(context.Context, domain.ProjectID, string, time.Time, string) (int, error)
 	DeferReportBatch(context.Context, domain.ProjectID, string, time.Time, string) (int, error)
 	FailReportBatch(context.Context, domain.ProjectID, string, time.Time, string) (int, error)
 	RetryUnacknowledgedReportBatch(context.Context, domain.ProjectID, string, time.Time, int, string) (int, error)
 	AcquireReportInterrupt(context.Context, domain.SessionID, time.Time, time.Duration) (bool, time.Time, error)
+}
+
+type chatReportMessageStore interface {
+	ConversationForSession(context.Context, domain.SessionID) (domain.ConversationRecord, error)
+	ConversationMessageByClientID(context.Context, string, string) (domain.ConversationMessage, bool, error)
 }
 
 // Delivery submits accepted semantic context and interrupts active work.
@@ -83,12 +87,8 @@ type Coordinator struct {
 	maxDeliveryAttempts int
 	expiry              time.Duration
 	onBatchFailed       func(context.Context, PreparedBatch, error)
-	failureSeq          map[domain.ProjectID]int
-	failureAckedSeq     map[domain.ProjectID]int
-	// Only this coordinator's snapshots can acknowledge its failure sequence.
-	batchFailureCheckpoints map[string]int
-	wake                    chan struct{}
-	mu                      sync.Mutex
+	wake                chan struct{}
+	mu                  sync.Mutex
 	// earlyHold pauses early flush for a project whose last attempt, early or
 	// due, left its batch pending (busy orchestrator, failed submit, or coalesced
 	// stuck deferral). Those deferrals cannot move a done row's later settlement
@@ -142,8 +142,6 @@ func NewCoordinator(d CoordinatorDeps) *Coordinator {
 		maxDeliveryAttempts: d.MaxDeliveryAttempts,
 		expiry:              d.Expiry,
 		onBatchFailed:       d.OnBatchFailed,
-		failureSeq:          make(map[domain.ProjectID]int),
-		failureAckedSeq:     make(map[domain.ProjectID]int),
 		wake:                make(chan struct{}, 1),
 		earlyHold:           make(map[domain.ProjectID]time.Time),
 		started:             d.Now().UTC(),
@@ -397,7 +395,11 @@ func (c *Coordinator) deliverProject(ctx context.Context, projectID domain.Proje
 			return deferErr
 		}
 	}
-	if err := c.delivery.Submit(ctx, target.ID, batch.Render(), batch.IdempotencyKey()); err != nil {
+	text, err := c.deliveryText(ctx, target, batch)
+	if err != nil {
+		return c.retryLater(ctx, batch, err)
+	}
+	if err := c.delivery.Submit(ctx, target.ID, text, batch.IdempotencyKey()); err != nil {
 		if errors.Is(err, ErrOrchestratorBusy) {
 			if c.isExpired(batch) {
 				return c.fail(ctx, batch, err)
@@ -409,11 +411,10 @@ func (c *Coordinator) deliverProject(ctx context.Context, projectID domain.Proje
 		}
 		return c.retryLater(ctx, batch, err)
 	}
-	nAcked, err := c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
+	_, err = c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
 	if err != nil {
 		return err
 	}
-	c.acknowledgeFailures(batch, nAcked)
 	// Accepted, so a separate pending batch need not wait out the hold.
 	delete(c.earlyHold, projectID)
 	return nil
@@ -443,13 +444,10 @@ func newestOrchestrator(recs []domain.SessionRecord) (domain.SessionRecord, bool
 
 // PreparedBatch is a token-fenced durable batch awaiting acceptance.
 type PreparedBatch struct {
-	ProjectID          domain.ProjectID
-	Token              string
-	ID                 string
-	Reports            []domain.ReportRecord
-	UndeliveredReports int
-	FailureCheckpoint  int
-	payload            string
+	ProjectID domain.ProjectID
+	Token     string
+	ID        string
+	Reports   []domain.ReportRecord
 }
 
 func (c *Coordinator) claim(ctx context.Context, projectID domain.ProjectID) (PreparedBatch, error) {
@@ -458,63 +456,35 @@ func (c *Coordinator) claim(ctx context.Context, projectID domain.ProjectID) (Pr
 	if err != nil || len(reports) == 0 {
 		return PreparedBatch{}, err
 	}
-	batch := PreparedBatch{
+	return PreparedBatch{
 		ProjectID: projectID,
 		Token:     token,
 		ID:        reports[0].DeliveryBatchID,
 		Reports:   reports,
-	}
-	for i := range reports {
-		session, found, lookupErr := c.store.GetSession(ctx, reports[i].SessionID)
-		if lookupErr == nil && found {
-			reports[i].SessionDisplayName = strings.TrimSpace(session.DisplayName)
+	}, nil
+}
+
+// deliveryText reuses Chat's existing accepted message on a retry. This also
+// covers batches accepted by older renderers and reports removed after Chat
+// took ownership. The normal Chat hash check still validates the submission.
+func (c *Coordinator) deliveryText(ctx context.Context, target domain.SessionRecord, batch PreparedBatch) (string, error) {
+	if store, ok := c.store.(chatReportMessageStore); ok &&
+		domain.NormalizeSessionMode(target.Mode) == domain.SessionModeChat && batch.maxAttempts() > 1 {
+		conversation, err := store.ConversationForSession(ctx, target.ID)
+		if err != nil && !errors.Is(err, domain.ErrNoConversation) {
+			return "", err
+		}
+		if err == nil {
+			message, found, err := store.ConversationMessageByClientID(ctx, conversation.ID, batch.IdempotencyKey())
+			if err != nil {
+				return "", err
+			}
+			if found && message.Role == domain.MessageRoleUser && message.Origin == domain.MessageOriginAutomation && !message.AuthoredByUser {
+				return message.Text, nil
+			}
 		}
 	}
-	batch.UndeliveredReports = c.undeliveredReportsLocked(projectID)
-	if batch.UndeliveredReports > 0 {
-		batch.FailureCheckpoint = c.failureSeq[projectID]
-	}
-	payload, inserted, err := c.store.SnapshotReportDelivery(ctx, projectID, token, batch.Render())
-	if err != nil {
-		return PreparedBatch{}, c.retryLater(ctx, batch, err)
-	}
-	batch.payload = payload
-	if inserted && batch.FailureCheckpoint > 0 {
-		if c.batchFailureCheckpoints == nil {
-			c.batchFailureCheckpoints = make(map[string]int)
-		}
-		c.batchFailureCheckpoints[batch.ID] = batch.FailureCheckpoint
-	}
-	batch.FailureCheckpoint = c.batchFailureCheckpoints[batch.ID]
-	return batch, nil
-}
-
-func (c *Coordinator) acknowledgeFailures(batch PreparedBatch, nAcked int) {
-	if nAcked == 0 {
-		return
-	}
-	delete(c.batchFailureCheckpoints, batch.ID)
-	if batch.FailureCheckpoint > c.failureAckedSeq[batch.ProjectID] {
-		c.failureAckedSeq[batch.ProjectID] = batch.FailureCheckpoint
-	}
-}
-
-// UndeliveredCount reports the number of failed reports awaiting notification for a project.
-func (c *Coordinator) UndeliveredCount(projectID domain.ProjectID) int {
-	if c == nil {
-		return 0
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.undeliveredReportsLocked(projectID)
-}
-
-func (c *Coordinator) undeliveredReportsLocked(projectID domain.ProjectID) int {
-	diff := c.failureSeq[projectID] - c.failureAckedSeq[projectID]
-	if diff <= 0 {
-		return 0
-	}
-	return diff
+	return batch.Render(), nil
 }
 
 // PreparePiggyback claims pending reports for the active Chat orchestrator.
@@ -540,12 +510,7 @@ func (c *Coordinator) AcceptPiggyback(ctx context.Context, batch PreparedBatch) 
 	if len(batch.Reports) == 0 {
 		return nil
 	}
-	nAcked, err := c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
-	if err == nil {
-		c.mu.Lock()
-		c.acknowledgeFailures(batch, nAcked)
-		c.mu.Unlock()
-	}
+	_, err := c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
 	return err
 }
 
@@ -621,12 +586,8 @@ func (c *Coordinator) fail(ctx context.Context, batch PreparedBatch, cause error
 }
 
 func (c *Coordinator) recordFailedBatch(ctx context.Context, batch PreparedBatch, cause error, n int) {
-	if n > 0 {
-		delete(c.batchFailureCheckpoints, batch.ID)
-		c.failureSeq[batch.ProjectID] += n
-		if c.onBatchFailed != nil {
-			c.onBatchFailed(ctx, batch, cause)
-		}
+	if n > 0 && c.onBatchFailed != nil {
+		c.onBatchFailed(ctx, batch, cause)
 	}
 }
 
@@ -677,11 +638,9 @@ func (b PreparedBatch) IdempotencyKey() string {
 	return "report-batch:" + hex.EncodeToString(sum[:16])
 }
 
-// Render formats compact attributed report context for an orchestrator.
+// Render uses the fixed report contents. Live session names and counters
+// would change the Chat payload hash under the same delivery key.
 func (b PreparedBatch) Render() string {
-	if b.payload != "" {
-		return b.payload
-	}
 	var out strings.Builder
 	out.WriteString("Reports since your previous turn:")
 	for _, report := range coalesceReports(b.Reports) {
@@ -705,27 +664,13 @@ func (b PreparedBatch) Render() string {
 			fmt.Fprintf(&out, "\n%s: %s", output.Kind, output.Reference)
 		}
 	}
-	if b.UndeliveredReports > 0 {
-		if b.UndeliveredReports == 1 {
-			out.WriteString("\n\nNote: 1 report could not be delivered.")
-		} else {
-			fmt.Fprintf(&out, "\n\nNote: %d reports could not be delivered.", b.UndeliveredReports)
-		}
-	}
 	return out.String()
-}
-
-func reportDisplayNameOrID(r domain.ReportRecord) string {
-	if name := strings.TrimSpace(r.SessionDisplayName); name != "" {
-		return name
-	}
-	return string(r.SessionID)
 }
 
 // reportSessionLink is the markdown attribution a standalone report shows.
 // Piggybacked copies stay inside the hidden user-message envelope.
 func reportSessionLink(r domain.ReportRecord) string {
-	label := strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]", "\n", " ").Replace(reportDisplayNameOrID(r))
+	label := strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]", "\n", " ").Replace(string(r.SessionID))
 	href := "ao://sessions/" + url.PathEscape(string(r.ProjectID)) + "/" + url.PathEscape(string(r.SessionID))
 	return "[" + label + "](" + href + ")"
 }

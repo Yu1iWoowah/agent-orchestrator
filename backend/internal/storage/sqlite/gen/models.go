@@ -1226,12 +1226,6 @@ type Report struct {
 	UnacknowledgedAttempts int64
 }
 
-type ReportDeliveryPayload struct {
-	BatchID   string
-	ProjectID string
-	Body      string
-}
-
 type ReportOutput struct {
 	ReportID  string
 	Position  int64
