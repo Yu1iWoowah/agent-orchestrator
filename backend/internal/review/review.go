@@ -607,11 +607,6 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 	}
 
 	var created []domain.ReviewRun
-	type staleSupersede struct {
-		prURL     string
-		targetSHA string
-	}
-	var pendingSupersedes []staleSupersede
 	var restarted []domain.ReviewRun
 	batchID := ""
 	for _, reviewState := range reviews {
@@ -643,7 +638,6 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 			continue
 		}
 		if hasConfigOverride {
-			pendingSupersedes = append(pendingSupersedes, staleSupersede{prURL: reviewState.PRURL, targetSHA: reviewState.TargetSHA})
 			if reviewState.LatestRun != nil && reviewRunInFlight(reviewState.LatestRun.Status) && (reviewState.LatestRun.Harness == harness || reviewState.LatestRun.Harness == "") {
 				restarted = append(restarted, *reviewState.LatestRun)
 				continue
@@ -740,6 +734,8 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		return TriggerResult{Run: firstReusableRun(reviews), ReviewerHandleID: legacyReviewerHandle(reviewRow), Created: false, Reviews: reviews, Runs: runs, ReviewerSurface: reviewerSurface(reviewRow)}, nil
 	}
 
+	restartCandidates := restarted
+	restarted = nil
 	failRunsWithContext := func(settleCtx stdctx.Context, reason domain.ReviewFailureReason, err error) error {
 		if failErr := e.failRuns(settleCtx, created, reason, err); failErr != nil {
 			err = errors.Join(err, failErr)
@@ -795,10 +791,6 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		return failRunsWithContext(rollbackCtx, domain.ReviewFailureLaunchFailed, cause)
 	}
 
-	queueRuns := append([]domain.ReviewRun{}, restarted...)
-	queueRuns = append(queueRuns, created...)
-	queue := reviewQueue(queueRuns)
-	launchRun := queueRuns[0]
 	launchAgentSessionID := reviewRow.AgentSessionID
 	if hasConfigOverride && !selectionChanged || selectedMode == domain.ReviewerInterfaceChat {
 		launchAgentSessionID = ""
@@ -813,13 +805,41 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 			handleID = reviewRow.ReviewerHandleID
 		}
 	}
+	launchID := reviewRow.ReviewerLaunchID
 	if handleID == "" {
-		// Each pass gets a fresh reviewer process on the same stable terminal
-		// handle when there is no resumable live agent session to notify.
-		launchID := e.newID()
-		if err := e.markRunsLaunching(ctx, created, launchID); err != nil {
+		launchID = e.newID()
+	}
+	claimed, err := e.markRunsLaunching(ctx, created, launchID)
+	if err != nil {
+		return TriggerResult{}, failRuns(domain.ReviewFailureLaunchFailed, err)
+	}
+	newCandidates := len(created)
+	created = claimed
+	if handleID == "" {
+		restarted, err = e.markRunsRelaunching(ctx, restartCandidates, launchID, config.Model)
+		if err != nil {
 			return TriggerResult{}, failRuns(domain.ReviewFailureLaunchFailed, err)
 		}
+	}
+	queueRuns := append(slices.Clone(restarted), created...)
+	if len(queueRuns) < newCandidates+len(restartCandidates) {
+		runs, err = e.store.ListReviewRunsBySession(ctx, workerID)
+		if err != nil {
+			return TriggerResult{}, failRuns(domain.ReviewFailureLaunchFailed, err)
+		}
+		reviews = Plan(prs, runs)
+		// The response prepends newly dispatched runs with their final status.
+		runs = slices.DeleteFunc(runs, func(run domain.ReviewRun) bool {
+			return slices.ContainsFunc(created, func(dispatched domain.ReviewRun) bool { return dispatched.ID == run.ID })
+		})
+	}
+	if len(queueRuns) == 0 {
+		return TriggerResult{Run: firstReusableRun(reviews), ReviewerHandleID: legacyReviewerHandle(reviewRow), Reviews: reviews, Runs: runs, ReviewerSurface: reviewerSurface(reviewRow)}, nil
+	}
+	queue := reviewQueue(queueRuns)
+	launchRun := queueRuns[0]
+	if handleID == "" {
+		// Start a fresh process when there is no resumable reviewer to notify.
 		releaseHarness, err := e.beginHarnessUse(harness)
 		if err != nil {
 			return TriggerResult{}, failRuns(domain.ReviewFailurePreflightFailed, err)
@@ -841,11 +861,6 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 				return TriggerResult{}, failRuns(domain.ReviewFailureLaunchFailed, err)
 			}
 			previousStopped = true
-		}
-		// A restarted pass is now waiting on the replacement launch, so a hung
-		// launch is bounded by LaunchTimeout like a new one.
-		if err := e.markRunsRelaunching(ctx, restarted, launchID, config.Model); err != nil {
-			return TriggerResult{}, rollbackReplacement(err)
 		}
 		reviewRow, err = e.upsertReview(ctx, worker, harness, reviewRow.ReviewerHandleID, launchAgentSessionID, launchID, "", now)
 		if err != nil {
@@ -888,17 +903,17 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 			persistedAgentSessionID = launch.AgentSessionID
 		}
 	} else {
-		if err := e.markRunsLaunching(ctx, created, reviewRow.ReviewerLaunchID); err != nil {
-			return TriggerResult{}, failRuns(domain.ReviewFailureLaunchFailed, err)
-		}
 		launchSpec := reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID)
 		launchSpec.InterfaceMode = selectedMode
 		if err := e.launcher.Notify(ctx, handleID, launchSpec); err != nil {
 			return TriggerResult{}, failRuns(domain.ReviewFailureLaunchFailed, fmt.Errorf("notify reviewer: %w", err))
 		}
 	}
-	for _, stale := range pendingSupersedes {
-		if err := e.supersedeOlderRuns(ctx, workerID, stale.prURL, stale.targetSHA); err != nil {
+	for _, dispatched := range queueRuns {
+		if !hasConfigOverride {
+			break
+		}
+		if err := e.supersedeOlderRuns(ctx, workerID, dispatched.PRURL, dispatched.TargetSHA); err != nil {
 			if previousReview.IsArchived || modeChanging {
 				return TriggerResult{}, rollbackReplacement(err)
 			}
@@ -1939,6 +1954,11 @@ func (e *Engine) ReconcileReviewers(ctx stdctx.Context, workerID domain.SessionI
 // or a running pass. An unknown probe is never treated as an exit.
 func (e *Engine) reconcileReviewerRuntime(ctx stdctx.Context, review *domain.Review, runs []domain.ReviewRun) (bool, error) {
 	if review.ID == "" || review.IsArchived {
+		return false, nil
+	}
+	// A removed runtime can still have captured children. The pending stop
+	// retains ownership until the reaper confirms that those processes exited.
+	if e.hasPendingStop(review.ID) {
 		return false, nil
 	}
 	ownsPass := slices.ContainsFunc(runs, func(run domain.ReviewRun) bool {

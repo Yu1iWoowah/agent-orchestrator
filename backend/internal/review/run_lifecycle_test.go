@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/reaper"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
+	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
@@ -468,8 +471,28 @@ type failingForceStopLauncher struct {
 	calls   int
 }
 
+type accountTestReviewer struct{ *Engine }
+
+type accountTestProvider struct{ ports.AgentAccountProviderCLI }
+
+func (accountTestProvider) Provider() domain.AgentAccountProvider {
+	return domain.AgentAccountProviderClaude
+}
+
+func (r accountTestReviewer) TerminateReviewer(ctx context.Context, id domain.SessionID, reason string) error {
+	_, err := r.Engine.TerminateReviewer(ctx, id, reason)
+	return err
+}
+
+func (r accountTestReviewer) RestoreReviewer(ctx context.Context, id domain.SessionID) error {
+	_, err := r.Engine.RestoreReviewer(ctx, id)
+	return err
+}
+
 func (f *failingForceStopLauncher) ForceStop(context.Context, string) (bool, error) {
 	f.calls++
+	// The runtime was torn down even if one of its captured children survived.
+	f.alive, f.spawned, f.restored = false, false, false
 	if f.survive {
 		return false, errors.New("reviewer processes still alive after force-stop: [44493]")
 	}
@@ -485,7 +508,23 @@ func TestUnconfirmedCancelKillIsRetriedUntilConfirmed(t *testing.T) {
 	s.restart(t, launcher.fakeLauncher, RunLifecycleConfig{})
 	s.launcher = launcher
 	run := s.trigger(t)
-	if _, err := s.Cancel(context.Background(), s.worker.ID); err != nil {
+	ctx := t.Context()
+	root := t.TempDir()
+	account := domain.AgentAccount{ID: "reviewer-profile", Provider: domain.AgentAccountProviderClaude, Home: root, CreatedAt: *s.now}
+	if err := s.store.CreateAgentAccount(ctx, account); err != nil {
+		t.Fatal(err)
+	}
+	review := s.review(t)
+	if err := s.store.BindReviewerAgentAccount(ctx, review.ID, domain.ResolvedAgentAccount{
+		AccountID: account.ID, Provider: account.Provider, Source: domain.AgentAccountSourceRole,
+	}, *s.now); err != nil {
+		t.Fatal(err)
+	}
+	manager := sessionmanager.New(sessionmanager.Deps{Store: s.store})
+	manager.SetReviewerTerminator(accountTestReviewer{s.Engine})
+	accounts := agentaccounts.New(s.store, []ports.AgentAccountProviderCLI{accountTestProvider{}}, root, nil, nil)
+	accounts.SetUsageOwners(manager.AccountUsageOwners)
+	if _, err := s.Cancel(ctx, s.worker.ID); err != nil {
 		t.Fatal(err)
 	}
 	// A failed force-stop is reported as a reaper error, so step the passes
@@ -499,6 +538,18 @@ func TestUnconfirmedCancelKillIsRetriedUntilConfirmed(t *testing.T) {
 	if s.review(t).ReviewerHandleID == "" {
 		t.Fatal("handle released while the reviewer may still be alive")
 	}
+	owners, err := accounts.UsageOwners(ctx, account.ID)
+	if err != nil || len(owners) != 1 || owners[0].ReviewID != review.ID || !owners[0].Blocking {
+		t.Fatalf("account owner before stop confirmation = %+v, err = %v", owners, err)
+	}
+	if runtime.GOOS == "linux" {
+		if err := accounts.Remove(ctx, account.ID); !errors.Is(err, ports.ErrAgentAccountInUse) {
+			t.Fatalf("remove during unconfirmed stop = %v, want account in use", err)
+		}
+	}
+	if open, err := s.store.GetOpenReviewerAccountUse(ctx, account.ID); err != nil || open == nil || open.ReviewID != review.ID {
+		t.Fatalf("open reviewer account use = %+v, err = %v", open, err)
+	}
 	before := launcher.calls
 	tick()
 	if launcher.calls <= before {
@@ -508,5 +559,83 @@ func TestUnconfirmedCancelKillIsRetriedUntilConfirmed(t *testing.T) {
 	s.pass(t)
 	if s.review(t).ReviewerHandleID != "" || len(s.pendingStops()) != 0 {
 		t.Fatalf("confirmed retry did not release the reviewer: handle=%q stops=%+v", s.review(t).ReviewerHandleID, s.pendingStops())
+	}
+	if owners, err := accounts.UsageOwners(ctx, account.ID); err != nil || len(owners) != 1 || owners[0].Blocking {
+		t.Fatalf("account owner after stop confirmation = %+v, err = %v", owners, err)
+	}
+	if open, err := s.store.GetOpenReviewerAccountUse(ctx, account.ID); err != nil || open != nil {
+		t.Fatalf("open reviewer account use after stop confirmation = %+v, err = %v", open, err)
+	}
+}
+
+type launchCASBarrier struct {
+	*sqlite.Store
+	reached chan struct{}
+	resume  chan struct{}
+}
+
+func (s launchCASBarrier) TransitionReviewRun(ctx context.Context, id string, from []domain.ReviewRunStatus, to domain.ReviewRunStatus, patch domain.ReviewRunPatch) (bool, error) {
+	if len(from) == 1 && from[0] == domain.ReviewRunQueued && to == domain.ReviewRunLaunching {
+		close(s.reached)
+		select {
+		case <-s.resume:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+	return s.Store.TransitionReviewRun(ctx, id, from, to, patch)
+}
+
+func TestCancelBeforeLaunchCASDoesNotDispatch(t *testing.T) {
+	for _, reuse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reuse=%v", reuse), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			launcher := &fakeLauncher{handle: "review-mer-1", agentSessionID: "native-1"}
+			s := newLifecycleEngine(t, launcher)
+			if reuse {
+				first := s.trigger(t)
+				if moved, err := s.store.TransitionReviewRun(ctx, first.ID, []domain.ReviewRunStatus{domain.ReviewRunRunning}, domain.ReviewRunCompleted, domain.ReviewRunPatch{Verdict: domain.VerdictApproved}); err != nil || !moved {
+					t.Fatalf("finish first run: moved=%v, err=%v", moved, err)
+				}
+				s.prs = prAt("sha2")
+			}
+			spawns := launcher.spawnCount
+			barrier := launchCASBarrier{Store: s.store, reached: make(chan struct{}), resume: make(chan struct{})}
+			s.Engine.store = barrier
+			type outcome struct {
+				result TriggerResult
+				err    error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				result, err := s.TriggerWithOptions(ctx, s.worker.ID, TriggerOptions{})
+				done <- outcome{result, err}
+			}()
+			select {
+			case <-barrier.reached:
+			case early := <-done:
+				t.Fatalf("trigger returned before queued→launching CAS: %+v", early)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			cancelled, err := s.Cancel(ctx, s.worker.ID)
+			close(barrier.resume)
+			if err != nil || len(cancelled.CancelledRuns) != 1 || cancelled.CancelledRuns[0].Status != domain.ReviewRunCancelled {
+				t.Fatalf("cancel before dispatch = %+v, err = %v", cancelled, err)
+			}
+			select {
+			case got := <-done:
+				if got.err != nil || got.result.Created || len(got.result.CreatedRuns) != 0 {
+					t.Fatalf("trigger after cancellation = %+v, err = %v", got.result, got.err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if launcher.spawnCount != spawns || launcher.notified {
+				t.Fatalf("a cancelled queued run dispatched: spawns=%d (was %d), notify=%v", launcher.spawnCount, spawns, launcher.notified)
+			}
+			wantRun(t, s.run(t, cancelled.CancelledRuns[0].ID), domain.ReviewRunCancelled, "")
+		})
 	}
 }

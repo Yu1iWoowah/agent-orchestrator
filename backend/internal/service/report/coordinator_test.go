@@ -898,12 +898,13 @@ type coordinatorStore struct {
 	reports                []domain.ReportRecord
 	sessions               []domain.SessionRecord
 	interrupts             map[domain.SessionID]time.Time
+	deliveryPayloads       map[string]string
 	acked                  int
 	failReportErr          error
 }
 
 func newCoordinatorStore(now time.Time) *coordinatorStore {
-	return &coordinatorStore{unacknowledgedAttempts: map[string]int{}, now: now, interrupts: map[domain.SessionID]time.Time{}}
+	return &coordinatorStore{unacknowledgedAttempts: map[string]int{}, now: now, interrupts: map[domain.SessionID]time.Time{}, deliveryPayloads: map[string]string{}}
 }
 
 func reportAt(id string, worker domain.SessionID, created, available time.Time, note string) domain.ReportRecord {
@@ -1006,6 +1007,21 @@ func (s *coordinatorStore) ClaimPendingReportBatch(_ context.Context, project do
 	sortReports(claimed)
 	return claimed, nil
 }
+func (s *coordinatorStore) SnapshotReportDelivery(_ context.Context, project domain.ProjectID, token, body string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, report := range s.reports {
+		if report.ProjectID == project && report.DeliveryState == domain.ReportClaimed && report.ClaimToken == token {
+			if saved, ok := s.deliveryPayloads[report.DeliveryBatchID]; ok {
+				return saved, false, nil
+			}
+			s.deliveryPayloads[report.DeliveryBatchID] = body
+			return body, true, nil
+		}
+	}
+	return "", false, domain.ErrInvalidReport
+}
+
 func (s *coordinatorStore) AcknowledgeReportBatch(_ context.Context, project domain.ProjectID, token string, at time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

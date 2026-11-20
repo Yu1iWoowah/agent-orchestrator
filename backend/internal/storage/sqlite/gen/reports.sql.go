@@ -433,6 +433,32 @@ func (q *Queries) FailReportBatch(ctx context.Context, arg FailReportBatchParams
 	return items, nil
 }
 
+const getClaimedReportDeliveryPayload = `-- name: GetClaimedReportDeliveryPayload :one
+SELECT p.body
+FROM report_delivery_payloads p
+WHERE p.project_id = ?1
+  AND p.batch_id = (
+    SELECT r.delivery_batch_id
+    FROM reports r
+    WHERE r.project_id = ?1
+      AND r.claim_token = ?2
+      AND r.delivery_state = 'claimed'
+    LIMIT 1
+  )
+`
+
+type GetClaimedReportDeliveryPayloadParams struct {
+	ProjectID  string
+	ClaimToken string
+}
+
+func (q *Queries) GetClaimedReportDeliveryPayload(ctx context.Context, arg GetClaimedReportDeliveryPayloadParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, getClaimedReportDeliveryPayload, arg.ProjectID, arg.ClaimToken)
+	var body string
+	err := row.Scan(&body)
+	return body, err
+}
+
 const getReport = `-- name: GetReport :one
 SELECT id, session_id, project_id, state, note, message, created_at, delivery_state, available_at, settlement_deadline, repeat_count, claim_token, claimed_at, delivery_attempts, acknowledged_at, last_error, delivery_batch_id, unacknowledged_attempts FROM reports WHERE id = ?
 `
@@ -508,6 +534,32 @@ func (q *Queries) IncrementUnacknowledgedReportBatch(ctx context.Context, arg In
 		return nil, err
 	}
 	return items, nil
+}
+
+const insertReportDeliveryPayload = `-- name: InsertReportDeliveryPayload :execrows
+INSERT INTO report_delivery_payloads(batch_id, project_id, body)
+SELECT r.delivery_batch_id, r.project_id, ?1
+FROM reports r
+WHERE r.project_id = ?2
+  AND r.claim_token = ?3
+  AND r.delivery_state = 'claimed'
+  AND r.delivery_batch_id <> ''
+LIMIT 1
+ON CONFLICT(batch_id) DO NOTHING
+`
+
+type InsertReportDeliveryPayloadParams struct {
+	Body       string
+	ProjectID  string
+	ClaimToken string
+}
+
+func (q *Queries) InsertReportDeliveryPayload(ctx context.Context, arg InsertReportDeliveryPayloadParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertReportDeliveryPayload, arg.Body, arg.ProjectID, arg.ClaimToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const listPendingReportSchedule = `-- name: ListPendingReportSchedule :many

@@ -20,7 +20,7 @@ import { refreshControlColors } from "../../lib/refreshControlColors";
 import { useReviewBackend } from "../../lib/reviewBackend";
 import { ReviewActionButton } from "../../lib/review-action-button";
 import { reviewRunsForPullRequest, reviewRunUrl } from "../../lib/reviewFeedback";
-import { latestAutoReviewFailure, previousRouteIsWorker, pullRequestSummaryForURL, reviewBatchAction, reviewerControls, reviewerDestination, reviewForPullRequest, reviewPrimaryActionLabel, reviewRunMeta, reviewRunSendable, reviewStatusLabel, reviewVerdictLabel, shortCommit, workerRouteForSession } from "../../lib/reviewView";
+import { latestAutoReviewFailure, previousRouteIsWorker, pullRequestSummaryForURL, reviewBatchAction, reviewerControls, reviewerDestination, reviewFailureDetail, reviewForPullRequest, reviewPrimaryActionLabel, reviewRunMeta, reviewRunSendable, reviewStatusLabel, reviewVerdictLabel, shortCommit, workerRouteForSession } from "../../lib/reviewView";
 import { useCloud } from "../../lib/cloud/CloudProvider";
 import { isCloudHost } from "../../lib/cloud/mapping";
 import { HostScope, useApp } from "../../lib/store";
@@ -377,7 +377,7 @@ function ReviewDetailContent() {
 			{reviewNotice ? <View style={styles.inlineNote}><AppSymbol name="checkmark" size={iconSize.sm} color={t.green} /><Text style={[styles.inlineNoteText, { color: t.green }]}>{reviewNotice}</Text></View> : null}
 			{autoReviewFailure && autoReviewFailure.id !== dismissedAutoFailureId ? <View accessibilityRole="alert" style={styles.inlineNote}>
 				<AppSymbol name="error" size={iconSize.sm} color={t.red} />
-				<Text style={[styles.inlineNoteText, { color: t.red }]}><Text style={styles.inlineNoteStrong}>Automatic review failed. </Text>{autoReviewFailure.body.trim()}</Text>
+				<Text style={[styles.inlineNoteText, { color: t.red }]}><Text style={styles.inlineNoteStrong}>Automatic review failed. </Text>{reviewFailureDetail(autoReviewFailure)}</Text>
 				<Pressable accessibilityRole="button" accessibilityLabel="Dismiss automatic review failure" android_ripple={dismissFeedback.android_ripple} onPress={() => setDismissedAutoFailureId(autoReviewFailure.id)} style={({ pressed }) => [styles.dismiss, pressed && dismissFeedback.pressed]}><AppSymbol name="close" size={iconSize.md} color={t.red} /></Pressable>
 			</View> : null}
 			{error ? <Text accessibilityRole="alert" style={[styles.note, styles.noteError]}>{error}</Text> : null}
@@ -458,7 +458,7 @@ function RunRow({ run, sent, sending, disabled, onSend }: { run: ReviewRun; sent
 		</View>
 		<Text style={styles.detail}>{reviewRunMeta({ ...run, harness: reviewerName(run.harness) }).split(" · ").map(capitalize).join(" · ")}</Text>
 		{run.autoInjectReview === false ? <Text style={[styles.detail, { color: t.amber }]}>Not automatically sent to the worker</Text> : null}
-		{run.body ? <View style={styles.markdown}><ChatMarkdown text={run.body} /></View> : <Text style={styles.detail}>{run.status === "running" ? "Findings appear here when the review finishes." : "No written findings."}</Text>}
+		{run.body ? <View style={styles.markdown}><ChatMarkdown text={run.body} /></View> : <Text style={styles.detail}>{run.status === "failed" && run.failureReason ? reviewFailureDetail(run) : run.status === "running" ? "Findings appear here when the review finishes." : "No written findings."}</Text>}
 		{sent ? <View style={styles.statusLine}><AppSymbol name="checkmark" size={iconSize.sm} color={t.green} /><Text style={[styles.statusStrong, { color: t.green }]}>Sent to worker</Text></View> : null}
 	</View>;
 }

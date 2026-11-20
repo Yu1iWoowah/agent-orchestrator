@@ -236,14 +236,19 @@ func (e *Engine) failRuns(ctx stdctx.Context, runs []domain.ReviewRun, reason do
 
 // markRunsLaunching moves freshly queued runs to launching just before the
 // reviewer is started or notified.
-func (e *Engine) markRunsLaunching(ctx stdctx.Context, runs []domain.ReviewRun, launchID string) error {
+func (e *Engine) markRunsLaunching(ctx stdctx.Context, runs []domain.ReviewRun, launchID string) ([]domain.ReviewRun, error) {
 	now := e.clock()
+	var claimed []domain.ReviewRun
 	for _, run := range runs {
-		if _, err := e.transitionRun(ctx, run, []domain.ReviewRunStatus{domain.ReviewRunQueued}, domain.ReviewRunLaunching, domain.ReviewRunPatch{LaunchID: launchID, LaunchingAt: &now}); err != nil {
-			return err
+		moved, err := e.transitionRun(ctx, run, []domain.ReviewRunStatus{domain.ReviewRunQueued}, domain.ReviewRunLaunching, domain.ReviewRunPatch{LaunchID: launchID, LaunchingAt: &now})
+		if err != nil {
+			return claimed, err
+		}
+		if moved {
+			claimed = append(claimed, run)
 		}
 	}
-	return nil
+	return claimed, nil
 }
 
 // markRunRunning records that the task prompt reached the reviewer, and
@@ -265,16 +270,21 @@ func (e *Engine) markRunRunning(ctx stdctx.Context, run domain.ReviewRun, from [
 
 // markRunsRelaunching moves passes being restarted under a replacement
 // reviewer to launching on that launch.
-func (e *Engine) markRunsRelaunching(ctx stdctx.Context, runs []domain.ReviewRun, launchID, model string) error {
+func (e *Engine) markRunsRelaunching(ctx stdctx.Context, runs []domain.ReviewRun, launchID, model string) ([]domain.ReviewRun, error) {
 	now := e.clock()
+	var claimed []domain.ReviewRun
 	for _, run := range runs {
 		// The replacement must report its own first activity: evidence from the
 		// launch it replaces would skip the never-started check.
-		if _, err := e.transitionRun(ctx, run, []domain.ReviewRunStatus{domain.ReviewRunRunning, domain.ReviewRunLaunching}, domain.ReviewRunLaunching, domain.ReviewRunPatch{LaunchID: launchID, ReviewerModel: &model, LaunchingAt: &now, ClearFirstActivity: true}); err != nil {
-			return err
+		moved, err := e.transitionRun(ctx, run, []domain.ReviewRunStatus{domain.ReviewRunRunning, domain.ReviewRunLaunching}, domain.ReviewRunLaunching, domain.ReviewRunPatch{LaunchID: launchID, ReviewerModel: &model, LaunchingAt: &now, ClearFirstActivity: true})
+		if err != nil {
+			return claimed, err
+		}
+		if moved {
+			claimed = append(claimed, run)
 		}
 	}
-	return nil
+	return claimed, nil
 }
 
 // revertRelaunch returns restarted passes whose replacement never started to
@@ -1123,6 +1133,13 @@ func (e *Engine) forgetStop(reviewID string) {
 	delete(e.runs.stops, reviewID)
 }
 
+func (e *Engine) hasPendingStop(reviewID string) bool {
+	e.runs.mu.Lock()
+	defer e.runs.mu.Unlock()
+	_, pending := e.runs.stops[reviewID]
+	return pending
+}
+
 func (e *Engine) pendingStops() []pendingStop {
 	e.runs.mu.Lock()
 	defer e.runs.mu.Unlock()
@@ -1186,6 +1203,10 @@ func (e *Engine) settleStopLocked(ctx stdctx.Context, stop pendingStop, observed
 		}
 	}
 	if err := e.reapOrphan(ctx, stop.review.SessionID, current); err != nil {
+		// ForceStop can remove the pane while leaving captured children alive.
+		// On retry, only another stop confirmation can settle this obligation.
+		stop.immediate = true
+		e.addStop(stop)
 		return err
 	}
 	e.forgetStop(stop.review.ID)

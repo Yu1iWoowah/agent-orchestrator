@@ -58,6 +58,7 @@ type DeliveryStore interface {
 	ListPendingReportSchedule(context.Context, int64) ([]domain.ReportRecord, error)
 	ListPendingReportsOfDoneProjects(context.Context) ([]domain.ReportRecord, error)
 	ClaimPendingReportBatch(context.Context, domain.ProjectID, string, time.Time) ([]domain.ReportRecord, error)
+	SnapshotReportDelivery(context.Context, domain.ProjectID, string, string) (string, bool, error)
 	AcknowledgeReportBatch(context.Context, domain.ProjectID, string, time.Time) (int, error)
 	ReleaseReportBatch(context.Context, domain.ProjectID, string, time.Time, string) (int, error)
 	DeferReportBatch(context.Context, domain.ProjectID, string, time.Time, string) (int, error)
@@ -84,8 +85,10 @@ type Coordinator struct {
 	onBatchFailed       func(context.Context, PreparedBatch, error)
 	failureSeq          map[domain.ProjectID]int
 	failureAckedSeq     map[domain.ProjectID]int
-	wake                chan struct{}
-	mu                  sync.Mutex
+	// Only this coordinator's snapshots can acknowledge its failure sequence.
+	batchFailureCheckpoints map[string]int
+	wake                    chan struct{}
+	mu                      sync.Mutex
 	// earlyHold pauses early flush for a project whose last attempt, early or
 	// due, left its batch pending (busy orchestrator, failed submit, or coalesced
 	// stuck deferral). Those deferrals cannot move a done row's later settlement
@@ -410,9 +413,7 @@ func (c *Coordinator) deliverProject(ctx context.Context, projectID domain.Proje
 	if err != nil {
 		return err
 	}
-	if nAcked > 0 && batch.UndeliveredReports > 0 && batch.FailureCheckpoint > c.failureAckedSeq[batch.ProjectID] {
-		c.failureAckedSeq[batch.ProjectID] = batch.FailureCheckpoint
-	}
+	c.acknowledgeFailures(batch, nAcked)
 	// Accepted, so a separate pending batch need not wait out the hold.
 	delete(c.earlyHold, projectID)
 	return nil
@@ -448,31 +449,54 @@ type PreparedBatch struct {
 	Reports            []domain.ReportRecord
 	UndeliveredReports int
 	FailureCheckpoint  int
+	payload            string
 }
 
 func (c *Coordinator) claim(ctx context.Context, projectID domain.ProjectID) (PreparedBatch, error) {
 	token := c.newToken()
 	reports, err := c.store.ClaimPendingReportBatch(ctx, projectID, token, c.now().UTC())
+	if err != nil || len(reports) == 0 {
+		return PreparedBatch{}, err
+	}
+	batch := PreparedBatch{
+		ProjectID: projectID,
+		Token:     token,
+		ID:        reports[0].DeliveryBatchID,
+		Reports:   reports,
+	}
 	for i := range reports {
 		session, found, lookupErr := c.store.GetSession(ctx, reports[i].SessionID)
 		if lookupErr == nil && found {
 			reports[i].SessionDisplayName = strings.TrimSpace(session.DisplayName)
 		}
 	}
-	batchID := ""
-	if len(reports) > 0 {
-		batchID = reports[0].DeliveryBatchID
+	batch.UndeliveredReports = c.undeliveredReportsLocked(projectID)
+	if batch.UndeliveredReports > 0 {
+		batch.FailureCheckpoint = c.failureSeq[projectID]
 	}
-	undelivered := c.undeliveredReportsLocked(projectID)
-	checkpoint := c.failureSeq[projectID]
-	return PreparedBatch{
-		ProjectID:          projectID,
-		Token:              token,
-		ID:                 batchID,
-		Reports:            reports,
-		UndeliveredReports: undelivered,
-		FailureCheckpoint:  checkpoint,
-	}, err
+	payload, inserted, err := c.store.SnapshotReportDelivery(ctx, projectID, token, batch.Render())
+	if err != nil {
+		return PreparedBatch{}, c.retryLater(ctx, batch, err)
+	}
+	batch.payload = payload
+	if inserted && batch.FailureCheckpoint > 0 {
+		if c.batchFailureCheckpoints == nil {
+			c.batchFailureCheckpoints = make(map[string]int)
+		}
+		c.batchFailureCheckpoints[batch.ID] = batch.FailureCheckpoint
+	}
+	batch.FailureCheckpoint = c.batchFailureCheckpoints[batch.ID]
+	return batch, nil
+}
+
+func (c *Coordinator) acknowledgeFailures(batch PreparedBatch, nAcked int) {
+	if nAcked == 0 {
+		return
+	}
+	delete(c.batchFailureCheckpoints, batch.ID)
+	if batch.FailureCheckpoint > c.failureAckedSeq[batch.ProjectID] {
+		c.failureAckedSeq[batch.ProjectID] = batch.FailureCheckpoint
+	}
 }
 
 // UndeliveredCount reports the number of failed reports awaiting notification for a project.
@@ -519,9 +543,7 @@ func (c *Coordinator) AcceptPiggyback(ctx context.Context, batch PreparedBatch) 
 	nAcked, err := c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
 	if err == nil {
 		c.mu.Lock()
-		if nAcked > 0 && batch.UndeliveredReports > 0 && batch.FailureCheckpoint > c.failureAckedSeq[batch.ProjectID] {
-			c.failureAckedSeq[batch.ProjectID] = batch.FailureCheckpoint
-		}
+		c.acknowledgeFailures(batch, nAcked)
 		c.mu.Unlock()
 	}
 	return err
@@ -600,6 +622,7 @@ func (c *Coordinator) fail(ctx context.Context, batch PreparedBatch, cause error
 
 func (c *Coordinator) recordFailedBatch(ctx context.Context, batch PreparedBatch, cause error, n int) {
 	if n > 0 {
+		delete(c.batchFailureCheckpoints, batch.ID)
 		c.failureSeq[batch.ProjectID] += n
 		if c.onBatchFailed != nil {
 			c.onBatchFailed(ctx, batch, cause)
@@ -656,6 +679,9 @@ func (b PreparedBatch) IdempotencyKey() string {
 
 // Render formats compact attributed report context for an orchestrator.
 func (b PreparedBatch) Render() string {
+	if b.payload != "" {
+		return b.payload
+	}
 	var out strings.Builder
 	out.WriteString("Reports since your previous turn:")
 	for _, report := range coalesceReports(b.Reports) {
