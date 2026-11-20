@@ -1828,7 +1828,7 @@ func (s *Service) Send(
 	}
 	refreshed, writerErr := s.checkOtherWriter(ctx, record)
 	if writerErr != nil {
-		if _, found, err := s.replaySendReceipt(ctx, id, msg); found || err != nil {
+		if found, err := s.replaySendReceipt(ctx, id, msg); found || err != nil {
 			return domain.ConversationTurn{}, err
 		}
 		return domain.ConversationTurn{}, writerErr
@@ -1839,7 +1839,7 @@ func (s *Service) Send(
 		}
 	}
 	if record.HibernatedAt != nil && s.otherWriter != nil && sharesImportedClaudeTranscript(record) {
-		if _, found, err := s.replaySendReceipt(ctx, id, msg); found || err != nil {
+		if found, err := s.replaySendReceipt(ctx, id, msg); found || err != nil {
 			return domain.ConversationTurn{}, err
 		}
 		// Reload native history before assigning a sequence to the next prompt.
@@ -3780,6 +3780,12 @@ func (s *Service) relayChatTurn(
 	// through the provider start, and a caller holding the session's input
 	// lease (a lifecycle nudge) deadlocks with the resume, which waits for that
 	// lease to drain.
+	wakeAfterRelay := false
+	defer func() {
+		if wakeAfterRelay {
+			s.startBackgroundWake(id)
+		}
+	}()
 	for {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -3794,13 +3800,13 @@ func (s *Service) relayChatTurn(
 		}
 		refreshed, writerErr := s.checkOtherWriter(ctx, record)
 		if writerErr != nil {
-			if _, found, err := s.replaySendReceipt(ctx, id, msg); found || err != nil {
+			if found, err := s.replaySendReceipt(ctx, id, msg); found || err != nil {
 				return "", err
 			}
 			return "", writerErr
 		}
 		if refreshed {
-			defer s.startBackgroundWake(id)
+			wakeAfterRelay = true
 			continue
 		}
 		if record.HibernatedAt != nil || s.controllerStarting(id) {

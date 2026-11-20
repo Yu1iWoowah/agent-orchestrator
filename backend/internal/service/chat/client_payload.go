@@ -118,16 +118,17 @@ func sentMessageReceipt(ctx context.Context, st Store, conversationID string, ms
 	return domain.ConversationTurn{}, false, nil
 }
 
-func (s *Service) replaySendReceipt(ctx context.Context, id domain.SessionID, msg ports.ChatUserMessage) (domain.ConversationTurn, bool, error) {
+func (s *Service) replaySendReceipt(ctx context.Context, id domain.SessionID, msg ports.ChatUserMessage) (bool, error) {
 	if msg.ClientMessageID == "" {
-		return domain.ConversationTurn{}, false, nil
+		return false, nil
 	}
 	conversation, err := s.store.ConversationForSession(ctx, id)
 	if err != nil {
 		if errors.Is(err, domain.ErrNoConversation) {
-			return domain.ConversationTurn{}, false, nil
+			return false, nil
 		}
-		return domain.ConversationTurn{}, false, fmt.Errorf("recover sent conversation: %w", err)
+		return false, fmt.Errorf("recover sent conversation: %w", err)
 	}
-	return sentMessageReceipt(ctx, s.store, conversation.ID, msg, false)
+	_, found, err := sentMessageReceipt(ctx, s.store, conversation.ID, msg, false)
+	return found, err
 }

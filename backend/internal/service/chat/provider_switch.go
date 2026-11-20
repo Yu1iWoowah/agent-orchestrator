@@ -19,6 +19,7 @@ type TerminalProviderSwitcher interface {
 	SwitchTUIProviderWithPreflight(context.Context, domain.SessionID, domain.ProviderSwitchRequest, func(context.Context, *domain.ProviderSwitchRequest) error) error
 }
 
+// ProviderSwitchLaunch reserves the target account and its launch environment.
 type ProviderSwitchLaunch interface {
 	PrepareProviderSwitchLaunch(context.Context, domain.SessionRecord, domain.AgentHarness) (context.Context, map[string]string, func(), error)
 }

@@ -13,11 +13,13 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
 )
 
+// Timeout limits each daemon health or readiness probe.
 const Timeout = 2 * time.Second
 
 // MaxBody bounds a probe response from an unverified loopback peer.
 const MaxBody = 64 << 10
 
+// Result identifies the daemon that answered a health or readiness probe.
 type Result struct {
 	Status           string `json:"status"`
 	Service          string `json:"service"`
