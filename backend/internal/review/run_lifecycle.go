@@ -359,6 +359,17 @@ func (e *Engine) stopLateReviewer(ctx stdctx.Context, review domain.Review, hand
 	if !spawned {
 		return e.launcher.Cancel(ctx, handleID, review.Harness)
 	}
+	if _, durable := e.store.(reviewerStopStore); durable {
+		if _, supported := e.launcher.(*agentLauncher); supported {
+			err := e.reapOrphan(ctx, review.SessionID, review)
+			if err != nil {
+				// If the initial write failed, the intact runtime can be captured
+				// again. A committed receipt is picked up by receipt recovery.
+				e.addStop(pendingStop{review: review, since: e.clock(), immediate: true})
+			}
+			return err
+		}
+	}
 	if err := e.launcher.Destroy(ctx, handleID); err != nil {
 		return err
 	}

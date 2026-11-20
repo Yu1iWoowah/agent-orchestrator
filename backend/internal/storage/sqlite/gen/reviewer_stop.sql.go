@@ -259,13 +259,15 @@ func (q *Queries) SnapshotReviewerStopAccounts(ctx context.Context, arg Snapshot
 }
 
 const updateReviewerStopReceipt = `-- name: UpdateReviewerStopReceipt :execrows
-UPDATE reviewer_stop_receipts SET state=?1, reason=?2
-WHERE review_id=?3 AND launch_id=?4 AND state=?5
+UPDATE reviewer_stop_receipts SET state=?1, reason=?2,
+    chat_scope=COALESCE(?3, chat_scope)
+WHERE review_id=?4 AND launch_id=?5 AND state=?6
 `
 
 type UpdateReviewerStopReceiptParams struct {
 	NextState     string
 	Reason        string
+	ChatScope     sql.NullString
 	ReviewID      string
 	LaunchID      string
 	PreviousState string
@@ -275,6 +277,7 @@ func (q *Queries) UpdateReviewerStopReceipt(ctx context.Context, arg UpdateRevie
 	result, err := q.db.ExecContext(ctx, updateReviewerStopReceipt,
 		arg.NextState,
 		arg.Reason,
+		arg.ChatScope,
 		arg.ReviewID,
 		arg.LaunchID,
 		arg.PreviousState,

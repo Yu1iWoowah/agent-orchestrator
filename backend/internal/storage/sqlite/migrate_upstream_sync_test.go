@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -815,27 +816,56 @@ ALTER TABLE model_usage_events DROP COLUMN provider_message_id;`)
 	assertUpstreamSyncConstraints(t, db)
 }
 
-func TestWithdrawnReportDeliveryReceiptStopsBeforeMigration(t *testing.T) {
-	dir := t.TempDir()
-	upstreamSyncLegacyDatabase(t, dir, 20261116001259486)
-	db, err := sql.Open("sqlite", databaseURI(dir)+pragmas)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	mustExec(t, db, `INSERT INTO goose_db_version (version_id, is_applied) VALUES (20261120084919464, 1)`)
-	before := upstreamSyncRows(t, db, `SELECT * FROM goose_db_version ORDER BY id`)
-	objects := sharedInputObjects(t, db)
-	store, err := Open(dir)
-	if err == nil {
-		_ = store.Close()
-		t.Fatal("production Open accepted the withdrawn migration")
-	}
-	if !strings.Contains(err.Error(), "withdrawn report delivery migration") {
-		t.Fatalf("Open failed at the wrong boundary: %v", err)
-	}
-	if after := upstreamSyncRows(t, db, `SELECT * FROM goose_db_version ORDER BY id`); before != after || !reflect.DeepEqual(objects, sharedInputObjects(t, db)) {
-		t.Fatal("refused preflight wrote migration receipts or schema")
+func TestUnapprovedMigrationReceiptStopsBeforeMigration(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version int64
+		note    string
+	}{
+		{"withdrawn report delivery", 20261120084919464, "withdrawn report delivery migration"},
+		{"foreign receipt", 20261120110913325, "outside the embedded manifest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			upstreamSyncLegacyDatabase(t, dir, 20261116001259486)
+			db, err := sql.Open("sqlite", databaseURI(dir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustExec(t, db, `PRAGMA journal_mode=DELETE`)
+			mustExec(t, db, `INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`, tc.version)
+			ledger := upstreamSyncRows(t, db, `SELECT * FROM goose_db_version ORDER BY id`)
+			objects := sharedInputObjects(t, db)
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "ao.db")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(dir)
+			if err == nil {
+				_ = store.Close()
+				t.Fatal("production Open accepted a non-manifest migration")
+			}
+			if !strings.Contains(err.Error(), tc.note) || !strings.Contains(err.Error(), strconv.FormatInt(tc.version, 10)) {
+				t.Fatalf("Open failed at the wrong boundary: %v", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("refused preflight wrote the database file: %v", err)
+			}
+			db, err = sql.Open("sqlite", databaseURI(dir)+readOnlyPragmas)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			if got := upstreamSyncRows(t, db, `SELECT * FROM goose_db_version ORDER BY id`); got != ledger ||
+				!reflect.DeepEqual(objects, sharedInputObjects(t, db)) {
+				t.Fatal("refused preflight wrote migration receipts or schema")
+			}
+		})
 	}
 }
 

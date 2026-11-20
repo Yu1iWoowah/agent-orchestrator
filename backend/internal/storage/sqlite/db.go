@@ -10,10 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -151,6 +153,9 @@ func openWithTimestampOptions(dataDir string, opts timestampOpenOptions) (*Store
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 	if err := checkLegacyDatabasePath(dataDir); err != nil {
+		return nil, err
+	}
+	if err := inspectMigrationLedger(dataDir); err != nil {
 		return nil, err
 	}
 	dsn := databaseURI(dataDir) + pragmas
@@ -382,23 +387,77 @@ func OpenPreMigrated(dataDir string) (*Store, error) {
 	return store, nil
 }
 
-// This unpublished B revision used a separate, withdrawn migration. Stop
-// before ledger repairs or timestamp preparation write anything to a copy.
-func rejectWithdrawnReportDeliveryReceipt(db *sql.DB) error {
+// inspectMigrationLedger checks the on-disk receipts before the writer opens
+// the database with journal-mode pragmas or performs any repair.
+func inspectMigrationLedger(dataDir string) error {
+	if _, err := os.Stat(filepath.Join(dataDir, "ao.db")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("inspect migration ledger: %w", err)
+	}
+	db, err := sql.Open("sqlite", databaseURI(dataDir)+readOnlyPragmas)
+	if err != nil {
+		return fmt.Errorf("open migration ledger read-only: %w", err)
+	}
+	defer func() { _ = db.Close() }()
 	var ledger bool
 	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_schema
 		WHERE type='table' AND name='goose_db_version')`).Scan(&ledger); err != nil || !ledger {
 		return err
 	}
-	var withdrawn bool
-	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM goose_db_version
-		WHERE version_id=20261120084919464)`).Scan(&withdrawn); err != nil {
-		return err
+
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("read embedded migration manifest: %w", err)
 	}
-	if withdrawn {
-		return errors.New("unapproved schema: withdrawn report delivery migration 20261120084919464")
+	known := make(map[int64]struct{}, len(entries))
+	for _, entry := range entries {
+		versionText, _, _ := strings.Cut(entry.Name(), "_")
+		version, err := strconv.ParseInt(versionText, 10, 64)
+		if err != nil {
+			return fmt.Errorf("read migration manifest entry %q: %w", entry.Name(), err)
+		}
+		known[version] = struct{}{}
 	}
-	return nil
+	rows, err := db.Query(`SELECT DISTINCT version_id FROM goose_db_version ORDER BY version_id`)
+	if err != nil {
+		return fmt.Errorf("read migration receipts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var version int64
+		if err := rows.Scan(&version); err != nil {
+			return err
+		}
+		if _, ok := known[version]; ok || legacyMigrationReceipt(version) {
+			continue
+		}
+		if version == 20261120084919464 {
+			return fmt.Errorf("unapproved schema: withdrawn report delivery migration %d", version)
+		}
+		return fmt.Errorf("unapproved schema: migration %d is outside the embedded manifest", version)
+	}
+	return rows.Err()
+}
+
+// These pre-manifest receipts are already recognized by the runner. They are
+// accepted as upgrade inputs, not counted among the canonical migrations.
+func legacyMigrationReceipt(version int64) bool {
+	switch version {
+	case 0:
+		return true // Goose's sentinel.
+	case 22, 203:
+		return true // Burned releases without an embedded file.
+	case 45, 46, 50, 51:
+		return true // Editions described by the existing burned-schema repair.
+	case 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65:
+		return true // The original Chat sequence recognized by the renumber repair.
+	case 201, 216, computerUseBranchMigrationVersion:
+		return true // Existing provider-switch/usage-limit and computer-use aliases.
+	default:
+		return false
+	}
 }
 
 func migrate(db *sql.DB) (err error) {
@@ -418,9 +477,6 @@ func migrate(db *sql.DB) (err error) {
 		versions[i] = migration.Version
 	}
 	ctx := context.Background()
-	if err := rejectWithdrawnReportDeliveryReceipt(db); err != nil {
-		return err
-	}
 	triggers, err := prepareTimestampSchemaMigration(ctx, db, versions)
 	if err != nil {
 		return fmt.Errorf("prepare timestamp tracking for schema migrations: %w", err)

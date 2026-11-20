@@ -307,3 +307,12 @@ CLI 仍走 daemon HTTP，Cloud、HCG 與 `go.work` 保留 fork 原來源。LAN �
 | 發現 | 處置 | 驗證接點 |
 |---|---|---|
 | P2 · .07 | 缺跨重啟比較範圍時，同一 daemon 在原 launch 與 handle／Chat 世代仍相符的情況下照常執行既有停止。收據及已知程序身分先入帳，取得原生停止確認後才結算。Chat detach 或 controller 缺席不算停止確認。 | 預設 OS hooks 實際停止測試程序。SQLite 重開、新 Engine／launcher 沒有可比較 scope 時維持兩個帳號 owner 查詢的阻擋。Windows／Darwin 驗交叉編譯。 |
+
+#### B 段 audit r2 處置（D-21）
+
+| 發現 | 處置 | 驗證接點 |
+|---|---|---|
+| R2-I1 · .07／AC5 | 已逾時的 Spawn 晚回 handle 時，拆除 runtime 前沿用原 launch 的持久收據。初寫失敗沿用 pending stop 重試。 | 逾時後才交回 handle，拆 pane 後仍有 survivor。以新 Engine／launcher 重開 SQLite，兩個 owner 查詢仍阻擋，原 run 終態維持。 |
+| R2-I2 · .07／AC5 | 原 launch、data root、boot 與 PID namespace 仍可比對時，下一輪重取程序證據並原子補齊收據。重啟恢復沿用純觀察，缺來源或跨 boot 時保留占用。 | 首次程序探測失敗，後續證據恢復。同 daemon 可停止結算，重開 Engine 只補收據且不送訊號。 |
+| R2-I3 · .07／AC5 | Cancel 和兩種派送共用原子准入。取消先到時重讀 run 並阻止派送。已准入的派送沿用現有收尾。 | 在最後一次狀態讀取擋住 fresh Spawn 和 reused Notify。Cancel 回應後解除 barrier，兩條路都未派送。 |
+| R2-I4 · .01／AC2、AU1／AU2 | 開 writer 前唯讀比對實際 embedded migration 清冊。保留既有 runner 已支援的歷史收據，B 終態仍固定為 303 個核准 ID。 | 撤回的 report ID 與一般清冊外 ID 各自觸發拒絕。拒絕前後 SQLite 主檔、收據與 DDL 一致。 |

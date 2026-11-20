@@ -86,7 +86,7 @@ func (l *agentLauncher) captureStopReceipt(ctx context.Context, review domain.Re
 		InterfaceMode: review.InterfaceMode, DataRoot: root, BootID: boot, PIDNamespace: namespace,
 		State: domain.ReviewerStopCapturing,
 	}
-	if root == "" || boot == "" || namespace == "" || receipt.LaunchID == "" {
+	if !hasReviewerRecoveryScope(receipt) {
 		receipt.State, receipt.Reason = domain.ReviewerStopUnknown, "launch_scope_unavailable"
 	}
 	hooks := l.forceStopHooks()
@@ -122,6 +122,10 @@ func (l *agentLauncher) captureStopReceipt(ctx context.Context, review domain.Re
 	return receipt
 }
 
+func hasReviewerRecoveryScope(receipt domain.ReviewerStopReceipt) bool {
+	return receipt.LaunchID != "" && receipt.DataRoot != "" && receipt.BootID != "" && receipt.PIDNamespace != ""
+}
+
 func durableProcesses(tree []capturedProcess) []domain.ReviewerStopProcess {
 	out := make([]domain.ReviewerStopProcess, 0, len(tree))
 	for _, p := range tree {
@@ -134,6 +138,11 @@ func (e *Engine) beginDurableReviewerStop(ctx context.Context, store reviewerSto
 	receipt, err := e.recordReviewerStop(ctx, store, launcher, review)
 	if err != nil {
 		return false, err
+	}
+	// An unavailable initial probe with a known scope can be retried next
+	// pass. It must not enter the same-daemon fallback for an absent scope.
+	if receipt.State == domain.ReviewerStopUnknown && hasReviewerRecoveryScope(receipt) {
+		return true, nil
 	}
 	return true, e.advanceReviewerStop(ctx, store, launcher, receipt)
 }
@@ -228,31 +237,45 @@ func (e *Engine) advanceReviewerStop(ctx context.Context, store reviewerStopStor
 }
 
 func (e *Engine) observeReviewerStop(ctx context.Context, store reviewerStopStore, launcher *agentLauncher, receipt domain.ReviewerStopReceipt, local bool) (domain.ReviewerStopReceipt, bool, error) {
-	if receipt.State == domain.ReviewerStopUnknown {
-		if !local {
-			return receipt, false, nil
+	hasRecoveryScope := hasReviewerRecoveryScope(receipt)
+	if receipt.State != domain.ReviewerStopUnknown || hasRecoveryScope {
+		if reason := stopScopeMismatch(launcher, receipt); reason != "" {
+			return receipt, false, updateStopReason(ctx, store, receipt, reason)
 		}
-	} else if reason := stopScopeMismatch(launcher, receipt); reason != "" {
-		return receipt, false, updateStopReason(ctx, store, receipt, reason)
+	} else if !local {
+		return receipt, false, nil
 	}
 	reviews, err := e.store.ListReviewsBySession(ctx, receipt.SessionID)
 	if err != nil {
 		return receipt, false, err
 	}
-	current := false
+	var original domain.Review
 	for _, review := range reviews {
 		if stopKey(review) == receipt.ReviewerStopKey &&
 			review.ReviewerHandleID == receipt.HandleID && review.ControllerGeneration == receipt.ControllerGeneration {
-			current = true
+			original = review
 			break
 		}
 	}
+	current := original.ID != ""
 	if receipt.State == domain.ReviewerStopUnknown {
 		if !current || receipt.HandleID == "" {
 			return receipt, false, nil
 		}
-		ended, err := launcher.stopReviewerWithoutRecoveryScope(ctx, store, receipt)
-		return receipt, ended, err
+		if !hasRecoveryScope {
+			ended, err := launcher.stopReviewerWithoutRecoveryScope(ctx, store, receipt)
+			return receipt, ended, err
+		}
+		captured := launcher.captureStopReceipt(ctx, original)
+		if captured.State != domain.ReviewerStopCapturing || captured.DataRoot != receipt.DataRoot ||
+			captured.BootID != receipt.BootID || captured.PIDNamespace != receipt.PIDNamespace {
+			return receipt, false, nil
+		}
+		receipt.ChatScope = captured.ChatScope
+		if err := store.UpdateReviewerStop(ctx, receipt, captured.State, "", captured.Processes); err != nil {
+			return receipt, false, err
+		}
+		receipt.State, receipt.Reason = captured.State, ""
 	}
 	if receipt.InterfaceMode == domain.ReviewerInterfaceChat {
 		ended, err := launcher.observeChatStop(ctx, receipt, local && current)

@@ -160,7 +160,9 @@ func TestStopReviewGenerationRequiresProviderTermination(t *testing.T) {
 			}
 			err = svc.StopReviewGeneration(ctx, owner.ID, row.ControllerGeneration)
 			if detach {
-				if !errors.Is(err, ports.ErrChatRecoveryInconclusive) || provider.terminated {
+				// The closing controller can be removed before the exact-generation lookup.
+				unconfirmed := errors.Is(err, ports.ErrChatRecoveryInconclusive) || errors.Is(err, chatsvc.ErrNoController)
+				if !unconfirmed || provider.terminated {
 					t.Fatalf("detach counted as native termination: err=%v terminated=%v", err, provider.terminated)
 				}
 			} else if err != nil || !provider.terminated {

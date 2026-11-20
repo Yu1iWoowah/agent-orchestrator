@@ -147,11 +147,9 @@ type Engine struct {
 
 	chatRecoveryDone <-chan struct{}
 
-	// triggerMu guards triggerLocks; triggerLocks holds one mutex per worker
-	// session so concurrent Trigger calls for the same worker serialise (see
-	// lockWorker). Distinct workers never contend.
-	triggerMu    sync.Mutex
-	triggerLocks map[domain.SessionID]*sync.Mutex
+	// workersMu guards creation of per-worker operation and dispatch locks.
+	workersMu sync.Mutex
+	workers   map[domain.SessionID]*reviewWorkerState
 
 	runs runLifecycleState
 }
@@ -181,7 +179,7 @@ func New(d Deps) *Engine {
 		launcher:           d.Launcher,
 		clock:              clock,
 		newID:              newID,
-		triggerLocks:       make(map[domain.SessionID]*sync.Mutex),
+		workers:            make(map[domain.SessionID]*reviewWorkerState),
 
 		chatRecoveryDone: d.ChatRecoveryDone,
 		runs:             newRunLifecycleState(d.RunLifecycle, clock(), d.AwaitBootPass),
@@ -193,9 +191,8 @@ func New(d Deps) *Engine {
 // both pass the per-commit idempotency check and each spawn a reviewer against
 // the same deterministic handle, leaving two running runs for one commit (#242).
 //
-// The per-worker mutex is created on first use and kept for the lifetime of the
-// engine; the entry is a single pointer, so the unbounded-by-session-count map
-// is a negligible, bounded-in-practice cost.
+// Each worker's operation lock and dispatch state are created on first use and
+// kept for the lifetime of the engine.
 func (e *Engine) lockWorker(id domain.SessionID) func() {
 	mu := e.workerMutex(id)
 	mu.Lock()
@@ -203,14 +200,18 @@ func (e *Engine) lockWorker(id domain.SessionID) func() {
 }
 
 func (e *Engine) workerMutex(id domain.SessionID) *sync.Mutex {
-	e.triggerMu.Lock()
-	defer e.triggerMu.Unlock()
-	mu, ok := e.triggerLocks[id]
-	if !ok {
-		mu = &sync.Mutex{}
-		e.triggerLocks[id] = mu
+	return &e.workerState(id).operation
+}
+
+func (e *Engine) workerState(id domain.SessionID) *reviewWorkerState {
+	e.workersMu.Lock()
+	defer e.workersMu.Unlock()
+	state := e.workers[id]
+	if state == nil {
+		state = &reviewWorkerState{}
+		e.workers[id] = state
 	}
-	return mu
+	return state
 }
 
 // waitForChatRecovery keeps a missing startup controller from being treated as
@@ -836,6 +837,7 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		})
 		return nil
 	}
+	dispatch := e.workerState(workerID)
 	queueRuns := append(slices.Clone(restarted), created...)
 	refreshDispatch := func() error {
 		launchingCreated, err := e.dispatchableReviewRuns(ctx, created, launchID, true)
@@ -913,7 +915,7 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		if err != nil {
 			return TriggerResult{}, rollbackReplacement(err)
 		}
-		if err := refreshDispatch(); err != nil {
+		if err := dispatch.admitDispatch(ctx, refreshDispatch); err != nil {
 			return TriggerResult{}, rollbackReplacement(err)
 		}
 		if len(queueRuns) == 0 {
@@ -951,7 +953,7 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 			persistedAgentSessionID = launch.AgentSessionID
 		}
 	} else {
-		if err := refreshDispatch(); err != nil {
+		if err := dispatch.admitDispatch(ctx, refreshDispatch); err != nil {
 			return TriggerResult{}, failRuns(domain.ReviewFailureLaunchFailed, err)
 		}
 		if len(queueRuns) == 0 {
@@ -1015,8 +1017,12 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		}
 		previousStopped = true
 		if deferInitialMessage {
-			ready, err := e.dispatchableReviewRuns(ctx, queueRuns, launchID, false)
-			if err != nil {
+			var ready []domain.ReviewRun
+			if err := dispatch.admitDispatch(ctx, func() error {
+				var err error
+				ready, err = e.dispatchableReviewRuns(ctx, queueRuns, launchID, false)
+				return err
+			}); err != nil {
 				return TriggerResult{}, rollbackReplacement(err)
 			}
 			if len(ready) > 0 {
@@ -2144,6 +2150,8 @@ func (e *Engine) Cancel(ctx stdctx.Context, workerID domain.SessionID) (CancelRe
 	if err != nil {
 		return CancelResult{}, err
 	}
+	finishCancellation := e.workerState(workerID).beginCancellation()
+	defer finishCancellation()
 	active, err := e.store.ListActiveReviewRunsBySession(ctx, workerID)
 	if err != nil {
 		return CancelResult{}, err

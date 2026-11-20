@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -479,6 +480,177 @@ func TestReviewerStopWithDefaultHooksAndNoRecoveryScope(t *testing.T) {
 			}
 			if owners, err := store.ListAgentAccountUsageOwners(ctx, account.AccountID); err != nil || len(owners) != 1 || !owners[0].Blocking {
 				t.Fatalf("recovery lost the effective account owner: %+v (%v)", owners, err)
+			}
+		})
+	}
+}
+
+type lateReceiptRuntime struct {
+	*rootedRuntime
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (r *lateReceiptRuntime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+	close(r.entered)
+	select {
+	case <-r.resume:
+		return r.rootedRuntime.Create(ctx, cfg)
+	case <-ctx.Done():
+		return ports.RuntimeHandle{}, ctx.Err()
+	}
+}
+
+func TestLateSpawnFailureRetainsStopOwnerAfterReopen(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	root := t.TempDir()
+	store, err := sqlite.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	worker := liveWorker()
+	seedReviewWorker(t, store, worker)
+	now := time.Now().UTC()
+	s := lifecycleEngine{store: store, worker: worker, now: &now, ids: new(int)}
+	cfg := RunLifecycleConfig{LaunchTimeout: time.Second}
+	s.restart(t, &fakeLauncher{}, cfg)
+	rt := &lateReceiptRuntime{
+		rootedRuntime: &rootedRuntime{fakeRuntime: &fakeRuntime{}, roots: []int{101}},
+		entered:       make(chan struct{}),
+		resume:        make(chan struct{}),
+	}
+	table := newScriptedTable("101 1 100 0:00 pane", "202 101 100 0:00 survivor", "303 1 100 0:00 other")
+	launcher := receiptTestLauncher(root, rt, table, "boot-1")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher.reviewers = fakeReviewerResolver{reviewer: &fakeReviewerForPreflight{Argv: []string{executable}}, ok: true}
+	launcher.executable = os.Executable
+	launcher.forceStop.kill = func(pid int) error {
+		if pid == 202 {
+			return nil
+		}
+		return table.kill(pid)
+	}
+	s.launcher = launcher
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.TriggerWithOptions(ctx, worker.ID, TriggerOptions{})
+		done <- err
+	}()
+	select {
+	case <-rt.entered:
+	case early := <-done:
+		t.Fatalf("trigger returned before runtime Create: %v", early)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	review := s.review(t)
+	account := domain.ResolvedAgentAccount{
+		AccountID: "late-reviewer-account", Provider: domain.AgentAccountProviderClaude, Source: domain.AgentAccountSourceRole,
+	}
+	if err := store.BindReviewerAgentAccount(ctx, review.ID, account, now); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := store.ListActiveReviewRunsBySession(ctx, worker.ID)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("launching runs: %+v (%v)", runs, err)
+	}
+	s.advance(2 * time.Second)
+	s.pass(t)
+	wantRun(t, s.run(t, runs[0].ID), domain.ReviewRunFailed, domain.ReviewFailureNeverStarted)
+	close(rt.resume)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	review = s.review(t)
+	if rt.destroyed == "" || review.ReviewerHandleID != rt.destroyed {
+		t.Fatalf("pane teardown cleared the unconfirmed original handle: review=%+v pane=%q", review, rt.destroyed)
+	}
+	if pending, err := store.HasReviewerStop(ctx, stopKey(review)); err != nil || !pending {
+		t.Fatalf("late-spawn cleanup did not journal the survivor: %v (%v)", pending, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := sqlite.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, s.store = reopened, reopened
+	s.restartBeforeBoot(t, &fakeLauncher{}, cfg)
+	newRuntime := &rootedRuntime{fakeRuntime: &fakeRuntime{}}
+	s.launcher = receiptTestLauncher(root, newRuntime, table, "boot-1")
+	s.pass(t)
+	if err := s.ReconcileReviewers(ctx, worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if owners, err := store.ListAgentAccountUsageOwners(ctx, account.AccountID); err != nil || len(owners) != 1 || !owners[0].Blocking {
+		t.Fatalf("reopened owner list released the late-spawn survivor: %+v (%v)", owners, err)
+	}
+	if owner, err := store.GetOpenReviewerAccountUse(ctx, account.AccountID); err != nil || owner == nil {
+		t.Fatalf("reopened mutation guard released the late-spawn survivor: %+v (%v)", owner, err)
+	}
+	if newRuntime.destroyed != "" {
+		t.Fatal("receipt recovery destroyed a pane")
+	}
+	wantRun(t, s.run(t, runs[0].ID), domain.ReviewRunFailed, domain.ReviewFailureNeverStarted)
+}
+
+func TestReviewerStopRetriesInitiallyUnreadableProcessEvidence(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%v", restart), func(t *testing.T) {
+			ctx := t.Context()
+			s := newLifecycleEngine(t, &fakeLauncher{handle: "review-mer-1"})
+			s.trigger(t)
+			review := s.review(t)
+			root := t.TempDir()
+			table := newScriptedTable("101 1 100 0:00 pane", "202 101 100 0:00 provider", "303 1 100 0:00 other")
+			rt := &rootedRuntime{fakeRuntime: &fakeRuntime{}, roots: []int{101}}
+			launcher := receiptTestLauncher(root, rt, table, "boot-1")
+			launcher.forceStop.identities = func(context.Context) (map[int]procmem.Identity, error) {
+				return nil, errors.New("initial process snapshot unavailable")
+			}
+			s.launcher = launcher
+			if written, err := s.beginDurableReviewerStop(ctx, s.store, launcher, review); err != nil || !written {
+				t.Fatalf("record retryable stop: written=%v err=%v", written, err)
+			}
+			receipts, err := s.store.ListReviewerStopReceipts(ctx)
+			if err != nil || len(receipts) != 1 || receipts[0].State != domain.ReviewerStopUnknown || receipts[0].Reason != "reviewer_roots_unavailable" {
+				t.Fatalf("first sample did not retain the original scope: %+v (%v)", receipts, err)
+			}
+			if restart {
+				s.restartBeforeBoot(t, &fakeLauncher{}, RunLifecycleConfig{})
+				launcher = receiptTestLauncher(root, rt, table, "boot-1")
+				s.launcher = launcher
+			}
+			launcher.forceStop.identities = table.identities
+			s.pass(t)
+			pending, err := s.store.HasReviewerStop(ctx, stopKey(review))
+			if err != nil || pending != restart {
+				t.Fatalf("pending stop after usable evidence: %v (%v)", pending, err)
+			}
+			if !restart {
+				if len(table.killed) == 0 || rt.destroyed == "" {
+					t.Fatal("same-daemon recovery did not complete the native stop")
+				}
+				return
+			}
+			receipts, err = s.store.ListReviewerStopReceipts(ctx)
+			if err != nil || len(receipts) != 1 || receipts[0].State != domain.ReviewerStopCapturing {
+				t.Fatalf("restored stop did not persist the available evidence: %+v (%v)", receipts, err)
+			}
+			if len(table.frozen) != 0 || len(table.killed) != 0 || rt.destroyed != "" {
+				t.Fatal("a restored receipt tried to stop a process")
 			}
 		})
 	}

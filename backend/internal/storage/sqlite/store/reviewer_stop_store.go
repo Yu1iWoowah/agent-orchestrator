@@ -73,9 +73,18 @@ func writeReviewerStopProcesses(ctx context.Context, q *gen.Queries, key domain.
 
 // UpdateReviewerStop persists new lineage and advances the capture state atomically.
 func (s *Store) UpdateReviewerStop(ctx context.Context, receipt domain.ReviewerStopReceipt, next domain.ReviewerStopState, reason string, processes []domain.ReviewerStopProcess) error {
+	var scope sql.NullString
+	if receipt.State == domain.ReviewerStopUnknown && next == domain.ReviewerStopCapturing && receipt.ChatScope != nil {
+		data, err := json.Marshal(receipt.ChatScope)
+		if err != nil {
+			return err
+		}
+		scope = sql.NullString{String: string(data), Valid: true}
+	}
 	return s.writeReviewerStop(ctx, func(q *gen.Queries) error {
 		n, err := q.UpdateReviewerStopReceipt(ctx, gen.UpdateReviewerStopReceiptParams{
 			ReviewID: receipt.ReviewID, LaunchID: receipt.LaunchID, PreviousState: string(receipt.State), NextState: string(next), Reason: reason,
+			ChatScope: scope,
 		})
 		if err != nil {
 			return err

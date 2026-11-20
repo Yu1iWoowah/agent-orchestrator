@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -741,4 +742,81 @@ func TestCancelDuringSpawnWaitsForStopConfirmation(t *testing.T) {
 	l.spawned = false
 	s.pass(t)
 	wantRun(t, s.run(t, id), domain.ReviewRunCancelled, "")
+}
+
+type dispatchReadBarrier struct {
+	*sqlite.Store
+	reads   atomic.Int32
+	pauseAt int32
+	reached chan struct{}
+	resume  chan struct{}
+}
+
+func (s *dispatchReadBarrier) GetReviewRun(ctx context.Context, id string) (domain.ReviewRun, bool, error) {
+	run, found, err := s.Store.GetReviewRun(ctx, id)
+	if err == nil && found && run.Status == domain.ReviewRunLaunching && s.reads.Add(1) == s.pauseAt {
+		close(s.reached)
+		select {
+		case <-s.resume:
+		case <-ctx.Done():
+			return run, false, ctx.Err()
+		}
+	}
+	return run, found, err
+}
+
+func TestCancelAfterLastDispatchReadPreventsSpawnAndNotify(t *testing.T) {
+	for _, reuse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reuse=%v", reuse), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer cancel()
+			launcher := &fakeLauncher{handle: "review-mer-1", agentSessionID: "native-1"}
+			s := newLifecycleEngine(t, launcher)
+			var read int32 = 2 // A fresh launch also checks its passes after Preflight.
+			if reuse {
+				first := s.trigger(t)
+				if moved, err := s.store.TransitionReviewRun(ctx, first.ID, []domain.ReviewRunStatus{domain.ReviewRunRunning}, domain.ReviewRunCompleted, domain.ReviewRunPatch{Verdict: domain.VerdictApproved}); err != nil || !moved {
+					t.Fatalf("finish first run: moved=%v err=%v", moved, err)
+				}
+				s.prs = prAt("sha2")
+				read = 1
+			}
+			spawns := launcher.spawnCount
+			barrier := &dispatchReadBarrier{Store: s.store, pauseAt: read, reached: make(chan struct{}), resume: make(chan struct{})}
+			s.Engine.store = barrier
+			type outcome struct {
+				result TriggerResult
+				err    error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				result, err := s.TriggerWithOptions(ctx, s.worker.ID, TriggerOptions{})
+				done <- outcome{result, err}
+			}()
+			select {
+			case <-barrier.reached:
+			case early := <-done:
+				t.Fatalf("trigger returned before the last launching read: %+v", early)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			request, err := s.Cancel(ctx, s.worker.ID)
+			close(barrier.resume)
+			if err != nil || len(request.CancelledRuns) != 1 {
+				t.Fatalf("cancel while the dispatch read is paused: %+v (%v)", request, err)
+			}
+			select {
+			case got := <-done:
+				if got.err != nil || got.result.Created {
+					t.Fatalf("trigger dispatched after cancellation: %+v (%v)", got.result, got.err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if launcher.spawnCount != spawns || launcher.notified {
+				t.Fatalf("cancelled work reached the launcher: spawns=%d (prior %d) notify=%v", launcher.spawnCount, spawns, launcher.notified)
+			}
+			wantRun(t, s.run(t, request.CancelledRuns[0].ID), domain.ReviewRunCancelled, "")
+		})
+	}
 }

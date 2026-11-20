@@ -25,7 +25,8 @@ SELECT * FROM reviewer_stop_receipts ORDER BY session_id, review_id, launch_id;
 SELECT * FROM reviewer_stop_processes WHERE review_id=? AND launch_id=? ORDER BY pid, start_identity;
 
 -- name: UpdateReviewerStopReceipt :execrows
-UPDATE reviewer_stop_receipts SET state=sqlc.arg(next_state), reason=sqlc.arg(reason)
+UPDATE reviewer_stop_receipts SET state=sqlc.arg(next_state), reason=sqlc.arg(reason),
+    chat_scope=COALESCE(sqlc.narg(chat_scope), chat_scope)
 WHERE review_id=sqlc.arg(review_id) AND launch_id=sqlc.arg(launch_id) AND state=sqlc.arg(previous_state);
 
 -- name: ClearSettledReviewerRuntime :exec
