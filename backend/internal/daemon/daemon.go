@@ -1994,27 +1994,30 @@ func Run(buildVersion string) (retErr error) {
 }
 
 func stopControllersAfterUsageDrain(timeout, drainLimit time.Duration, drainUsage func(context.Context) error, stops ...func(context.Context) error) error {
-	remaining := timeout
-	runStep := func(budget time.Duration, step func(context.Context) error) error {
-		started := time.Now()
-		ctx, cancel := context.WithTimeout(context.Background(), budget)
+	started := time.Now()
+	deadline := started.Add(timeout)
+	runStep := func(stepDeadline time.Time, step func(context.Context) error) error {
+		if deadline.Before(stepDeadline) {
+			stepDeadline = deadline
+		}
+		ctx, cancel := context.WithDeadline(context.Background(), stepDeadline)
 		defer cancel()
-		err := step(ctx)
-		remaining -= min(time.Since(started), budget)
-		return err
+		return step(ctx)
 	}
 	// ExitAgent commits ActivityExited. The collector rejects ordinary hooks
 	// for exited sessions. Drain first and reserve half the budget for stops.
 	var shutdownErr error
 	if drainUsage != nil {
-		if err := runStep(min(drainLimit, timeout/2), drainUsage); err != nil {
+		if err := runStep(started.Add(min(drainLimit, timeout/2)), drainUsage); err != nil {
 			shutdownErr = fmt.Errorf("drain usage hooks before stopping controllers: %w", err)
 		}
 	}
 	for index, stop := range stops {
-		// Give every stop its own live deadline, including when an earlier stop
-		// exhausts its share. An early return leaves the unused time available.
-		shutdownErr = errors.Join(shutdownErr, runStep(remaining/time.Duration(len(stops)-index), stop))
+		// Divide the actual time left among pending stops. Cleanup that runs
+		// past its own deadline consumes time from the remaining shares.
+		now := time.Now()
+		share := deadline.Sub(now) / time.Duration(len(stops)-index)
+		shutdownErr = errors.Join(shutdownErr, runStep(now.Add(share), stop))
 	}
 	return shutdownErr
 }

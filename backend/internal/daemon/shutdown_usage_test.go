@@ -228,6 +228,54 @@ func TestControllerShutdownKeepsStopBudgetWhenUsageRecorderStaysBlocked(t *testi
 	t.Run("daemon replacement", func(t *testing.T) { testControllerShutdownWithBlockedUsage(t, false) })
 }
 
+func TestControllerShutdownCapsStopDeadlinesAfterLateCleanup(t *testing.T) {
+	const budget = 200 * time.Millisecond
+	const cleanupDelay = 30 * time.Millisecond
+	for _, test := range []struct {
+		name        string
+		desktopQuit bool
+	}{
+		{name: "desktop quit", desktopQuit: true},
+		{name: "daemon replacement"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var cutoff time.Time
+			drain := func(ctx context.Context) error {
+				deadline, ok := ctx.Deadline()
+				if !ok {
+					t.Fatal("drain has no deadline")
+				}
+				// The drain receives exactly half of the total budget.
+				cutoff = deadline.Add(budget / 2)
+				<-ctx.Done()
+				if !test.desktopQuit {
+					time.Sleep(cleanupDelay)
+				}
+				return ctx.Err()
+			}
+			checkDeadline := func(ctx context.Context) error {
+				deadline, ok := ctx.Deadline()
+				if !ok || deadline.After(cutoff) {
+					t.Errorf("stop deadline = %v, want at or before %v", deadline, cutoff)
+				}
+				return nil
+			}
+			stops := []func(context.Context) error{checkDeadline}
+			if test.desktopQuit {
+				stops = []func(context.Context) error{func(ctx context.Context) error {
+					_ = checkDeadline(ctx)
+					<-ctx.Done()
+					time.Sleep(cleanupDelay)
+					return ctx.Err()
+				}, checkDeadline}
+			}
+			if err := stopControllersAfterUsageDrain(budget, budget, drain, stops...); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("shutdown returned %v, want deadline exceeded", err)
+			}
+		})
+	}
+}
+
 func testControllerShutdownWithBlockedUsage(t *testing.T, desktopQuit bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
