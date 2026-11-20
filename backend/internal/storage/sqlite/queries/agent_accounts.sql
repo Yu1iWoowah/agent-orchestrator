@@ -25,6 +25,10 @@ INSERT INTO session_agent_accounts (session_id, provider, account_id, bound_at, 
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT (session_id, provider, bound_at) DO UPDATE SET account_id = excluded.account_id, resolution_source = excluded.resolution_source;
 
+-- name: DeleteProvisionalProviderSwitchAccount :exec
+DELETE FROM session_agent_accounts
+WHERE session_id = ? AND provider = ? AND account_id = ? AND bound_at = ?;
+
 -- name: GetSessionAgentAccount :one
 SELECT account_id FROM session_agent_accounts
 WHERE session_id = ? AND provider = ?

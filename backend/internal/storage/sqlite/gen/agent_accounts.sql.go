@@ -290,6 +290,28 @@ func (q *Queries) DeleteAgentAccountDefaultFor(ctx context.Context, accountID st
 	return err
 }
 
+const deleteProvisionalProviderSwitchAccount = `-- name: DeleteProvisionalProviderSwitchAccount :exec
+DELETE FROM session_agent_accounts
+WHERE session_id = ? AND provider = ? AND account_id = ? AND bound_at = ?
+`
+
+type DeleteProvisionalProviderSwitchAccountParams struct {
+	SessionID string
+	Provider  string
+	AccountID string
+	BoundAt   time.Time
+}
+
+func (q *Queries) DeleteProvisionalProviderSwitchAccount(ctx context.Context, arg DeleteProvisionalProviderSwitchAccountParams) error {
+	_, err := q.db.ExecContext(ctx, deleteProvisionalProviderSwitchAccount,
+		arg.SessionID,
+		arg.Provider,
+		arg.AccountID,
+		arg.BoundAt,
+	)
+	return err
+}
+
 const deletedSessionAccountUsageSince = `-- name: DeletedSessionAccountUsageSince :many
 SELECT account_id, day, model_id, input_tokens, cached_input_tokens, output_tokens, estimated_cost_nanos
 FROM deleted_session_account_usage

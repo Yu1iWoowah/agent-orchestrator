@@ -1378,12 +1378,11 @@ func TestWorkspaceIntegrationWorkspaceProjectCancelledStartRemovesRoot(t *testin
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cancelled := false
+	var rootPath string
 	ws.run = func(runCtx context.Context, binary string, args ...string) ([]byte, error) {
 		out, err := runCommand(runCtx, binary, args...)
-		joined := strings.Join(args, " ")
-		if err == nil && !cancelled && strings.Contains(joined, "worktree add") {
-			cancelled = true
+		if err == nil && rootPath == "" && len(args) >= 6 && args[2] == "worktree" && args[3] == "add" {
+			rootPath = args[len(args)-2]
 			cancel() // the root worktree now exists; fail every later step
 		}
 		return out, err
@@ -1394,16 +1393,74 @@ func TestWorkspaceIntegrationWorkspaceProjectCancelledStartRemovesRoot(t *testin
 		RootRepoPath: rootRepo,
 		Repos:        []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: childRepo}},
 	})
-	if err == nil || !cancelled {
-		t.Fatalf("create after cancellation = %v (cancelled %v), want an error after the root was added", err, cancelled)
+	if err == nil || rootPath == "" {
+		t.Fatalf("create after cancellation = %v (root %q), want an error after the root was added", err, rootPath)
 	}
 	ws.waitForDiscards()
-	rootPath := filepath.Join(tmp, "managed", "proj", "worker", "sess")
 	if _, statErr := os.Stat(rootPath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("root worktree left behind after a cancelled start: %v", statErr)
 	}
-	if list := gitOutput(t, git, rootRepo, "worktree", "list", "--porcelain"); strings.Contains(list, filepath.Join("managed", "proj", "worker", "sess")) {
-		t.Fatalf("root worktree still registered after a cancelled start:\n%s", list)
+	records, err := ws.listRecords(t.Context(), rootRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findWorktree(records, rootPath); ok {
+		t.Fatalf("root worktree still registered after a cancelled start: %q", rootPath)
+	}
+}
+
+func TestWorkspaceIntegrationWorkspaceExcludesFailurePreservesDirtyRoot(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	childRepo := setupOriginClone(t, git, filepath.Join(tmp, "api"))
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": rootRepo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("fixture excludes write failure")
+	var rootPath string
+	ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		if len(args) == 6 && args[2] == "config" && args[3] == "--worktree" && args[4] == "core.excludesFile" {
+			rootPath = args[1]
+			records, err := ws.listRecords(ctx, rootRepo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := findWorktree(records, rootPath); !ok {
+				t.Fatalf("root %q was not registered before excludes write", rootPath)
+			}
+			if err := os.WriteFile(filepath.Join(rootPath, "unsaved.txt"), []byte("user work"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if dirty, err := ws.isDirty(ctx, rootPath); !dirty || err != nil {
+				t.Fatalf("root was not dirty at the injected failure: dirty=%v, err=%v", dirty, err)
+			}
+			return nil, wantErr
+		}
+		return runCommand(ctx, binary, args...)
+	}
+	info, err := ws.CreateWorkspaceProject(t.Context(), ports.WorkspaceProjectConfig{
+		ProjectID: "proj", SessionID: "sess", Kind: "worker", Branch: "ao/dirty",
+		RootRepoPath: rootRepo,
+		Repos:        []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: childRepo}},
+	})
+	if !errors.Is(err, wantErr) || !errors.Is(err, ports.ErrWorkspaceDirty) || !errors.Is(err, ports.ErrWorkspaceCreateRetained) {
+		t.Fatalf("create = %v, want excludes failure and dirty refusal", err)
+	}
+	ws.waitForDiscards()
+	if info.Root.Path != rootPath || len(info.Worktrees) != 1 || info.Worktrees[0].Path != rootPath {
+		t.Fatalf("partial workspace = %+v, want preserved root %q", info, rootPath)
+	}
+	records, err := ws.listRecords(t.Context(), rootRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findWorktree(records, rootPath); !ok {
+		t.Fatalf("dirty root no longer registered: %q", rootPath)
+	}
+	if data, err := os.ReadFile(filepath.Join(rootPath, "unsaved.txt")); err != nil || string(data) != "user work" {
+		t.Fatalf("user file = %q, %v", data, err)
 	}
 }
 

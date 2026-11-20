@@ -9,6 +9,19 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+type providerSwitchAccountContextKey struct{}
+
+// WithProviderSwitchAccountPreservation keeps launch environment preparation
+// from implicitly binding accounts during a provider switch or its rollback.
+func WithProviderSwitchAccountPreservation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, providerSwitchAccountContextKey{}, true)
+}
+
+func PreservesProviderSwitchAccounts(ctx context.Context) bool {
+	preserve, _ := ctx.Value(providerSwitchAccountContextKey{}).(bool)
+	return preserve
+}
+
 // AgentAccountReviewerInUseError identifies a local execution that must stop
 // before cleanup. It carries only opaque references, never provider output.
 type AgentAccountReviewerInUseError struct {

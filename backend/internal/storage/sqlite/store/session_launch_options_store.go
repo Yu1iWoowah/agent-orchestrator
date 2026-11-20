@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
@@ -36,6 +37,23 @@ func (s *Store) SetSessionLaunchOptions(ctx context.Context, id domain.SessionID
 // one transaction: a terminal switch moves both to the other agent, and a stop
 // between two writes would start one agent with the other's choices.
 func (s *Store) UpdateSessionWithLaunchOptions(ctx context.Context, rec domain.SessionRecord, options domain.AgentLaunchOptions) error {
+	return s.updateSessionWithLaunchOptions(ctx, rec, options, nil)
+}
+
+// UpdateTUIProviderSwitch moves ownership and launch choices with the first
+// target account binding. Rollback retracts only the binding this switch wrote.
+func (s *Store) UpdateTUIProviderSwitch(ctx context.Context, rec domain.SessionRecord, options domain.AgentLaunchOptions, binding domain.ResolvedAgentAccount, boundAt time.Time, restore bool) error {
+	return s.updateSessionWithLaunchOptions(ctx, rec, options, func(q *gen.Queries) error {
+		if !restore {
+			return insertFirstSwitchAccount(ctx, q, rec, binding, boundAt)
+		}
+		return q.DeleteProvisionalProviderSwitchAccount(ctx, gen.DeleteProvisionalProviderSwitchAccountParams{
+			SessionID: string(rec.ID), Provider: string(binding.Provider), AccountID: binding.AccountID, BoundAt: boundAt.UTC(),
+		})
+	})
+}
+
+func (s *Store) updateSessionWithLaunchOptions(ctx context.Context, rec domain.SessionRecord, options domain.AgentLaunchOptions, switchBinding func(*gen.Queries) error) error {
 	if _, err := domain.AgentFastModeFromLaunch(options); err != nil {
 		return err
 	}
@@ -45,7 +63,13 @@ func (s *Store) UpdateSessionWithLaunchOptions(ctx context.Context, rec domain.S
 		if err := q.UpdateSession(ctx, recordToUpdate(rec)); err != nil {
 			return err
 		}
-		return q.SetSessionLaunchOptions(ctx, gen.SetSessionLaunchOptionsParams{LaunchOptions: encodeLaunchOptions(options), ID: rec.ID})
+		if err := q.SetSessionLaunchOptions(ctx, gen.SetSessionLaunchOptionsParams{LaunchOptions: encodeLaunchOptions(options), ID: rec.ID}); err != nil {
+			return err
+		}
+		if switchBinding != nil {
+			return switchBinding(q)
+		}
+		return nil
 	})
 }
 

@@ -535,6 +535,9 @@ var (
 	// it holds uncommitted changes or untracked files. Teardown is never
 	// forced; callers treat the workspace as intentionally preserved.
 	ErrWorkspaceDirty = errors.New("workspace: uncommitted changes present")
+	// ErrWorkspaceCreateRetained means the adapter completed its claim-aware
+	// rollback and returned paths for recovery, not another automatic removal.
+	ErrWorkspaceCreateRetained = errors.New("workspace: create rollback preserved worktrees")
 	// ErrWorkspaceRepoUnavailable reports that the project's source repository
 	// is no longer reachable on disk, so git cannot be asked to remove the
 	// session's worktree. Teardown treats this like ErrWorkspaceDirty: the

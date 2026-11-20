@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1639,7 +1640,9 @@ func (m *Manager) spawn(ctx context.Context, cfg ports.SpawnConfig, replacement 
 		created(err)
 	}
 	if err != nil {
-		if ws.Path != "" {
+		if ws.Path != "" && errors.Is(err, ports.ErrWorkspaceCreateRetained) {
+			m.recordRetainedSeedSpawnWorkspace(ctx, rec, ws, false)
+		} else if ws.Path != "" {
 			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, prep != nil, false)
 		} else {
 			// No worktree exists, so the seed row can be discarded.
@@ -2441,7 +2444,7 @@ func (m *Manager) createSessionWorkspaceAt(ctx context.Context, project domain.P
 			WorktreePath: wt.Path,
 			State:        "active",
 		}); storeErr != nil {
-			if cfg.TaskPreparation != "" {
+			if cfg.TaskPreparation != "" || errors.Is(err, ports.ErrWorkspaceCreateRetained) {
 				return info.Root, &info, errors.Join(err, fmt.Errorf("record prepared workspace worktree %q: %w", wt.RepoName, storeErr))
 			}
 			cleanupCtx, cancel := spawnRollbackContext(ctx)
@@ -2617,13 +2620,17 @@ func (m *Manager) rollbackSeedSpawnWorkspace(ctx context.Context, rec domain.Ses
 		}
 		return
 	}
-	cleanupCtx, cancel = spawnRollbackContext(ctx)
+	m.recordRetainedSeedSpawnWorkspace(ctx, rec, ws, published)
+}
+
+func (m *Manager) recordRetainedSeedSpawnWorkspace(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo, published bool) {
+	cleanupCtx, cancel := spawnRollbackContext(ctx)
+	defer cancel()
 	m.preserveFailedSpawnWorkspace(cleanupCtx, rec.ID, ws, true)
-	cancel()
 	if published {
 		return
 	}
-	m.markSpawnFailedTerminatedAfterFailure(ctx, rec.ID, false)
+	m.markSpawnFailedTerminatedAfterFailure(cleanupCtx, rec.ID, false)
 }
 
 func (m *Manager) preserveFailedSpawnWorkspace(ctx context.Context, id domain.SessionID, ws ports.WorkspaceInfo, runtimeDestroyed bool) {
@@ -7301,6 +7308,10 @@ func (m *Manager) chatPreflightEnv(cfg ports.SpawnConfig, projectEnv map[string]
 // cannot start under the device login. A nonempty accountID replaces the
 // session's binding for an account move's preflight.
 func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, accountID string, harness domain.AgentHarness) (map[string]string, error) {
+	return m.runtimeEnvWithBindingPolicy(id, project, issue, projectEnv, accountID, harness, false)
+}
+
+func (m *Manager) runtimeEnvWithBindingPolicy(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, accountID string, harness domain.AgentHarness, preserveBindings bool) (map[string]string, error) {
 	caseInsensitive := envKeysCaseInsensitive
 	env := spawnEnvForOS(id, project, issue, m.dataDir, projectEnv, caseInsensitive)
 	if m.dataDir != "" {
@@ -7358,7 +7369,7 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 		env[EnvAgentBrowserURL] = m.agentBrowserURL
 		env[EnvAgentBrowserToken] = m.agentBrowserToken
 	}
-	accountErr := m.applyAgentAccountEnv(id, accountID, env, caseInsensitive, harness)
+	accountErr := m.applyAgentAccountEnvWithBindingPolicy(id, accountID, env, caseInsensitive, harness, preserveBindings)
 	if accountErr != nil {
 		return nil, accountErr
 	}
@@ -7385,7 +7396,7 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 // agent under a different login than the one the session shows. A nonempty
 // accountID replaces the session's binding. An error means the env may lack an
 // account's variables.
-func (m *Manager) applyAgentAccountEnv(id domain.SessionID, accountID string, env map[string]string, caseInsensitive bool, harness domain.AgentHarness) error {
+func (m *Manager) applyAgentAccountEnvWithBindingPolicy(id domain.SessionID, accountID string, env map[string]string, caseInsensitive bool, harness domain.AgentHarness, preserveBindings bool) error {
 	setProtectedEnv(env, agentlaunch.ManagedCodexAccountEnv, "", caseInsensitive)
 	if m.agentAccounts == nil || id == "" {
 		return nil
@@ -7394,7 +7405,12 @@ func (m *Manager) applyAgentAccountEnv(id domain.SessionID, accountID string, en
 	defer cancel()
 	var accountEnv map[string]string
 	var err error
-	if accountID != "" {
+	preflight, supported := m.agentAccounts.(interface {
+		ProviderSwitchLaunchEnv(context.Context, domain.SessionID, string, domain.AgentHarness) (map[string]string, error)
+	})
+	if preserveBindings && supported {
+		accountEnv, err = preflight.ProviderSwitchLaunchEnv(ctx, id, accountID, harness)
+	} else if accountID != "" {
 		accountEnv, err = m.agentAccounts.SessionLaunchEnvWith(ctx, id, accountID, harness)
 	} else {
 		accountEnv, err = m.agentAccounts.SessionLaunchEnv(ctx, id, harness)
@@ -7456,14 +7472,18 @@ func pinRuntimePermissionEnv(env map[string]string, mode domain.PermissionMode) 
 }
 
 func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, harness domain.AgentHarness) (map[string]string, string, error) {
-	return m.launchRuntimeEnvOnAccount(id, project, issue, projectEnv, harness, m.accountOverride(id))
+	return m.launchRuntimeEnvOnAccount(id, project, issue, projectEnv, harness, m.accountOverride(id), false)
 }
 
-func (m *Manager) launchRuntimeEnvOnAccount(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, harness domain.AgentHarness, accountID string) (map[string]string, string, error) {
-	env, err := m.runtimeEnvChecked(id, project, issue, projectEnv, accountID, harness)
+func (m *Manager) launchRuntimeEnvOnAccount(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, harness domain.AgentHarness, accountID string, preserveBindings bool) (map[string]string, string, error) {
+	env, err := m.runtimeEnvWithBindingPolicy(id, project, issue, projectEnv, accountID, harness, preserveBindings)
 	if err != nil {
 		return nil, "", err
 	}
+	return m.issueLaunchBrowserCapability(id, env)
+}
+
+func (m *Manager) issueLaunchBrowserCapability(id domain.SessionID, env map[string]string) (map[string]string, string, error) {
 	if m.browserCapabilities == nil {
 		return env, "", nil
 	}
@@ -7490,7 +7510,8 @@ func (m *Manager) prepareWorkerLaunchEnv(
 	if state, _ := ctx.Value(tuiSettingsLaunchKey{}).(*tuiSettingsLaunch); state != nil {
 		accountID = state.accountID
 	}
-	env, verifier, err := m.launchRuntimeEnvOnAccount(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness, accountID)
+	preserveBindings := ports.PreservesProviderSwitchAccounts(ctx)
+	env, verifier, err := m.launchRuntimeEnvOnAccount(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness, accountID, preserveBindings)
 	if err != nil {
 		return rec, nil, err
 	}
@@ -7513,7 +7534,20 @@ func (m *Manager) prepareChatControllerEnv(
 	projectEnv map[string]string,
 	expected domain.SessionControllerOwner,
 ) (domain.SessionRecord, map[string]string, error) {
-	env, verifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness)
+	var env map[string]string
+	var verifier string
+	var err error
+	if ports.PreservesProviderSwitchAccounts(ctx) {
+		// Until the Chat switch commits, rec still describes the source. The
+		// target's checked environment was resolved before stopping it.
+		if targetEnv := ports.AuthEnvironmentOverrides(ctx); targetEnv != nil {
+			env, verifier, err = m.issueLaunchBrowserCapability(rec.ID, maps.Clone(targetEnv))
+		} else {
+			env, verifier, err = m.launchRuntimeEnvOnAccount(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness, m.accountOverride(rec.ID), true)
+		}
+	} else {
+		env, verifier, err = m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness)
+	}
 	if err != nil {
 		return rec, nil, err
 	}

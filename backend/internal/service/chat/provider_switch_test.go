@@ -17,8 +17,8 @@ import (
 
 type scopedSwitchLaunch struct{ account domain.ResolvedAgentAccount }
 
-func (l scopedSwitchLaunch) PrepareProviderSwitchLaunch(ctx context.Context, _ domain.SessionRecord, _ domain.AgentHarness) (context.Context, map[string]string, func(), error) {
-	return ports.WithAgentAccount(ctx, l.account), nil, func() {}, nil
+func (l scopedSwitchLaunch) PrepareProviderSwitchLaunch(ctx context.Context, _ domain.SessionRecord, _ domain.AgentHarness) (context.Context, map[string]string, *domain.ResolvedAgentAccount, func(), error) {
+	return ports.WithAgentAccount(ctx, l.account), nil, &l.account, func() {}, nil
 }
 
 type scopedSwitchCatalog struct{ account domain.ResolvedAgentAccount }
@@ -46,6 +46,9 @@ func TestProviderSwitchModelCatalogUsesTargetAccountBeforeStoppingSource(t *test
 	defer driver.mu.Unlock()
 	if len(driver.startConfigs) != 1 || !h.svc.HasLiveChatController(testSession) {
 		t.Fatal("model refusal touched the source or started the target")
+	}
+	if _, found, err := h.st.GetSessionAgentAccountBinding(t.Context(), testSession, account.Provider); err != nil || found {
+		t.Fatalf("model refusal left a target binding: found=%v err=%v", found, err)
 	}
 }
 
@@ -89,6 +92,8 @@ func TestForcedProviderSwitchKeepsUnsettledDeliveryAndQueue(t *testing.T) {
 func TestProviderSwitchPublishesApproximateBranch(t *testing.T) {
 	h, _, driver := newEditHarness(t, false)
 	ctx := context.Background()
+	selected := domain.ResolvedAgentAccount{AccountID: "device-claude", Provider: domain.AgentAccountProviderClaude, Source: domain.AgentAccountSourceDevice}
+	h.svc.SetProviderSwitchLaunch(scopedSwitchLaunch{selected})
 
 	// Give the source a complete durable exchange so the target assertion proves
 	// the bootstrap came from AO's canonical rows, not provider scrollback.
@@ -127,6 +132,9 @@ func TestProviderSwitchPublishesApproximateBranch(t *testing.T) {
 		AutoCompactWindow: "1m",
 	}); err != nil {
 		t.Fatalf("SwitchProvider: %v", err)
+	}
+	if binding, found, err := h.st.GetSessionAgentAccountBinding(ctx, testSession, selected.Provider); err != nil || !found || binding != selected {
+		t.Fatalf("target binding = %+v, found=%v, err=%v", binding, found, err)
 	}
 
 	targetConfig := lastStart(driver)
@@ -453,7 +461,7 @@ type failingProviderSwitchStore struct {
 	err error
 }
 
-func (s failingProviderSwitchStore) CommitProviderSwitch(context.Context, domain.SessionRecord, domain.ConversationBranch, string, domain.ConversationSettings, domain.ConversationActivity) error {
+func (s failingProviderSwitchStore) CommitProviderSwitch(context.Context, domain.SessionRecord, domain.ConversationBranch, string, domain.ConversationSettings, domain.ConversationActivity, *domain.ResolvedAgentAccount) error {
 	return s.err
 }
 

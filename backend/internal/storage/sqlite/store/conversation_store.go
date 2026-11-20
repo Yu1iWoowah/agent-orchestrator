@@ -589,7 +589,7 @@ func (s *Store) CreateAndActivateConversationBranch(
 // CommitProviderSwitch atomically publishes the fresh provider branch and the
 // target harness/controller metadata. Provider startup happens before this
 // method; until it commits, the old branch remains the durable owner.
-func (s *Store) CommitProviderSwitch(ctx context.Context, rec domain.SessionRecord, branch domain.ConversationBranch, generation string, settings domain.ConversationSettings, activity domain.ConversationActivity) error {
+func (s *Store) CommitProviderSwitch(ctx context.Context, rec domain.SessionRecord, branch domain.ConversationBranch, generation string, settings domain.ConversationSettings, activity domain.ConversationActivity, newBinding *domain.ResolvedAgentAccount) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.inTx(ctx, "commit provider switch", func(q *gen.Queries) error {
@@ -606,6 +606,11 @@ func (s *Store) CommitProviderSwitch(ctx context.Context, rec domain.SessionReco
 		}
 		if err := q.UpdateSession(ctx, recordToUpdate(rec)); err != nil {
 			return fmt.Errorf("update switched session: %w", err)
+		}
+		if newBinding != nil {
+			if err := insertFirstSwitchAccount(ctx, q, rec, *newBinding, rec.UpdatedAt); err != nil {
+				return err
+			}
 		}
 		if err := q.UpdateConversationTurnSettings(ctx, gen.UpdateConversationTurnSettingsParams{
 			FastMode: string(settings.AgentFastMode),

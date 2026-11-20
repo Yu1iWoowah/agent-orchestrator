@@ -1069,13 +1069,26 @@ func (s *Service) SessionAccounts(ctx context.Context, id domain.SessionID) (map
 // session's account. A session with no account for a provider yet is bound to
 // that provider's default here, so a later default change does not move it.
 func (s *Service) SessionLaunchEnv(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (map[string]string, error) {
-	return s.launchEnv(ctx, id, domain.AgentAccount{}, harness, "")
+	return s.launchEnv(ctx, id, domain.AgentAccount{}, harness, "", true)
 }
 
 // SessionLaunchEnvWith is SessionLaunchEnv with accountID in place of the
 // session's account for its provider, for starting an agent on an account the
 // session moves to. The session's binding is not changed.
 func (s *Service) SessionLaunchEnvWith(ctx context.Context, id domain.SessionID, accountID string, harness domain.AgentHarness) (map[string]string, error) {
+	return s.sessionLaunchEnvWith(ctx, id, accountID, harness, true)
+}
+
+// ProviderSwitchLaunchEnv preserves all bindings during a switch preflight
+// or when recovering the old provider after an unsuccessful switch.
+func (s *Service) ProviderSwitchLaunchEnv(ctx context.Context, id domain.SessionID, accountID string, harness domain.AgentHarness) (map[string]string, error) {
+	if accountID == "" {
+		return s.launchEnv(ctx, id, domain.AgentAccount{}, harness, "", false)
+	}
+	return s.sessionLaunchEnvWith(ctx, id, accountID, harness, false)
+}
+
+func (s *Service) sessionLaunchEnvWith(ctx context.Context, id domain.SessionID, accountID string, harness domain.AgentHarness, bind bool) (map[string]string, error) {
 	account, err := s.find(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -1084,10 +1097,10 @@ func (s *Service) SessionLaunchEnvWith(ctx context.Context, id domain.SessionID,
 	if !ok || p != account.Provider {
 		return nil, ports.ErrAgentAccountProviderMismatch
 	}
-	return s.launchEnv(ctx, id, account, harness, "")
+	return s.launchEnv(ctx, id, account, harness, "", bind)
 }
 
-func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override domain.AgentAccount, harness domain.AgentHarness, reviewID string) (map[string]string, error) {
+func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override domain.AgentAccount, harness domain.AgentHarness, reviewID string, bind bool) (map[string]string, error) {
 	env := map[string]string{}
 	releases := make([]func(), 0, len(domain.AgentAccountProviders))
 	defer func() {
@@ -1148,7 +1161,7 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 				errs = append(errs, err)
 				continue
 			}
-			if !bound {
+			if !bound && bind {
 				if err := s.bindExecutionAccount(ctx, id, reviewID, p, account); err != nil {
 					errs = append(errs, err)
 				}

@@ -37,7 +37,7 @@ func TestAccountPolicyCannotComeFromProjectOrInheritedEnvironment(t *testing.T) 
 		if caseInsensitive {
 			env["ao_codex_managed_account"] = "1"
 		}
-		if err := manager.applyAgentAccountEnv("session-1", "", env, caseInsensitive, domain.HarnessCodex); err != nil {
+		if err := manager.applyAgentAccountEnvWithBindingPolicy("session-1", "", env, caseInsensitive, domain.HarnessCodex, false); err != nil {
 			t.Fatal(err)
 		}
 		if env[agentlaunch.ManagedCodexAccountEnv] != "" || (caseInsensitive && env["ao_codex_managed_account"] != "") {

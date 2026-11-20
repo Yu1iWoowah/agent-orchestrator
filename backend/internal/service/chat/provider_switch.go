@@ -21,7 +21,7 @@ type TerminalProviderSwitcher interface {
 
 // ProviderSwitchLaunch reserves the target account and its launch environment.
 type ProviderSwitchLaunch interface {
-	PrepareProviderSwitchLaunch(context.Context, domain.SessionRecord, domain.AgentHarness) (context.Context, map[string]string, func(), error)
+	PrepareProviderSwitchLaunch(context.Context, domain.SessionRecord, domain.AgentHarness) (context.Context, map[string]string, *domain.ResolvedAgentAccount, func(), error)
 }
 
 // SetProviderSwitchLaunch shares account admission and environment resolution
@@ -322,9 +322,10 @@ func (s *Service) switchProvider(ctx context.Context, id domain.SessionID, reque
 	}
 	targetCtx := ctx
 	var targetEnv map[string]string
+	var newBinding *domain.ResolvedAgentAccount
 	if s.switchLaunch != nil {
 		var release func()
-		targetCtx, targetEnv, release, err = s.switchLaunch.PrepareProviderSwitchLaunch(ctx, record, request.TargetHarness)
+		targetCtx, targetEnv, newBinding, release, err = s.switchLaunch.PrepareProviderSwitchLaunch(ctx, record, request.TargetHarness)
 		if err != nil {
 			return err
 		}
@@ -406,7 +407,8 @@ func (s *Service) switchProvider(ctx context.Context, id domain.SessionID, reque
 	// restore brings a stopped source back, or the session would sit idle with
 	// no provider behind it.
 	restore := func(err error) error {
-		if restoreErr := s.restoreClosedSourceController(operationCtx, id, source, activeBranch, startCfg, sourceDriver); restoreErr != nil {
+		restoreCtx := ports.WithProviderSwitchAccountPreservation(operationCtx)
+		if restoreErr := s.restoreClosedSourceController(restoreCtx, id, source, activeBranch, startCfg, sourceDriver); restoreErr != nil {
 			return errors.Join(err, restoreErr)
 		}
 		abortSource = false
@@ -486,7 +488,7 @@ func (s *Service) switchProvider(ctx context.Context, id domain.SessionID, reque
 		}
 		// The target's settings are saved with the switch, so the source never
 		// resumes with them, whether the target fails or the daemon dies first.
-		if err := s.store.CommitProviderSwitch(operationCtx, targetRecord, *started.ProviderBoundary, started.ControllerGeneration, started.Conversation.Settings, switchActivity); err != nil {
+		if err := s.store.CommitProviderSwitch(operationCtx, targetRecord, *started.ProviderBoundary, started.ControllerGeneration, started.Conversation.Settings, switchActivity, newBinding); err != nil {
 			return ControllerCommit{}, err
 		}
 		committed := started.Conversation
@@ -504,9 +506,12 @@ func (s *Service) switchProvider(ctx context.Context, id domain.SessionID, reque
 		s.log.Warn("clear source usage before provider switch", "session", id, "error", err)
 	}
 	targetStarted := time.Now()
-	targetOperationCtx := operationCtx
+	targetOperationCtx := ports.WithProviderSwitchAccountPreservation(operationCtx)
+	if targetEnv != nil {
+		targetOperationCtx = ports.WithAuthEnvironment(targetOperationCtx, targetEnv)
+	}
 	if binding, ok := ports.AgentAccountFromContext(targetCtx); ok {
-		targetOperationCtx = ports.WithAgentAccount(operationCtx, binding)
+		targetOperationCtx = ports.WithAgentAccount(targetOperationCtx, binding)
 	}
 	target, err := s.startLocked(targetOperationCtx, targetCfg)
 	if err != nil {

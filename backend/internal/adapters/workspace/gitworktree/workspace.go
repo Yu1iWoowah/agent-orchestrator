@@ -745,9 +745,7 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 					return fail(err)
 				}
 				claims[repo.outputPath] = repo.claim
-				if cfg.FreshBranch {
-					touched = append(touched, info)
-				}
+				touched = append(touched, info)
 				baseSHA, err = w.createWorkspaceProjectRepo(ctx, repo, branch, cfg.RequireNewBranch)
 				if err == nil {
 					created = append(created, repo)
@@ -766,7 +764,11 @@ func (w *Workspace) CreateWorkspaceProject(ctx context.Context, cfg ports.Worksp
 			}
 			out.Root = ports.WorkspaceInfo{Path: repo.outputPath, Branch: branch, BaseSHA: rootSHA, BaseRef: repo.baseRef, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID}
 			if err := w.configureWorkspaceChildExcludes(ctx, rootPath, repos[1:]); err != nil {
-				return fail(err)
+				remaining, err := w.rollbackWorkspaceProjectPreparation(ctx, out, touched, claims, err)
+				if len(remaining.Worktrees) != 0 {
+					err = errors.Join(err, ports.ErrWorkspaceCreateRetained)
+				}
+				return remaining, err
 			}
 		}
 	}

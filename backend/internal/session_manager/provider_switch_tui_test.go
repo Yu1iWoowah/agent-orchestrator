@@ -3,6 +3,7 @@ package sessionmanager
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +255,68 @@ func TestTUISwitchModelCheckUsesTargetAccountBeforeStoppingSource(t *testing.T) 
 	}
 	if calls != 1 || store.sessions[id].ControllerOwner() != before.ControllerOwner() || len(runtime.interrupts) != 0 || len(*effects) != 0 {
 		t.Fatalf("preflight refusal changed source or touched runtime: calls=%d effects=%v", calls, *effects)
+	}
+}
+
+type firstTUISwitchAccounts struct {
+	*transitionAccounts
+	target domain.ResolvedAgentAccount
+}
+
+func (a *firstTUISwitchAccounts) SessionAccountBinding(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (domain.ResolvedAgentAccount, error) {
+	if harness != domain.HarnessCodex {
+		return a.transitionAccounts.SessionAccountBinding(ctx, id, harness)
+	}
+	if a.target.AccountID == "" {
+		return a.target, ports.ErrAgentAccountUnknown
+	}
+	return a.target, nil
+}
+
+func (a *firstTUISwitchAccounts) ResolveAccount(_ context.Context, request ports.AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error) {
+	provider, _ := domain.AgentAccountProviderFor(request.Harness)
+	return domain.ResolvedAgentAccount{
+		AccountID: request.ProjectConfig.RoleAccountReference(request.Role, request.Harness),
+		Provider:  provider, Source: domain.AgentAccountSourceRole,
+	}, nil
+}
+
+func (a *firstTUISwitchAccounts) BindResolvedSession(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, selected domain.ResolvedAgentAccount) error {
+	if harness != domain.HarnessCodex {
+		return a.transitionAccounts.BindResolvedSession(ctx, id, harness, selected)
+	}
+	a.target = selected
+	return nil
+}
+
+func TestTUISwitchRejectedModelDoesNotPinFirstTargetAccount(t *testing.T) {
+	manager, store, runtime, _, accounts, effects := newAccountTransitionManager(t, domain.SessionModeTUI)
+	selected := &firstTUISwitchAccounts{transitionAccounts: accounts}
+	manager.SetAgentAccounts(selected)
+	id := domain.SessionID("session-1")
+	before := store.sessions[id]
+	refusal := errors.New("fixture model refusal")
+	var scopes []string
+	check := func(ctx context.Context, _ *domain.ProviderSwitchRequest) error {
+		account, _ := ports.AgentAccountFromContext(ctx)
+		scopes = append(scopes, account.AccountID)
+		return refusal
+	}
+	for _, roleAccount := range []string{"acct-before", "acct-after"} {
+		project := store.projects[string(before.ProjectID)]
+		project.Config.Worker.AgentAccountID = roleAccount
+		store.projects[string(before.ProjectID)] = project
+		if err := manager.SwitchTUIProviderWithPreflight(t.Context(), id, domain.ProviderSwitchRequest{
+			TargetHarness: domain.HarnessCodex, Model: "requested-model",
+		}, check); !errors.Is(err, refusal) {
+			t.Fatalf("switch = %v, want preflight refusal", err)
+		}
+	}
+	if !slices.Equal(scopes, []string{"acct-before", "acct-after"}) || selected.target.AccountID != "" {
+		t.Fatalf("catalog accounts = %v, target binding = %+v", scopes, selected.target)
+	}
+	if store.sessions[id].ControllerOwner() != before.ControllerOwner() || len(runtime.interrupts) != 0 || len(*effects) != 0 {
+		t.Fatalf("model refusal touched source runtime: %v", *effects)
 	}
 }
 

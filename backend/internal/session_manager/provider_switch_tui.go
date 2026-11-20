@@ -84,7 +84,7 @@ func (m *Manager) SwitchTUIProviderWithPreflight(ctx context.Context, id domain.
 		return err
 	}
 	ws := workspaceInfo(rec)
-	targetCtx, _, releaseTarget, err := m.PrepareProviderSwitchLaunch(ctx, rec, target)
+	targetCtx, _, newBinding, releaseTarget, err := m.PrepareProviderSwitchLaunch(ctx, rec, target)
 	if err != nil {
 		return err
 	}
@@ -99,6 +99,12 @@ func (m *Manager) SwitchTUIProviderWithPreflight(ctx context.Context, id domain.
 	}
 	if err := preflightTUISwitchTarget(targetCtx, target, targetAgent, m.dataDir); err != nil {
 		return err
+	}
+	switchStore, _ := m.store.(interface {
+		UpdateTUIProviderSwitch(context.Context, domain.SessionRecord, domain.AgentLaunchOptions, domain.ResolvedAgentAccount, time.Time, bool) error
+	})
+	if newBinding != nil && switchStore == nil {
+		return ports.ErrAgentAccountStorageUnavailable
 	}
 
 	lastInputAt, releaseInput := m.beginTerminalInputDrain(rec)
@@ -154,6 +160,8 @@ func (m *Manager) SwitchTUIProviderWithPreflight(ctx context.Context, id domain.
 		FastMode: request.FastMode, FastModeOff: !request.FastMode && target == domain.HarnessCodex,
 		Ultracode: request.Ultracode, AutoCompactWindow: request.AutoCompactWindow,
 	}
+	var bindingAt time.Time
+	bindingPublished := false
 	restoreSource := func(cause error, what string) error {
 		// A target that used up the switch's time still leaves the restore its own.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*interfaceTransitionStepLimit)
@@ -165,12 +173,15 @@ func (m *Manager) SwitchTUIProviderWithPreflight(ctx context.Context, id domain.
 		// moved: a stop between two writes would leave the target owning the
 		// session with neither its handoff nor the source's native identity.
 		var restoreErr error
-		if launchStore != nil {
+		if bindingPublished {
+			restoreErr = switchStore.UpdateTUIProviderSwitch(ctx, source, sourceLaunch, *newBinding, bindingAt, true)
+		} else if launchStore != nil {
 			restoreErr = launchStore.UpdateSessionWithLaunchOptions(ctx, source, sourceLaunch)
 		} else {
 			restoreErr = m.store.UpdateSession(ctx, source)
 		}
 		if restoreErr == nil {
+			ctx = ports.WithProviderSwitchAccountPreservation(ctx)
 			_, restoreErr = m.relaunchSessionWithPolicy(ctx, "restore source provider", source, project, ws, nil, false, false, domain.SessionInterfaceTransitionHistoryStrict)
 		}
 		if restoreErr != nil {
@@ -207,7 +218,14 @@ func (m *Manager) SwitchTUIProviderWithPreflight(ctx context.Context, id domain.
 	}
 	targetRecord.UpdatedAt = m.clock()
 	publish := func() error { return m.store.UpdateSession(ctx, targetRecord) }
-	if launchStore != nil {
+	if newBinding != nil {
+		bindingAt = targetRecord.UpdatedAt
+		publish = func() error {
+			err := switchStore.UpdateTUIProviderSwitch(ctx, targetRecord, targetLaunch, *newBinding, bindingAt, false)
+			bindingPublished = err == nil
+			return err
+		}
+	} else if launchStore != nil {
 		publish = func() error { return launchStore.UpdateSessionWithLaunchOptions(ctx, targetRecord, targetLaunch) }
 	}
 	if err := publish(); err != nil {
