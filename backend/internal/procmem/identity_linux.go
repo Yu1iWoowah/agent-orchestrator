@@ -121,3 +121,47 @@ func parseProcStat(stat string) (identity Identity, alive, ok bool) {
 	}
 	return Identity{PPID: ppid, Start: fields[startField]}, true, true
 }
+
+// AllThreadsStopped checks the kernel's group-stop state for every thread of
+// the same process. Reading only the leader's state can miss a running thread.
+func AllThreadsStopped(pid int, start string) bool {
+	root := "/proc/" + strconv.Itoa(pid)
+	leader, err := os.ReadFile(root + "/stat")
+	if err != nil {
+		return false
+	}
+	identity, alive, ok := parseProcStat(string(leader))
+	if !ok || !alive || identity.Start != start || !isStoppedStat(string(leader)) {
+		return false
+	}
+	threads, err := os.ReadDir(root + "/task")
+	if err != nil || len(threads) == 0 {
+		return false
+	}
+	for _, thread := range threads {
+		stat, err := os.ReadFile(root + "/task/" + thread.Name() + "/stat")
+		if err != nil || !isStoppedStat(string(stat)) {
+			return false
+		}
+	}
+	after, err := os.ReadDir(root + "/task")
+	if err != nil || len(after) != len(threads) {
+		return false
+	}
+	for i := range threads {
+		if threads[i].Name() != after[i].Name() {
+			return false
+		}
+	}
+	leader, err = os.ReadFile(root + "/stat")
+	if err != nil {
+		return false
+	}
+	identity, alive, ok = parseProcStat(string(leader))
+	return ok && alive && identity.Start == start && isStoppedStat(string(leader))
+}
+
+func isStoppedStat(stat string) bool {
+	end := strings.LastIndexByte(stat, ')')
+	return end >= 0 && strings.HasPrefix(stat[end+1:], " T ")
+}

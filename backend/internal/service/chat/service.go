@@ -2346,9 +2346,40 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 	return err
 }
 
+// ReviewStopScope reads the original provider scope from a specific reviewer controller.
+func (s *Service) ReviewStopScope(ctx context.Context, reviewID, generation string) (*domain.CompactionProcessScope, error) {
+	controller, err := s.ControllerForOwner(domain.ReviewConversationOwner(reviewID))
+	if err != nil {
+		return nil, err
+	}
+	if generation == "" || controller.generation != generation {
+		return nil, ErrNoController
+	}
+	reader, ok := controller.conv.(ports.ChatCompactionScopeReader)
+	if !ok {
+		return nil, ports.ErrChatCompactionScopeUnsupported
+	}
+	scopeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	scope, err := reader.CompactionScope(scopeCtx)
+	return scope.Processes, err
+}
+
+// StopReviewGeneration closes only the expected reviewer controller.
+func (s *Service) StopReviewGeneration(ctx context.Context, reviewID, generation string) error {
+	if generation == "" {
+		return ErrNoController
+	}
+	return s.stopForOwner(ctx, domain.ReviewConversationOwner(reviewID), generation)
+}
+
 // StopForOwner closes a typed-owner controller without touching its parent
 // worker's Chat controller.
 func (s *Service) StopForOwner(ctx context.Context, owner domain.ConversationOwner) error {
+	return s.stopForOwner(ctx, owner, "")
+}
+
+func (s *Service) stopForOwner(ctx context.Context, owner domain.ConversationOwner, expectedGeneration string) error {
 	if owner.Kind == domain.ConversationOwnerSession {
 		return s.Stop(ctx, domain.SessionID(owner.ID))
 	}
@@ -2359,6 +2390,9 @@ func (s *Service) StopForOwner(ctx context.Context, owner domain.ConversationOwn
 	defer gate.unlock()
 
 	controller, err := s.ControllerForOwner(owner)
+	if expectedGeneration != "" && (err != nil || controller.generation != expectedGeneration) {
+		return ErrNoController
+	}
 	if errors.Is(err, ErrNoController) {
 		s.mu.Lock()
 		delete(s.startConfigs, owner)

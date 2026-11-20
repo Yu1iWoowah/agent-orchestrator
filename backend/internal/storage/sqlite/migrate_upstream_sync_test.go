@@ -13,8 +13,11 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/pressly/goose/v3"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 // Captured from 0ea30936 (u3), b2c8f3bb (F1), and 816d7820 (F).
@@ -266,6 +269,10 @@ func upstreamSyncSchema(t *testing.T, db *sql.DB) map[string]string {
 func assertUpstreamSyncLedger(t *testing.T, db *sql.DB) {
 	t.Helper()
 	assertUpstreamSyncLedgerThrough(t, db, goose.MaxVersion)
+	var total int
+	if err := db.QueryRow(`SELECT count(*) FROM goose_db_version WHERE version_id<>0`).Scan(&total); err != nil || total != len(shippedMigrations) {
+		t.Fatalf("ledger has %d receipts, want fixed manifest of %d: %v", total, len(shippedMigrations), err)
+	}
 }
 
 func assertUpstreamSyncLedgerThrough(t *testing.T, db *sql.DB, lastVersion int64) {
@@ -806,4 +813,129 @@ ALTER TABLE model_usage_events DROP COLUMN provider_message_id;`)
 	}
 	assertUpstreamSyncLedger(t, db)
 	assertUpstreamSyncConstraints(t, db)
+}
+
+func TestWithdrawnReportDeliveryReceiptStopsBeforeMigration(t *testing.T) {
+	dir := t.TempDir()
+	upstreamSyncLegacyDatabase(t, dir, 20261116001259486)
+	db, err := sql.Open("sqlite", databaseURI(dir)+pragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	mustExec(t, db, `INSERT INTO goose_db_version (version_id, is_applied) VALUES (20261120084919464, 1)`)
+	before := upstreamSyncRows(t, db, `SELECT * FROM goose_db_version ORDER BY id`)
+	objects := sharedInputObjects(t, db)
+	store, err := Open(dir)
+	if err == nil {
+		_ = store.Close()
+		t.Fatal("production Open accepted the withdrawn migration")
+	}
+	if !strings.Contains(err.Error(), "withdrawn report delivery migration") {
+		t.Fatalf("Open failed at the wrong boundary: %v", err)
+	}
+	if after := upstreamSyncRows(t, db, `SELECT * FROM goose_db_version ORDER BY id`); before != after || !reflect.DeepEqual(objects, sharedInputObjects(t, db)) {
+		t.Fatal("refused preflight wrote migration receipts or schema")
+	}
+}
+
+func TestReviewerStopMigrationSeedsOnlyExactCleanupOwners(t *testing.T) {
+	dir := t.TempDir()
+	ctx := t.Context()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.UpsertProject(ctx, domain.ProjectRecord{ID: "stop-fixture", Path: dir, RegisteredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		id       string
+		reason   domain.ReviewFailureReason
+		archived bool
+		handle   string
+		launch   string
+		bound    bool
+		seeded   bool
+	}{
+		{"unconfirmed", domain.ReviewFailureCancelUnconfirmed, false, "pane", "launch", true, true},
+		{"never-started", domain.ReviewFailureNeverStarted, false, "pane", "launch", true, true},
+		{"timed-out", domain.ReviewFailureTimedOut, false, "pane", "launch", true, true},
+		{"archived", domain.ReviewFailureTimedOut, true, "pane", "launch", true, false},
+		{"absent-pane", domain.ReviewFailureTimedOut, false, "", "launch", true, false},
+		{"obsolete", domain.ReviewFailureTimedOut, false, "pane", "old-launch", true, false},
+		{"no-binding", domain.ReviewFailureTimedOut, false, "pane", "launch", false, false},
+		{"process-exited", domain.ReviewFailureProcessExited, false, "pane", "launch", true, false},
+	}
+	for _, tc := range cases {
+		rec, err := store.CreateSession(ctx, domain.SessionRecord{
+			ProjectID: "stop-fixture", Kind: domain.KindWorker, Harness: domain.HarnessCodex, CreatedAt: now, UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		review := domain.Review{ID: tc.id, SessionID: rec.ID, ProjectID: rec.ProjectID, Harness: domain.ReviewerClaudeCode,
+			ReviewerHandleID: tc.handle, ReviewerLaunchID: "launch", ReviewerActivityState: domain.ActivityExited,
+			IsArchived: tc.archived, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := store.UpsertReview(ctx, review); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.InsertReviewRun(ctx, domain.ReviewRun{
+			ID: tc.id, ReviewID: tc.id, SessionID: rec.ID, Harness: review.Harness, TargetSHA: "head",
+			CreatedAt: now, Status: domain.ReviewRunRunning,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		moved, err := store.TransitionReviewRun(ctx, tc.id, []domain.ReviewRunStatus{domain.ReviewRunRunning},
+			domain.ReviewRunFailed, domain.ReviewRunPatch{FailureReason: tc.reason, LaunchID: tc.launch})
+		if err != nil || !moved {
+			t.Fatalf("set up legacy failed review %s: moved=%v (%v)", tc.id, moved, err)
+		}
+		if tc.bound {
+			if err := store.BindReviewerAgentAccount(ctx, tc.id, domain.ResolvedAgentAccount{
+				AccountID: tc.id, Provider: domain.AgentAccountProviderClaude, Source: domain.AgentAccountSourceRole,
+			}, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", databaseURI(dir)+pragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The dedicated migration is additive. Recreate its immediately preceding
+	// schema over these rows without touching a released migration.
+	mustExec(t, db, `DROP TABLE reviewer_stop_processes;
+DROP TABLE reviewer_stop_accounts;
+DROP TABLE reviewer_stop_receipts;
+DELETE FROM goose_db_version WHERE version_id=20261120110913324;`)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	receipts, err := store.ListReviewerStopReceipts(ctx)
+	if err != nil || len(receipts) != 3 {
+		t.Fatalf("seeded receipts: %+v (%v)", receipts, err)
+	}
+	for _, tc := range cases {
+		have, err := store.HasReviewerStop(ctx, domain.ReviewerStopKey{ReviewID: tc.id, LaunchID: "launch"})
+		if err != nil || have != tc.seeded {
+			t.Fatalf("seeded receipt %s = %v, want %v (%v)", tc.id, have, tc.seeded, err)
+		}
+	}
+	for _, receipt := range receipts {
+		if receipt.State != domain.ReviewerStopUnknown || receipt.Reason != "historical_missing_lineage" ||
+			receipt.DataRoot != "" || receipt.BootID != "" || receipt.PIDNamespace != "" {
+			t.Fatalf("historical receipt guessed a scope: %+v", receipt)
+		}
+	}
 }

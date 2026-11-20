@@ -327,6 +327,7 @@ var shippedMigrations = map[int64]string{
 	20261117090000000: "20261117090000000_allow_tau_harness.sql",
 	20261118180603285: "20261118180603285_report_unacknowledged_attempts.sql",
 	20261119061500000: "20261119061500000_review_requester.sql",
+	20261120110913324: "20261120110913324_reviewer_stop_receipts.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

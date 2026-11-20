@@ -291,6 +291,13 @@ CLI 仍走 daemon HTTP，Cloud、HCG 與 `go.work` 保留 fork 原來源。LAN �
 
 | 發現 | 處置 | 驗證接點 |
 |---|---|---|
-| D-14 P1 · .07 | B 的 `cancel_unconfirmed` 與 captured survivor 新增了跨重啟清理義務。持久化方案待裁決。 | F 與 A 的相關路徑相同。B 的 boot reaper 只讀 active runs，現有帳號查詢以 review 當前 launch 與 handle 保持占用。 |
+| D-14 P1 · .07 | B 的 `cancel_unconfirmed` 與 captured survivor 新增了跨重啟清理義務。依 D-19 收據補強。 | F 與 A 的相關路徑相同。B 的 boot reaper 只讀 active runs，現有帳號查詢以 review 當前 launch 與 handle 保持占用。 |
 | D-14 P2 · .07 | 已領取而尚無 handle 的 pass 進入 cancelling。Trigger 於 Preflight 返回後和派送前重查，略過已結束或正在取消的工作。已進入 Spawn 的 pass 交回 handle 後可中斷，等待停止確認。 | SQLite barrier 分別驗 Preflight 前後與 in-flight Spawn，並保留 before-CAS 測例。 |
 | D-15 R1-I1 · .02／.04 | 移除暫加的 report payload 表，恢復原定 302 份 migrations。新文字只取既有 report 內容與固定 session ID。Chat 重送沿用既有已接受訊息的 bytes。 | ACK 前中斷、改名、重啟後驗同一 key 和文字、只一則訊息與結算。測例涵蓋新舊 renderer。 |
+
+#### B 段持久化停止收據（D-19）
+
+| 依據 | 處置 | 驗證接點 |
+|---|---|---|
+| `upsync2-pr2-q2=a_sqlite`、`upsync2-pr2-contract-1=approve` · .07、AC5 | Force-stop 先為原 launch 寫 SQLite 收據、程序身分及帳號快照。未封口保留原根證據。開機和後續恢復只觀察。兩個 owner 查詢由收據維持阻擋，確認原範圍全退才以精確世代結算。 | 重開 SQLite、Engine 與 launcher 後，查詢及帳號移除仍擋。程序全退才放行。同 root、同 machine-id 雜湊但不同 boot ID 時保留占用，記 `boot_changed_origin_unverified`。 |
+| 契約 rev2.1 §5、AC2、AU1／AU2 | 唯一新增 fork migration `20261120110913324_reviewer_stop_receipts.sql`。固定 F 284、U 18 與此版本，終態為 303。 | 四組 production Open／reopen 逐 ID 驗唯一套用、DDL／FK。撤回的 report 版本為未核准前態，migration／timestamp 寫入前停止。 |

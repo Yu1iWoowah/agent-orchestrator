@@ -100,7 +100,8 @@ type suspendGap struct {
 }
 
 type runLifecycleState struct {
-	config RunLifecycleConfig
+	localStopKeys map[domain.ReviewerStopKey]struct{}
+	config        RunLifecycleConfig
 
 	mu           sync.Mutex
 	activity     map[string]activityMark
@@ -481,6 +482,17 @@ func (e *Engine) ListObservableReviewers(ctx stdctx.Context) ([]ports.ReviewerTa
 	for _, stop := range e.pendingStops() {
 		targets = append(targets, ports.ReviewerTarget{ReviewID: stop.review.ID, SessionID: stop.review.SessionID, HandleID: stop.review.ReviewerHandleID, LaunchID: stop.review.ReviewerLaunchID})
 	}
+	if store, ok := e.store.(reviewerStopStore); ok {
+		receipts, err := store.ListReviewerStopReceipts(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, receipt := range receipts {
+			targets = append(targets, ports.ReviewerTarget{
+				ReviewID: receipt.ReviewID, SessionID: receipt.SessionID, LaunchID: receipt.LaunchID,
+			})
+		}
+	}
 	runs, err := e.store.ListActiveReviewRuns(ctx)
 	if err != nil || len(runs) == 0 {
 		return targets, err
@@ -501,6 +513,14 @@ func (e *Engine) ListObservableReviewers(ctx stdctx.Context) ([]ports.ReviewerTa
 				continue
 			}
 			if seen[review.ID] {
+				continue
+			}
+			pending, err := e.reviewerStopPending(ctx, review)
+			if err != nil {
+				return nil, err
+			}
+			if pending {
+				seen[review.ID] = true
 				continue
 			}
 			seen[review.ID] = true
@@ -537,7 +557,7 @@ func (e *Engine) ApplyReviewerObservations(ctx stdctx.Context, pass ports.Review
 	}
 	e.pruneGaps(runs, e.pendingStops())
 	bySession := groupRunsBySession(runs)
-	var errs []error
+	errs := []error{e.resumeReviewerStops(ctx)}
 	if pass.Boot {
 		for _, workerID := range bySession.order {
 			errs = append(errs, e.bootSweep(ctx, workerID, probes[workerID]))
@@ -683,6 +703,7 @@ type runDecision struct {
 	to        domain.ReviewRunStatus
 	patch     domain.ReviewRunPatch
 	interrupt bool
+	settled   bool
 }
 
 // evaluateSessionLocked applies the run lifecycle rules to one worker's
@@ -726,11 +747,22 @@ func (e *Engine) evaluateSessionWith(ctx stdctx.Context, workerID domain.Session
 			review = domain.Review{ID: "unknown:" + run.ID, ReviewerHandleID: "unknown"}
 			probes[review.ID] = reviewerProbe{alive: true, known: false}
 		}
+		if ok {
+			pending, err := e.reviewerStopPending(ctx, review)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if pending {
+				continue
+			}
+		}
 		decision, err := e.decide(ctx, run, review, now, probes)
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
+		changed = changed || decision.settled
 		if decision.to == "" {
 			continue
 		}
@@ -926,6 +958,26 @@ func (e *Engine) forceKill(ctx stdctx.Context, run domain.ReviewRun, review doma
 	if review.ReviewerHandleID == "" {
 		return runDecision{to: domain.ReviewRunCancelled, patch: domain.ReviewRunPatch{EndedAt: &now}}, nil
 	}
+	if store, ok := e.store.(reviewerStopStore); ok {
+		if launcher, ok := e.launcher.(*agentLauncher); ok {
+			written, err := e.beginDurableReviewerStop(ctx, store, launcher, review)
+			if !written {
+				return runDecision{}, fmt.Errorf("record reviewer stop: %w", err)
+			}
+			delete(probes, review.ID)
+			if err != nil {
+				slog.Default().WarnContext(ctx, "reviewer stop remains pending", "review", review.ID, "err", err)
+			}
+			pending, err := store.HasReviewerStop(ctx, stopKey(review))
+			if err != nil {
+				return runDecision{}, err
+			}
+			if pending {
+				return unconfirmed, nil
+			}
+			return runDecision{settled: true}, nil
+		}
+	}
 	stopped, err := e.forceStop(ctx, review)
 	delete(probes, review.ID)
 	if err != nil || !stopped {
@@ -1036,7 +1088,12 @@ func (e *Engine) sweepSessionLocked(ctx stdctx.Context, workerID domain.SessionI
 	now := e.clock()
 	probes := seedProbes(observed, lookup)
 	kept := map[string]bool{}
-	orphaned := map[string]domain.Review{}
+	type bootRun struct {
+		run           domain.ReviewRun
+		review        domain.Review
+		orphanSurface bool
+	}
+	var stranded []bootRun
 	var errs []error
 	for _, run := range runs {
 		if !e.fromPreviousDaemon(run) {
@@ -1048,9 +1105,51 @@ func (e *Engine) sweepSessionLocked(ctx stdctx.Context, workerID domain.SessionI
 			continue
 		}
 		review, ok := lookup.find(run)
+		if ok {
+			pending, err := e.reviewerStopPending(ctx, review)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if pending {
+				kept[review.ID] = true
+				continue
+			}
+		}
 		if ok && e.readoptable(ctx, run, review, probes) {
 			kept[review.ID] = true
 			continue
+		}
+		stranded = append(stranded, bootRun{
+			run: run, review: review, orphanSurface: ok && review.ReviewerHandleID != "" && review.InterfaceMode != domain.ReviewerInterfaceChat,
+		})
+	}
+	store, durable := e.store.(reviewerStopStore)
+	launcher, capturable := e.launcher.(*agentLauncher)
+	canPersist := durable && capturable
+	orphaned := map[string]domain.Review{}
+	receipts := map[string]domain.ReviewerStopReceipt{}
+	writeFailed := map[string]bool{}
+	for _, candidate := range stranded {
+		run, review := candidate.run, candidate.review
+		orphan := candidate.orphanSurface && !kept[review.ID]
+		if orphan && canPersist {
+			if writeFailed[review.ID] {
+				continue
+			}
+			if _, exists := receipts[review.ID]; !exists {
+				receipt, err := e.recordReviewerStop(ctx, store, launcher, review)
+				if err != nil {
+					writeFailed[review.ID] = true
+					errs = append(errs, err)
+					continue
+				}
+				receipts[review.ID] = receipt
+			}
+			if run.Status == domain.ReviewRunCancelling {
+				// The receipt's settlement transaction is the cancellation proof.
+				continue
+			}
 		}
 		to, patch := domain.ReviewRunFailed, domain.ReviewRunPatch{FailureReason: domain.ReviewFailureDaemonRestarted, EndedAt: &now}
 		if run.Status == domain.ReviewRunCancelling {
@@ -1064,14 +1163,14 @@ func (e *Engine) sweepSessionLocked(ctx stdctx.Context, workerID domain.SessionI
 		}
 		// A run another path already moved is owned by that path: leave its
 		// reviewer alone.
-		if moved && ok && review.ReviewerHandleID != "" && review.InterfaceMode != domain.ReviewerInterfaceChat {
+		if moved && orphan && !canPersist {
 			orphaned[review.ID] = review
 		}
 	}
-	for id, review := range orphaned {
-		if kept[id] {
-			continue
-		}
+	for _, receipt := range receipts {
+		errs = append(errs, e.advanceReviewerStop(ctx, store, launcher, receipt))
+	}
+	for _, review := range orphaned {
 		if err := e.reapOrphan(ctx, workerID, review); err != nil {
 			// Keep the obligation: its runs are final now, so nothing else
 			// would bring this reviewer back to a later pass.
@@ -1083,6 +1182,19 @@ func (e *Engine) sweepSessionLocked(ctx stdctx.Context, workerID domain.SessionI
 }
 
 func (e *Engine) reapOrphan(ctx stdctx.Context, workerID domain.SessionID, review domain.Review) error {
+	if store, ok := e.store.(reviewerStopStore); ok {
+		if launcher, ok := e.launcher.(*agentLauncher); ok {
+			pending, err := store.HasReviewerStop(ctx, stopKey(review))
+			if err != nil || pending {
+				return err
+			}
+			written, err := e.beginDurableReviewerStop(ctx, store, launcher, review)
+			if written {
+				e.forgetStop(review.ID)
+			}
+			return err
+		}
+	}
 	stopped, err := e.forceStop(ctx, review)
 	if err != nil {
 		return err
@@ -1202,6 +1314,14 @@ func (e *Engine) settleStops(ctx stdctx.Context, observed map[domain.SessionID]m
 }
 
 func (e *Engine) settleStopLocked(ctx stdctx.Context, stop pendingStop, observed map[string]reviewerProbe) error {
+	pending, err := e.reviewerStopPending(ctx, stop.review)
+	if err != nil {
+		return err
+	}
+	if pending {
+		e.forgetStop(stop.review.ID)
+		return nil
+	}
 	current, ok, err := e.store.GetReviewBySessionAndHarness(ctx, stop.review.SessionID, stop.review.Harness)
 	if err != nil {
 		return err

@@ -2148,6 +2148,8 @@ func mapSessionError(err error) error {
 	case errors.Is(err, domain.ErrSessionHistoryShared):
 		return apierr.Conflict("SESSION_HISTORY_SHARED",
 			"This session's turns belong to a conversation that outlives it, so it cannot be deleted.", nil)
+	case errors.Is(err, domain.ErrReviewerStopPending):
+		return apierr.Conflict("REVIEWER_STOP_PENDING", "Retry after the reviewer stop is confirmed.", nil)
 	case errors.Is(err, domain.ErrSessionHistoryProtected):
 		return apierr.Conflict("SESSION_HISTORY_PROTECTED",
 			"This session still holds input custody or orchestrator ownership records, so it cannot be deleted.", nil)

@@ -471,6 +471,9 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		return TriggerResult{}, err
 	}
 	if hasReview {
+		if err := e.checkReviewerStopFence(ctx, reviewRow); err != nil {
+			return TriggerResult{}, err
+		}
 		if (hasConfigOverride || mode != "" && mode != reviewRow.InterfaceMode) && HasRunningRun(runs, harness) {
 			return TriggerResult{}, ports.ErrAgentSettingsConflict
 		}
@@ -1214,6 +1217,9 @@ func (e *Engine) SwitchReviewer(
 			return SessionReviews{}, err
 		}
 		if found {
+			if err := e.checkReviewerStopFence(ctx, review); err != nil {
+				return SessionReviews{}, err
+			}
 			state, err := settingsStore.ReviewerAgentSettings(ctx, review.ID)
 			if err != nil {
 				return SessionReviews{}, err
@@ -1312,6 +1318,9 @@ func (e *Engine) destroyOtherReviewerHandles(ctx stdctx.Context, workerID domain
 		if review.Harness == selected || review.ReviewerHandleID == "" {
 			continue
 		}
+		if err := e.checkReviewerStopFence(ctx, review); err != nil {
+			return err
+		}
 		if err := e.launcher.Destroy(ctx, review.ReviewerHandleID); err != nil {
 			return err
 		}
@@ -1351,6 +1360,9 @@ func reviewRunsContainRunningForReview(runs []domain.ReviewRun, review domain.Re
 func (e *Engine) resetReviewerRuntimeLocked(ctx stdctx.Context, workerID domain.SessionID, harness domain.ReviewerHarness) error {
 	review, ok, err := e.store.GetReviewBySessionAndHarness(ctx, workerID, harness)
 	if err != nil || !ok {
+		return err
+	}
+	if err := e.checkReviewerStopFence(ctx, review); err != nil {
 		return err
 	}
 	if review.ReviewerHandleID != "" {
@@ -1428,6 +1440,10 @@ func (e *Engine) restoreRecoverableChatReviewer(ctx stdctx.Context, review domai
 		return RestoreReviewerResult{}, nil
 	}
 	review = current
+	pending, err := e.reviewerStopPending(ctx, review)
+	if err != nil || pending {
+		return RestoreReviewerResult{}, err
+	}
 	worker, ok, err := e.sessions.GetSession(ctx, review.SessionID)
 	if err != nil {
 		return RestoreReviewerResult{}, err
@@ -1555,6 +1571,9 @@ func (e *Engine) restoreReviewerLocked(
 	}
 	if hasReview && reviewRow.IsArchived {
 		return RestoreReviewerResult{}, nil
+	}
+	if err := e.checkReviewerStopFence(ctx, reviewRow); err != nil {
+		return RestoreReviewerResult{}, err
 	}
 	previousRuns := reviewRunsForHarness(runs, harness)
 	if !hasReview && len(previousRuns) == 0 {
@@ -1715,6 +1734,9 @@ func (e *Engine) TeardownReviewerTerminal(ctx stdctx.Context, workerID domain.Se
 	defer unlock()
 	reviews, err := e.store.ListReviewsBySession(ctx, workerID)
 	if err != nil {
+		return err
+	}
+	if err := e.checkUnsealedReviewerStop(ctx, workerID); err != nil {
 		return err
 	}
 	for _, review := range reviews {
@@ -2019,6 +2041,9 @@ func (e *Engine) reconcileReviewerRuntime(ctx stdctx.Context, review *domain.Rev
 	if e.hasPendingStop(review.ID) {
 		return false, nil
 	}
+	if pending, err := e.reviewerStopPending(ctx, *review); err != nil || pending {
+		return false, err
+	}
 	ownsPass := slices.ContainsFunc(runs, func(run domain.ReviewRun) bool {
 		return run.ReviewID == review.ID && run.Status.IsActive() && run.Status != domain.ReviewRunQueued
 	})
@@ -2158,6 +2183,13 @@ func (e *Engine) Cancel(ctx stdctx.Context, workerID domain.SessionID) (CancelRe
 	now := e.clock()
 	interrupted := make(map[domain.ReviewerHarness]domain.Review, len(reviewers))
 	for _, review := range reviewers {
+		pending, err := e.reviewerStopPending(ctx, review)
+		if err != nil {
+			return CancelResult{}, err
+		}
+		if pending {
+			continue
+		}
 		if err := e.launcher.Cancel(ctx, review.ReviewerHandleID, review.Harness); err != nil {
 			alive, aliveErr := e.launcher.Alive(ctx, review.ReviewerHandleID, review.ReviewerLaunchID)
 			if aliveErr != nil || alive {
@@ -2340,6 +2372,9 @@ func (e *Engine) terminateReviewer(ctx stdctx.Context, workerID domain.SessionID
 	}
 	active, err := e.store.ListActiveReviewRunsBySession(ctx, workerID)
 	if err != nil {
+		return TerminateResult{}, err
+	}
+	if err := e.checkUnsealedReviewerStop(ctx, workerID); err != nil {
 		return TerminateResult{}, err
 	}
 	destroyedHandle := ""

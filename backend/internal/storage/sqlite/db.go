@@ -382,6 +382,25 @@ func OpenPreMigrated(dataDir string) (*Store, error) {
 	return store, nil
 }
 
+// This unpublished B revision used a separate, withdrawn migration. Stop
+// before ledger repairs or timestamp preparation write anything to a copy.
+func rejectWithdrawnReportDeliveryReceipt(db *sql.DB) error {
+	var ledger bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_schema
+		WHERE type='table' AND name='goose_db_version')`).Scan(&ledger); err != nil || !ledger {
+		return err
+	}
+	var withdrawn bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM goose_db_version
+		WHERE version_id=20261120084919464)`).Scan(&withdrawn); err != nil {
+		return err
+	}
+	if withdrawn {
+		return errors.New("unapproved schema: withdrawn report delivery migration 20261120084919464")
+	}
+	return nil
+}
+
 func migrate(db *sql.DB) (err error) {
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
@@ -399,6 +418,9 @@ func migrate(db *sql.DB) (err error) {
 		versions[i] = migration.Version
 	}
 	ctx := context.Background()
+	if err := rejectWithdrawnReportDeliveryReceipt(db); err != nil {
+		return err
+	}
 	triggers, err := prepareTimestampSchemaMigration(ctx, db, versions)
 	if err != nil {
 		return fmt.Errorf("prepare timestamp tracking for schema migrations: %w", err)

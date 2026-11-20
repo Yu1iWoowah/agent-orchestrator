@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/processscope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/procmem"
 )
 
@@ -19,8 +20,11 @@ const defaultForceStopWait = 3 * time.Second
 // forceStopHooks are the operating-system edges of ForceStop, injectable so
 // tests can model a runtime that leaves processes behind.
 type forceStopHooks struct {
-	identities func(context.Context) (map[int]procmem.Identity, error)
-	kill       func(pid int) error
+	identities      func(context.Context) (map[int]procmem.Identity, error)
+	comparisonScope func() (bootID, pidNamespace string)
+	chatEnded       func(context.Context, *processscope.Scope) (bool, string)
+	stopped         func(pid int, start string) bool
+	kill            func(pid int) error
 	// freeze stops a process without ending it (SIGSTOP), so it can no longer
 	// spawn anything while its tree is captured. Nil where the platform has no
 	// such signal (Windows, which keeps a dead parent's pid on its children
@@ -36,7 +40,10 @@ const maxFreezeRounds = 32
 
 func defaultForceStopHooks() forceStopHooks {
 	return forceStopHooks{
-		identities: procmem.Identities,
+		identities:      procmem.Identities,
+		comparisonScope: processscope.CurrentScope,
+		chatEnded:       processscope.Ended,
+		stopped:         procmem.AllThreadsStopped,
 		kill: func(pid int) error {
 			process, err := os.FindProcess(pid)
 			if err != nil {
@@ -297,10 +304,17 @@ func (l *agentLauncher) captureReviewerTree(ctx context.Context, handle ports.Ru
 	if err != nil {
 		return nil, err
 	}
+	return capturedFromRoots(bounded, identities, false)
+}
+
+func capturedFromRoots(bounded []ports.ProcessRoot, identities map[int]procmem.Identity, requireAll bool) ([]capturedProcess, error) {
 	var roots []int
 	for _, root := range bounded {
 		identity, ok := identities[root.PID]
 		if !ok {
+			if requireAll {
+				return nil, fmt.Errorf("reviewer root %d no longer visible", root.PID)
+			}
 			continue // it exited
 		}
 		if !root.StartedBy.IsZero() {
@@ -310,6 +324,9 @@ func (l *agentLauncher) captureReviewerTree(ctx context.Context, handle ports.Ru
 			if identity.StartedAt.After(root.StartedBy.Add(rootStartSlack)) {
 				// The runtime's process exited and another one took its pid:
 				// nothing below it is the reviewer's.
+				if requireAll {
+					return nil, fmt.Errorf("reviewer root %d was replaced", root.PID)
+				}
 				continue
 			}
 		}

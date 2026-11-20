@@ -13,6 +13,7 @@ import (
 
 type persistentChatSessionStore interface {
 	ListAllSessions(context.Context) ([]domain.SessionRecord, error)
+	ListReviewerStopReceipts(context.Context) ([]domain.ReviewerStopReceipt, error)
 	ListRecoverableChatReviews(context.Context) ([]domain.Review, error)
 }
 
@@ -29,6 +30,15 @@ func reconcilePersistentChatHosts(ctx context.Context, dataDir string, store per
 		return fmt.Errorf("list reviews for persistent chat hosts: %w", err)
 	}
 	keep := persistentChatHostKeepSet(records, reviews)
+	receipts, err := store.ListReviewerStopReceipts(ctx)
+	if err != nil {
+		return fmt.Errorf("list reviewer stop receipts for persistent chat hosts: %w", err)
+	}
+	for _, receipt := range receipts {
+		if receipt.InterfaceMode == domain.ReviewerInterfaceChat {
+			keep["review-"+receipt.ReviewID] = struct{}{}
+		}
+	}
 	if len(appRunIDs) > 0 && appRunIDs[0] != "" {
 		keepLaunchSideHosts(dataDir, appRunIDs[0], keep)
 	}

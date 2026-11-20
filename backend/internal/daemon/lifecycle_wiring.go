@@ -843,6 +843,14 @@ func (c chatLauncher) InterruptReviewChat(ctx context.Context, reviewID string) 
 	return err
 }
 
+func (c chatLauncher) ReviewChatStopScope(ctx context.Context, reviewID, generation string) (*domain.CompactionProcessScope, error) {
+	return c.svc.ReviewStopScope(ctx, reviewID, generation)
+}
+
+func (c chatLauncher) StopReviewChatGeneration(ctx context.Context, reviewID, generation string) error {
+	return c.svc.StopReviewGeneration(ctx, reviewID, generation)
+}
+
 func (c chatLauncher) StopReviewChat(ctx context.Context, reviewID string) error {
 	return c.svc.StopForOwner(ctx, domain.ReviewConversationOwner(reviewID))
 }

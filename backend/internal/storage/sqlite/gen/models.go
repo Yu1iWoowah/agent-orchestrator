@@ -1326,6 +1326,38 @@ type ReviewerAgentSettingsOperation struct {
 	CreatedAt          time.Time
 }
 
+type ReviewerStopAccount struct {
+	ReviewID  string
+	LaunchID  string
+	Provider  string
+	AccountID string
+}
+
+type ReviewerStopProcess struct {
+	ReviewID      string
+	LaunchID      string
+	Pid           int64
+	StartIdentity string
+	StartedAt     sql.NullTime
+}
+
+type ReviewerStopReceipt struct {
+	ReviewID             string
+	LaunchID             string
+	SessionID            string
+	ProjectID            sql.NullString
+	Harness              string
+	HandleID             string
+	InterfaceMode        string
+	ControllerGeneration string
+	DataRoot             string
+	BootID               string
+	PidNamespace         string
+	ChatScope            string
+	State                string
+	Reason               string
+}
+
 type Session struct {
 	ID                               domain.SessionID
 	ProjectID                        *domain.ProjectID
