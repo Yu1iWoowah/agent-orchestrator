@@ -821,23 +821,44 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 			return TriggerResult{}, failRuns(domain.ReviewFailureLaunchFailed, err)
 		}
 	}
-	queueRuns := append(slices.Clone(restarted), created...)
-	if len(queueRuns) < newCandidates+len(restartCandidates) {
+	refreshResult := func() error {
 		runs, err = e.store.ListReviewRunsBySession(ctx, workerID)
 		if err != nil {
-			return TriggerResult{}, failRuns(domain.ReviewFailureLaunchFailed, err)
+			return err
 		}
 		reviews = Plan(prs, runs)
 		// The response prepends newly dispatched runs with their final status.
 		runs = slices.DeleteFunc(runs, func(run domain.ReviewRun) bool {
 			return slices.ContainsFunc(created, func(dispatched domain.ReviewRun) bool { return dispatched.ID == run.ID })
 		})
+		return nil
 	}
-	if len(queueRuns) == 0 {
+	queueRuns := append(slices.Clone(restarted), created...)
+	refreshDispatch := func() error {
+		launchingCreated, err := e.dispatchableReviewRuns(ctx, created, launchID, true)
+		if err != nil {
+			return err
+		}
+		launchingRestarted, err := e.dispatchableReviewRuns(ctx, restarted, launchID, false)
+		if err != nil {
+			return err
+		}
+		created, restarted = launchingCreated, launchingRestarted
+		queueRuns = append(slices.Clone(restarted), created...)
+		if len(queueRuns) < newCandidates+len(restartCandidates) {
+			return refreshResult()
+		}
+		return nil
+	}
+	noDispatch := func() (TriggerResult, error) {
 		return TriggerResult{Run: firstReusableRun(reviews), ReviewerHandleID: legacyReviewerHandle(reviewRow), Reviews: reviews, Runs: runs, ReviewerSurface: reviewerSurface(reviewRow)}, nil
 	}
-	queue := reviewQueue(queueRuns)
-	launchRun := queueRuns[0]
+	if len(queueRuns) == 0 {
+		if err := refreshResult(); err != nil {
+			return TriggerResult{}, err
+		}
+		return noDispatch()
+	}
 	if handleID == "" {
 		// Start a fresh process when there is no resumable reviewer to notify.
 		releaseHarness, err := e.beginHarnessUse(harness)
@@ -845,8 +866,15 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 			return TriggerResult{}, failRuns(domain.ReviewFailurePreflightFailed, err)
 		}
 		defer releaseHarness()
-		if err := e.launcher.Preflight(ctx, harness, worker.Metadata.WorkspacePath, selectedMode); err != nil {
-			return TriggerResult{}, failRuns(domain.ReviewFailurePreflightFailed, fmt.Errorf("reviewer preflight: %w", err))
+		preflightErr := e.launcher.Preflight(ctx, harness, worker.Metadata.WorkspacePath, selectedMode)
+		if err := refreshDispatch(); err != nil {
+			return TriggerResult{}, failRuns(domain.ReviewFailurePreflightFailed, err)
+		}
+		if len(queueRuns) == 0 {
+			return noDispatch()
+		}
+		if preflightErr != nil {
+			return TriggerResult{}, failRuns(domain.ReviewFailurePreflightFailed, fmt.Errorf("reviewer preflight: %w", preflightErr))
 		}
 		if selectionChanged && reviewRow.ReviewerHandleID != "" {
 			if err := e.launcher.Destroy(ctx, reviewRow.ReviewerHandleID); err != nil {
@@ -882,7 +910,24 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		if err != nil {
 			return TriggerResult{}, rollbackReplacement(err)
 		}
-		launchSpec := reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, launchAgentSessionID, launchID)
+		if err := refreshDispatch(); err != nil {
+			return TriggerResult{}, rollbackReplacement(err)
+		}
+		if len(queueRuns) == 0 {
+			// No launcher operation was admitted. Restore the previous
+			// surface and launch epoch if this was a replacement.
+			if err := rollbackReplacement(nil); err != nil {
+				return TriggerResult{}, err
+			}
+			if hasReview {
+				reviewRow = previousReview
+				if previousStopped {
+					reviewRow.ReviewerActivityState = domain.ActivityExited
+				}
+			}
+			return noDispatch()
+		}
+		launchSpec := reviewLaunchSpec(worker, harness, config, queueRuns[0], reviewQueue(queueRuns), 0, launchAgentSessionID, launchID)
 		launchSpec.ProjectEnv = projectEnv
 		launchSpec.InterfaceMode = selectedMode
 		launchSpec.DeferInitialMessage = deferInitialMessage
@@ -903,7 +948,13 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 			persistedAgentSessionID = launch.AgentSessionID
 		}
 	} else {
-		launchSpec := reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID)
+		if err := refreshDispatch(); err != nil {
+			return TriggerResult{}, failRuns(domain.ReviewFailureLaunchFailed, err)
+		}
+		if len(queueRuns) == 0 {
+			return noDispatch()
+		}
+		launchSpec := reviewLaunchSpec(worker, harness, config, queueRuns[0], reviewQueue(queueRuns), 0, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID)
 		launchSpec.InterfaceMode = selectedMode
 		if err := e.launcher.Notify(ctx, handleID, launchSpec); err != nil {
 			return TriggerResult{}, failRuns(domain.ReviewFailureLaunchFailed, fmt.Errorf("notify reviewer: %w", err))
@@ -961,10 +1012,16 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		}
 		previousStopped = true
 		if deferInitialMessage {
-			launchSpec := reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, persistedAgentSessionID, reviewRow.ReviewerLaunchID)
-			launchSpec.InterfaceMode = selectedMode
-			if err := e.launcher.Notify(ctx, handleID, launchSpec); err != nil {
-				return TriggerResult{}, rollbackReplacement(fmt.Errorf("notify replacement reviewer: %w", err))
+			ready, err := e.dispatchableReviewRuns(ctx, queueRuns, launchID, false)
+			if err != nil {
+				return TriggerResult{}, rollbackReplacement(err)
+			}
+			if len(ready) > 0 {
+				launchSpec := reviewLaunchSpec(worker, harness, config, ready[0], reviewQueue(ready), 0, persistedAgentSessionID, reviewRow.ReviewerLaunchID)
+				launchSpec.InterfaceMode = selectedMode
+				if err := e.launcher.Notify(ctx, handleID, launchSpec); err != nil {
+					return TriggerResult{}, rollbackReplacement(fmt.Errorf("notify replacement reviewer: %w", err))
+				}
 			}
 		}
 	}
@@ -991,6 +1048,7 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 	if err := e.stopLateReviewer(ctx, reviewRow, handleID, spawned, append(append([]domain.ReviewRun{}, created...), restarted...)); err != nil {
 		return TriggerResult{}, err
 	}
+	var launchRun domain.ReviewRun
 	if len(restarted) > 0 {
 		launchRun = restarted[0]
 	} else {
@@ -2118,18 +2176,31 @@ func (e *Engine) Cancel(ctx stdctx.Context, workerID domain.SessionID) (CancelRe
 			// Legacy rows have no harness; they belong to the reported reviewer.
 			review, hasReviewer = reviewers[0], true
 		}
-		if run.Status == domain.ReviewRunQueued || !hasReviewer {
-			// Nothing was started for this pass, so there is nothing to stop.
-			if _, err := e.transitionRun(ctx, run, []domain.ReviewRunStatus{run.Status}, domain.ReviewRunCancelled, domain.ReviewRunPatch{CancelledBy: domain.ReviewCancelledByUser, EndedAt: &now}); err != nil {
+		if run.Status == domain.ReviewRunQueued || (run.Status == domain.ReviewRunRunning && !hasReviewer) {
+			// A queued pass has no reservation. If Trigger acquired it
+			// since the read, the launching path below owns its settlement.
+			moved, err := e.transitionRun(ctx, run, []domain.ReviewRunStatus{run.Status}, domain.ReviewRunCancelled, domain.ReviewRunPatch{CancelledBy: domain.ReviewCancelledByUser, EndedAt: &now})
+			if err != nil {
 				return CancelResult{}, err
 			}
-			continue
+			if moved {
+				continue
+			}
 		}
 		moved, err := e.transitionRun(ctx, run, []domain.ReviewRunStatus{domain.ReviewRunLaunching, domain.ReviewRunRunning}, domain.ReviewRunCancelling, domain.ReviewRunPatch{CancelledBy: domain.ReviewCancelledByUser, CancelRequestedAt: &now})
 		if err != nil {
 			return CancelResult{}, err
 		}
-		if moved && e.cancelConfirmed(ctx, review) {
+		if !moved || run.Status != domain.ReviewRunRunning || !hasReviewer {
+			continue
+		}
+		// A concurrent replacement can move a running pass to launching.
+		// The old handle's interrupt only proves a stop on its own launch.
+		current, found, err := e.store.GetReviewRun(ctx, run.ID)
+		if err != nil {
+			return CancelResult{}, err
+		}
+		if found && (current.LaunchID == "" || current.LaunchID == review.ReviewerLaunchID) && e.cancelConfirmed(ctx, review) {
 			if _, err := e.transitionRun(ctx, run, []domain.ReviewRunStatus{domain.ReviewRunCancelling}, domain.ReviewRunCancelled, domain.ReviewRunPatch{EndedAt: &now}); err != nil {
 				return CancelResult{}, err
 			}

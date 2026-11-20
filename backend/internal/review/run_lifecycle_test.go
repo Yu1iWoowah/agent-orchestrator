@@ -639,3 +639,106 @@ func TestCancelBeforeLaunchCASDoesNotDispatch(t *testing.T) {
 		})
 	}
 }
+
+type preflightBarrierLauncher struct {
+	*fakeLauncher
+	reached chan struct{}
+	resume  chan struct{}
+}
+
+func (l preflightBarrierLauncher) Preflight(ctx context.Context, _ domain.ReviewerHarness, _ string, _ ...domain.ReviewerInterfaceMode) error {
+	close(l.reached)
+	select {
+	case <-l.resume:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestCancelDuringPreflightDoesNotDispatch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	l := preflightBarrierLauncher{fakeLauncher: &fakeLauncher{handle: "review-mer-1"}, reached: make(chan struct{}), resume: make(chan struct{})}
+	s := newLifecycleEngine(t, l.fakeLauncher)
+	s.launcher = l
+	type outcome struct {
+		result TriggerResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := s.TriggerWithOptions(ctx, s.worker.ID, TriggerOptions{})
+		done <- outcome{result, err}
+	}()
+	select {
+	case <-l.reached:
+	case early := <-done:
+		t.Fatalf("trigger returned before preflight: %+v", early)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	active, err := s.store.ListActiveReviewRunsBySession(ctx, s.worker.ID)
+	if err != nil || len(active) != 1 || active[0].Status != domain.ReviewRunLaunching || s.review(t).ReviewerHandleID != "" {
+		t.Fatalf("at preflight, active=%+v err=%v", active, err)
+	}
+	request, err := s.Cancel(ctx, s.worker.ID)
+	if err != nil || len(request.CancelledRuns) != 1 || request.CancelledRuns[0].Status != domain.ReviewRunCancelling {
+		t.Errorf("cancel during preflight = %+v, err = %v, want cancelling", request, err)
+	}
+	close(l.resume)
+	select {
+	case got := <-done:
+		if got.err != nil || got.result.Created || len(got.result.CreatedRuns) != 0 {
+			t.Errorf("trigger after cancellation = %+v, err = %v", got.result, got.err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if l.spawnCount != 0 || l.notified {
+		t.Errorf("cancelled launch dispatched: spawns=%d, notify=%v", l.spawnCount, l.notified)
+	}
+	wantRun(t, s.run(t, active[0].ID), domain.ReviewRunCancelled, "")
+}
+
+func TestCancelDuringSpawnWaitsForStopConfirmation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	started, resume := make(chan struct{}), make(chan struct{})
+	l := &fakeLauncher{handle: "review-mer-1", spawnStarted: started, unblockSpawn: resume}
+	s := newLifecycleEngine(t, l)
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.TriggerWithOptions(ctx, s.worker.ID, TriggerOptions{})
+		done <- err
+	}()
+	select {
+	case <-started:
+	case early := <-done:
+		t.Fatalf("trigger returned before spawn: %v", early)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	request, err := s.Cancel(ctx, s.worker.ID)
+	close(resume)
+	if err != nil || len(request.CancelledRuns) != 1 || request.CancelledRuns[0].Status != domain.ReviewRunCancelling {
+		t.Fatalf("cancel during spawn = %+v, err = %v, want cancelling", request, err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("trigger: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if !l.cancelled || l.cancelledHandle != l.handle {
+		t.Fatalf("late reviewer was not interrupted: handle = %q", l.cancelledHandle)
+	}
+	id := request.CancelledRuns[0].ID
+	s.pass(t)
+	wantRun(t, s.run(t, id), domain.ReviewRunCancelling, "")
+	l.spawned = false
+	s.pass(t)
+	wantRun(t, s.run(t, id), domain.ReviewRunCancelled, "")
+}

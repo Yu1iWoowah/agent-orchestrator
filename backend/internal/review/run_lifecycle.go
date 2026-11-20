@@ -251,6 +251,32 @@ func (e *Engine) markRunsLaunching(ctx stdctx.Context, runs []domain.ReviewRun, 
 	return claimed, nil
 }
 
+// dispatchableReviewRuns rechecks the durable reservation at the delivery
+// boundary. Only a new pass that never reached a launcher can settle here.
+// A restarted pass can still have work on its previous reviewer.
+func (e *Engine) dispatchableReviewRuns(ctx stdctx.Context, runs []domain.ReviewRun, launchID string, settleUndispatched bool) ([]domain.ReviewRun, error) {
+	var ready []domain.ReviewRun
+	for _, run := range runs {
+		current, found, err := e.store.GetReviewRun(ctx, run.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !found || current.LaunchID != launchID {
+			continue
+		}
+		if current.Status == domain.ReviewRunLaunching {
+			ready = append(ready, run)
+		}
+		if current.Status == domain.ReviewRunCancelling && settleUndispatched {
+			now := e.clock()
+			if _, err := e.transitionRun(ctx, current, []domain.ReviewRunStatus{domain.ReviewRunCancelling}, domain.ReviewRunCancelled, domain.ReviewRunPatch{EndedAt: &now}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return ready, nil
+}
+
 // markRunRunning records that the task prompt reached the reviewer, and
 // returns the run as stored, which is final if another actor ended it first.
 func (e *Engine) markRunRunning(ctx stdctx.Context, run domain.ReviewRun, from []domain.ReviewRunStatus, launchID string, at time.Time) (domain.ReviewRun, error) {
@@ -300,17 +326,16 @@ func (e *Engine) revertRelaunch(ctx stdctx.Context, runs []domain.ReviewRun) err
 	return errors.Join(errs...)
 }
 
-// stopLateReviewer handles a launch that finished after its work ended: a
-// cancel or a launch timeout settled every pass while Spawn or Notify was
-// still pending. Unless the reviewer is serving another active pass, a freshly
-// spawned reviewer is destroyed and a reused one is interrupted, so nothing
-// keeps working on a pass nobody tracks.
+// stopLateReviewer handles a launcher that returned after every pass either
+// ended or requested cancellation. Leave a reviewer serving other work alone.
 func (e *Engine) stopLateReviewer(ctx stdctx.Context, review domain.Review, handleID string, spawned bool, runs []domain.ReviewRun) error {
 	if handleID == "" || len(runs) == 0 {
 		return nil
 	}
+	cancelling := false
 	for _, run := range runs {
-		if !run.Status.IsFinal() {
+		cancelling = cancelling || run.Status == domain.ReviewRunCancelling
+		if !run.Status.IsFinal() && run.Status != domain.ReviewRunCancelling {
 			return nil
 		}
 	}
@@ -319,9 +344,15 @@ func (e *Engine) stopLateReviewer(ctx stdctx.Context, review domain.Review, hand
 		return err
 	}
 	for _, run := range active {
-		if run.ReviewID == review.ID || (run.ReviewID == "" && run.Harness == review.Harness) {
+		if run.Status != domain.ReviewRunCancelling && (run.ReviewID == review.ID || (run.ReviewID == "" && run.Harness == review.Harness)) {
 			return nil
 		}
+	}
+	if cancelling {
+		// Cancel may have arrived while the launcher still owned the as-yet
+		// unpublished handle. Now we can interrupt it. The reaper confirms
+		// the stop once the worker lock is released.
+		return e.launcher.Cancel(ctx, handleID, review.Harness)
 	}
 	slog.Default().InfoContext(ctx, "stopping a reviewer whose passes ended while it launched", "review", review.ID, "session", review.SessionID, "spawned", spawned)
 	if !spawned {
