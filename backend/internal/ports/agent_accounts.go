@@ -17,6 +17,8 @@ func WithProviderSwitchAccountPreservation(ctx context.Context) context.Context 
 	return context.WithValue(ctx, providerSwitchAccountContextKey{}, true)
 }
 
+// PreservesProviderSwitchAccounts reports whether launch preparation may
+// read account bindings but must leave them unchanged.
 func PreservesProviderSwitchAccounts(ctx context.Context) bool {
 	preserve, _ := ctx.Value(providerSwitchAccountContextKey{}).(bool)
 	return preserve
