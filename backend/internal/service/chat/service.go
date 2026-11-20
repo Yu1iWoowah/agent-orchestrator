@@ -2404,6 +2404,9 @@ func (s *Service) stopForOwner(ctx context.Context, owner domain.ConversationOwn
 		return err
 	}
 	err = controller.Terminate(ctx)
+	if err == nil && expectedGeneration != "" && !controller.providerTerminationStarted {
+		err = ports.ErrChatRecoveryInconclusive
+	}
 	select {
 	case <-controller.stopped:
 		s.mu.Lock()

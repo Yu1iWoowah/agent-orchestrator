@@ -88,19 +88,20 @@ func (l *agentLauncher) captureStopReceipt(ctx context.Context, review domain.Re
 	}
 	if root == "" || boot == "" || namespace == "" || receipt.LaunchID == "" {
 		receipt.State, receipt.Reason = domain.ReviewerStopUnknown, "launch_scope_unavailable"
-		return receipt
 	}
 	hooks := l.forceStopHooks()
 	if review.InterfaceMode == domain.ReviewerInterfaceChat {
 		chat, ok := l.chat.(reviewerChatStopScope)
-		if ok && receipt.ControllerGeneration != "" {
+		if ok && receipt.State != domain.ReviewerStopUnknown && receipt.ControllerGeneration != "" {
 			scope, err := chat.ReviewChatStopScope(ctx, receipt.ReviewID, receipt.ControllerGeneration)
 			if err == nil && scope != nil && scope.BootID == boot && scope.PIDNamespace == namespace {
 				receipt.ChatScope = scope
 				return receipt
 			}
 		}
-		receipt.Reason = "chat_scope_unavailable"
+		if receipt.Reason == "" {
+			receipt.Reason = "chat_scope_unavailable"
+		}
 	} else {
 		roots, err := l.reviewerRoots(ctx, ports.RuntimeHandle{ID: receipt.HandleID})
 		if err == nil && len(roots) != 0 {
@@ -113,7 +114,9 @@ func (l *agentLauncher) captureStopReceipt(ctx context.Context, review domain.Re
 				}
 			}
 		}
-		receipt.Reason = "reviewer_roots_unavailable"
+		if receipt.Reason == "" {
+			receipt.Reason = "reviewer_roots_unavailable"
+		}
 	}
 	receipt.State = domain.ReviewerStopUnknown
 	return receipt
@@ -142,9 +145,9 @@ func (e *Engine) recordReviewerStop(ctx context.Context, store reviewerStopStore
 	}
 	e.runs.mu.Lock()
 	if e.runs.localStopKeys == nil {
-		e.runs.localStopKeys = make(map[domain.ReviewerStopKey]struct{})
+		e.runs.localStopKeys = make(map[domain.ReviewerStopKey]bool)
 	}
-	e.runs.localStopKeys[receipt.ReviewerStopKey] = struct{}{}
+	e.runs.localStopKeys[receipt.ReviewerStopKey] = false
 	e.runs.mu.Unlock()
 	return receipt, nil
 }
@@ -198,18 +201,43 @@ func updateStopReason(ctx context.Context, store reviewerStopStore, receipt doma
 }
 
 func (e *Engine) advanceReviewerStop(ctx context.Context, store reviewerStopStore, launcher *agentLauncher, receipt domain.ReviewerStopReceipt) error {
-	if receipt.State == domain.ReviewerStopUnknown {
-		return nil
+	e.runs.mu.Lock()
+	confirmed, local := e.runs.localStopKeys[receipt.ReviewerStopKey]
+	e.runs.mu.Unlock()
+	if !confirmed {
+		next, ended, err := e.observeReviewerStop(ctx, store, launcher, receipt, local)
+		if err != nil || !ended {
+			return err
+		}
+		receipt = next
+		if local && receipt.State == domain.ReviewerStopUnknown {
+			// Completion from the native fallback is valid only in this daemon.
+			// Keep it for a SQLite retry if the handle/controller has now gone.
+			e.runs.mu.Lock()
+			e.runs.localStopKeys[receipt.ReviewerStopKey] = true
+			e.runs.mu.Unlock()
+		}
 	}
-	if reason := stopScopeMismatch(launcher, receipt); reason != "" {
-		return updateStopReason(ctx, store, receipt, reason)
+	if err := store.SettleReviewerStop(ctx, receipt, e.clock()); err != nil {
+		return err
 	}
 	e.runs.mu.Lock()
-	_, local := e.runs.localStopKeys[receipt.ReviewerStopKey]
+	delete(e.runs.localStopKeys, receipt.ReviewerStopKey)
 	e.runs.mu.Unlock()
+	return nil
+}
+
+func (e *Engine) observeReviewerStop(ctx context.Context, store reviewerStopStore, launcher *agentLauncher, receipt domain.ReviewerStopReceipt, local bool) (domain.ReviewerStopReceipt, bool, error) {
+	if receipt.State == domain.ReviewerStopUnknown {
+		if !local {
+			return receipt, false, nil
+		}
+	} else if reason := stopScopeMismatch(launcher, receipt); reason != "" {
+		return receipt, false, updateStopReason(ctx, store, receipt, reason)
+	}
 	reviews, err := e.store.ListReviewsBySession(ctx, receipt.SessionID)
 	if err != nil {
-		return err
+		return receipt, false, err
 	}
 	current := false
 	for _, review := range reviews {
@@ -219,22 +247,59 @@ func (e *Engine) advanceReviewerStop(ctx context.Context, store reviewerStopStor
 			break
 		}
 	}
-	var ended bool
+	if receipt.State == domain.ReviewerStopUnknown {
+		if !current || receipt.HandleID == "" {
+			return receipt, false, nil
+		}
+		ended, err := launcher.stopReviewerWithoutRecoveryScope(ctx, store, receipt)
+		return receipt, ended, err
+	}
 	if receipt.InterfaceMode == domain.ReviewerInterfaceChat {
-		ended, err = launcher.observeChatStop(ctx, receipt, local && current)
-	} else {
-		receipt, ended, err = launcher.advanceTerminalStop(ctx, store, receipt, local, current)
+		ended, err := launcher.observeChatStop(ctx, receipt, local && current)
+		return receipt, ended, err
 	}
-	if err != nil || !ended {
-		return err
+	return launcher.advanceTerminalStop(ctx, store, receipt, local, current)
+}
+
+func (l *agentLauncher) stopReviewerWithoutRecoveryScope(ctx context.Context, store reviewerStopStore, receipt domain.ReviewerStopReceipt) (bool, error) {
+	if receipt.InterfaceMode == domain.ReviewerInterfaceChat {
+		chat, ok := l.chat.(reviewerChatStopScope)
+		if !ok || receipt.ControllerGeneration == "" {
+			return false, nil
+		}
+		if err := chat.StopReviewChatGeneration(ctx, receipt.ReviewID, receipt.ControllerGeneration); err != nil {
+			return false, err
+		}
+		return !l.chat.ReviewChatAlive(receipt.ReviewID), nil
 	}
-	if err := store.SettleReviewerStop(ctx, receipt, e.clock()); err != nil {
-		return err
+	tree, err := recordedStopProcesses(ctx, store, receipt.ReviewerStopKey)
+	if err != nil {
+		return false, err
 	}
-	e.runs.mu.Lock()
-	delete(e.runs.localStopKeys, receipt.ReviewerStopKey)
-	e.runs.mu.Unlock()
-	return nil
+	hooks := l.forceStopHooks()
+	seen := make(map[capturedProcess]struct{}, len(tree))
+	for _, process := range tree {
+		seen[process] = struct{}{}
+	}
+	hooks.record = func(ctx context.Context, members []capturedProcess) error {
+		var added []capturedProcess
+		for _, process := range members {
+			if _, ok := seen[process]; !ok {
+				added = append(added, process)
+			}
+		}
+		if len(added) == 0 {
+			return nil
+		}
+		if err := store.UpdateReviewerStop(ctx, receipt, receipt.State, receipt.Reason, durableProcesses(added)); err != nil {
+			return fmt.Errorf("%w: %w", errRecordStopProcesses, err)
+		}
+		for _, process := range added {
+			seen[process] = struct{}{}
+		}
+		return nil
+	}
+	return l.forceStopTerminal(ctx, receipt.HandleID, tree, hooks)
 }
 
 func (l *agentLauncher) observeChatStop(ctx context.Context, receipt domain.ReviewerStopReceipt, stop bool) (bool, error) {
@@ -263,14 +328,22 @@ func (l *agentLauncher) observeChatStop(ctx context.Context, receipt domain.Revi
 	return ended && reason != "scope_boot_changed", nil
 }
 
-func (l *agentLauncher) advanceTerminalStop(ctx context.Context, store reviewerStopStore, receipt domain.ReviewerStopReceipt, local, current bool) (domain.ReviewerStopReceipt, bool, error) {
-	processes, err := store.ListReviewerStopProcesses(ctx, receipt.ReviewerStopKey)
+func recordedStopProcesses(ctx context.Context, store reviewerStopStore, key domain.ReviewerStopKey) ([]capturedProcess, error) {
+	processes, err := store.ListReviewerStopProcesses(ctx, key)
 	if err != nil {
-		return receipt, false, err
+		return nil, err
 	}
 	tree := make([]capturedProcess, 0, len(processes))
 	for _, p := range processes {
 		tree = append(tree, capturedProcess{pid: p.PID, start: p.Start, startedAt: p.StartedAt})
+	}
+	return tree, nil
+}
+
+func (l *agentLauncher) advanceTerminalStop(ctx context.Context, store reviewerStopStore, receipt domain.ReviewerStopReceipt, local, current bool) (domain.ReviewerStopReceipt, bool, error) {
+	tree, err := recordedStopProcesses(ctx, store, receipt.ReviewerStopKey)
+	if err != nil {
+		return receipt, false, err
 	}
 	if len(tree) == 0 {
 		return receipt, false, updateStopReason(ctx, store, receipt, "lineage_unavailable")

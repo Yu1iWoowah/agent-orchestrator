@@ -100,7 +100,7 @@ type suspendGap struct {
 }
 
 type runLifecycleState struct {
-	localStopKeys map[domain.ReviewerStopKey]struct{}
+	localStopKeys map[domain.ReviewerStopKey]bool // value is same-daemon stop confirmation awaiting SQLite settlement
 	config        RunLifecycleConfig
 
 	mu           sync.Mutex

@@ -301,3 +301,9 @@ CLI 仍走 daemon HTTP，Cloud、HCG 與 `go.work` 保留 fork 原來源。LAN �
 |---|---|---|
 | `upsync2-pr2-q2=a_sqlite`、`upsync2-pr2-contract-1=approve` · .07、AC5 | Force-stop 先為原 launch 寫 SQLite 收據、程序身分及帳號快照。未封口保留原根證據。開機和後續恢復只觀察。兩個 owner 查詢由收據維持阻擋，確認原範圍全退才以精確世代結算。 | 重開 SQLite、Engine 與 launcher 後，查詢及帳號移除仍擋。程序全退才放行。同 root、同 machine-id 雜湊但不同 boot ID 時保留占用，記 `boot_changed_origin_unverified`。 |
 | 契約 rev2.1 §5、AC2、AU1／AU2 | 唯一新增 fork migration `20261120110913324_reviewer_stop_receipts.sql`。固定 F 284、U 18 與此版本，終態為 303。 | 四組 production Open／reopen 逐 ID 驗唯一套用、DDL／FK。撤回的 report 版本為未核准前態，migration／timestamp 寫入前停止。 |
+
+#### B 段第二輪差異審查處置（D-20）
+
+| 發現 | 處置 | 驗證接點 |
+|---|---|---|
+| P2 · .07 | 缺跨重啟比較範圍時，同一 daemon 在原 launch 與 handle／Chat 世代仍相符的情況下照常執行既有停止。收據及已知程序身分先入帳，取得原生停止確認後才結算。Chat detach 或 controller 缺席不算停止確認。 | 預設 OS hooks 實際停止測試程序。SQLite 重開、新 Engine／launcher 沒有可比較 scope 時維持兩個帳號 owner 查詢的阻擋。Windows／Darwin 驗交叉編譯。 |

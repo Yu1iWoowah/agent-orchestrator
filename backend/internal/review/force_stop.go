@@ -17,6 +17,8 @@ import (
 // tree to disappear before it reports the stop as unconfirmed.
 const defaultForceStopWait = 3 * time.Second
 
+var errRecordStopProcesses = errors.New("record reviewer processes before stopping")
+
 // forceStopHooks are the operating-system edges of ForceStop, injectable so
 // tests can model a runtime that leaves processes behind.
 type forceStopHooks struct {
@@ -24,6 +26,7 @@ type forceStopHooks struct {
 	comparisonScope func() (bootID, pidNamespace string)
 	chatEnded       func(context.Context, *processscope.Scope) (bool, string)
 	stopped         func(pid int, start string) bool
+	record          func(context.Context, []capturedProcess) error
 	kill            func(pid int) error
 	// freeze stops a process without ending it (SIGSTOP), so it can no longer
 	// spawn anything while its tree is captured. Nil where the platform has no
@@ -125,9 +128,11 @@ func (l *agentLauncher) ForceStop(ctx context.Context, handleID string) (bool, e
 		}
 		return !l.chat.ReviewChatAlive(reviewID), nil
 	}
-	hooks := l.forceStopHooks()
+	return l.forceStopTerminal(ctx, handleID, l.stops.take(handleID), l.forceStopHooks())
+}
+
+func (l *agentLauncher) forceStopTerminal(ctx context.Context, handleID string, previous []capturedProcess, hooks forceStopHooks) (bool, error) {
 	handle := ports.RuntimeHandle{ID: handleID}
-	previous := l.stops.take(handleID)
 	tree, captureErr := l.captureReviewerTree(ctx, handle, hooks)
 	if captureErr != nil {
 		// Nothing trustworthy is known about the runtime's current tree, and
@@ -151,7 +156,9 @@ func (l *agentLauncher) ForceStop(ctx context.Context, handleID string) (bool, e
 		// up yields every descendant.
 		frozen, err := freezeTree(ctx, tree, hooks)
 		if err != nil {
-			l.stops.keep(handleID, frozen)
+			if hooks.record == nil {
+				l.stops.keep(handleID, frozen)
+			}
 			return false, fmt.Errorf("freeze reviewer process tree: %w", err)
 		}
 		tree = frozen
@@ -159,6 +166,9 @@ func (l *agentLauncher) ForceStop(ctx context.Context, handleID string) (bool, e
 	// Kill the whole tree before tearing the runtime down, so nothing it
 	// spawns can outlive the ownership roots unseen.
 	stopped, err := l.stopCaptured(ctx, handleID, tree, hooks)
+	if errors.Is(err, errRecordStopProcesses) {
+		return false, err
+	}
 	destroyErr := l.runtime.Destroy(ctx, handle)
 	if err != nil || !stopped {
 		return false, errors.Join(err, destroyErr)
@@ -185,6 +195,11 @@ func freezeTree(ctx context.Context, tree []capturedProcess, hooks forceStopHook
 		}
 		if tree, err = extendTree(tree, identities); err != nil {
 			return tree, err
+		}
+		if hooks.record != nil {
+			if err := hooks.record(ctx, tree); err != nil {
+				return tree, err
+			}
 		}
 		froze := false
 		for _, p := range tree {
@@ -274,7 +289,9 @@ func (l *agentLauncher) StopSurvivors(ctx context.Context, handleID string) (boo
 
 func (l *agentLauncher) stopCaptured(ctx context.Context, handleID string, tree []capturedProcess, hooks forceStopHooks) (bool, error) {
 	remaining, err := killTreeSurvivors(ctx, tree, hooks)
-	l.stops.keep(handleID, remaining)
+	if hooks.record == nil {
+		l.stops.keep(handleID, remaining)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -421,6 +438,11 @@ func killTreeSurvivors(ctx context.Context, tree []capturedProcess, hooks forceS
 		// reviewer's too.
 		if tree, err = extendTree(tree, identities); err != nil {
 			return tree, err
+		}
+		if hooks.record != nil {
+			if err := hooks.record(ctx, tree); err != nil {
+				return tree, err
+			}
 		}
 		var remaining []capturedProcess
 		for _, captured := range tree {

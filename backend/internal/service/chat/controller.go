@@ -391,6 +391,9 @@ type Controller struct {
 	stopped  chan struct{}
 	once     sync.Once
 	closeErr error
+	// Set by a native termination, never by a detach. Reading after
+	// Terminate returns is synchronized by once.
+	providerTerminationStarted bool
 }
 
 type controllerWork uint8
@@ -3508,6 +3511,7 @@ func (c *Controller) Terminate(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 	c.once.Do(func() {
+		c.providerTerminationStarted = true
 		if terminator, ok := c.conv.(ports.ChatProviderTerminator); ok {
 			c.closeErr = terminator.Terminate()
 		} else {

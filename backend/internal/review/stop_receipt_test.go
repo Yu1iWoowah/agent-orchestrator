@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/procmem"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
@@ -349,5 +351,135 @@ func TestRecoveredChatStopUsesOldScopeAfterNewGeneration(t *testing.T) {
 	}
 	if owner, err := store.GetOpenReviewerAccountUse(ctx, "new-account"); err != nil || owner == nil || owner.ReviewID != newReview.ID {
 		t.Fatalf("new account released by the old receipt: %+v (%v)", owner, err)
+	}
+}
+
+func TestReviewerStopProcessFixture(t *testing.T) {
+	if os.Getenv("AO_TEST_REVIEWER_STOP_PROCESS") == "1" {
+		time.Sleep(time.Minute)
+	}
+}
+
+func TestReviewerStopWithDefaultHooksAndNoRecoveryScope(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		destroyErr error
+	}{
+		{"confirmed in this daemon", nil},
+		{"unconfirmed across daemon restart", errors.New("cannot confirm runtime teardown")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			root := t.TempDir()
+			store, err := sqlite.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+
+			worker := liveWorker()
+			seedReviewWorker(t, store, worker)
+			now := time.Now().UTC()
+			s := lifecycleEngine{store: store, worker: worker, now: &now, ids: new(int)}
+			s.restart(t, &fakeLauncher{handle: "review-mer-1", alive: true}, RunLifecycleConfig{})
+			run := s.trigger(t)
+			review := s.review(t)
+			account := domain.ResolvedAgentAccount{
+				AccountID: "native-stop-account", Provider: domain.AgentAccountProviderClaude, Source: domain.AgentAccountSourceRole,
+			}
+			if err := store.BindReviewerAgentAccount(ctx, review.ID, account, now); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Cancel(ctx, worker.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := aoprocess.CommandContext(ctx, exe, "-test.run=^TestReviewerStopProcessFixture$")
+			cmd.Env = append(os.Environ(), "AO_TEST_REVIEWER_STOP_PROCESS=1")
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan struct{})
+			go func() {
+				_ = cmd.Wait()
+				close(done)
+			}()
+			t.Cleanup(func() {
+				_ = cmd.Process.Kill()
+				<-done
+			})
+
+			rt := &rootedRuntime{fakeRuntime: &fakeRuntime{
+				alive: true, supervisedRecord: true, destroyErr: tc.destroyErr,
+			}, roots: []int{cmd.Process.Pid}}
+			// Darwin/Windows default hooks do not supply a cross-restart scope.
+			// On Linux, an unavailable canonical root exercises the same branch
+			// while still running with the real OS snapshot and signal hooks.
+			dataDir := root
+			boot, namespace := defaultForceStopHooks().comparisonScope()
+			if boot != "" && namespace != "" {
+				dataDir = filepath.Join(root, "missing-data-root")
+			}
+			launcher := &agentLauncher{
+				dataDir: dataDir, runtime: rt, reviewers: fakeReviewerResolver{reviewer: &fakeReviewer{}, ok: true},
+			}
+			s.launcher = launcher
+			s.advance(DefaultRunLifecycleConfig().CancelTimeout)
+			s.pass(t)
+			select {
+			case <-done:
+				if cmd.ProcessState.Success() {
+					t.Fatal("reviewer exited naturally before the stop")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("default force-stop did not stop the reviewer process")
+			}
+			if rt.destroyed != review.ReviewerHandleID {
+				t.Fatalf("force-stop did not run the original runtime teardown: %q", rt.destroyed)
+			}
+
+			if tc.destroyErr == nil {
+				wantRun(t, s.run(t, run.ID), domain.ReviewRunCancelled, "")
+				if pending, err := store.HasReviewerStop(ctx, stopKey(review)); err != nil || pending {
+					t.Fatalf("confirmed stop left a receipt: %v (%v)", pending, err)
+				}
+				if owner, err := store.GetOpenReviewerAccountUse(ctx, account.AccountID); err != nil || owner != nil {
+					t.Fatalf("confirmed stop kept an account owner: %+v (%v)", owner, err)
+				}
+				return
+			}
+
+			wantRun(t, s.run(t, run.ID), domain.ReviewRunFailed, domain.ReviewFailureCancelUnconfirmed)
+			if members, err := store.ListReviewerStopProcesses(ctx, stopKey(review)); err != nil ||
+				!slices.ContainsFunc(members, func(p domain.ReviewerStopProcess) bool { return p.PID == cmd.Process.Pid && p.Start != "" }) {
+				t.Fatalf("stop did not persist the original process: %+v (%v)", members, err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := sqlite.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, s.store = reopened, reopened
+			nextRuntime := &rootedRuntime{fakeRuntime: &fakeRuntime{}}
+			s.restartBeforeBoot(t, &fakeLauncher{}, RunLifecycleConfig{})
+			s.launcher = &agentLauncher{dataDir: dataDir, runtime: nextRuntime}
+			s.pass(t)
+			s.pass(t)
+			if nextRuntime.destroyed != "" {
+				t.Fatal("recovery attempted another native stop")
+			}
+			if owner, err := store.GetOpenReviewerAccountUse(ctx, account.AccountID); err != nil || owner == nil {
+				t.Fatalf("recovery released the original account: %+v (%v)", owner, err)
+			}
+			if owners, err := store.ListAgentAccountUsageOwners(ctx, account.AccountID); err != nil || len(owners) != 1 || !owners[0].Blocking {
+				t.Fatalf("recovery lost the effective account owner: %+v (%v)", owners, err)
+			}
+		})
 	}
 }
