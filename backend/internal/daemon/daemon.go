@@ -1173,10 +1173,11 @@ func Run(buildVersion string) (retErr error) {
 	// SetShellTerminalCloser).
 	sessMgr.SetShellTerminalCloser(shellTermSvc)
 	var (
-		usageCollector *usagesvc.Collector
-		usageHookQueue *usagesvc.HookQueue
-		usagePipeline  *usagepipeline.Pipeline
-		usagePricing   *usagePricingRuntime
+		usageCollector  *usagesvc.Collector
+		usageHookQueue  *usagesvc.HookQueue
+		closeUsageHooks func() error
+		usagePipeline   *usagepipeline.Pipeline
+		usagePricing    *usagePricingRuntime
 	)
 	if pricingRuntime, pricingErr := newUsagePricingRuntime(usagePricingRuntimeConfig{
 		DataDir: cfg.DataDir,
@@ -1260,9 +1261,13 @@ func Run(buildVersion string) (retErr error) {
 			defer sentryobs.RecoverBackground()
 			usageHookQueue.Run(ctx)
 		}()
-		// Join the queue before the store closes, including on startup failure.
+		closeUsageHooks = usageHookQueue.CloseAndWait
+		// Join before the store closes on paths without a desktop quit.
 		defer func() {
-			if err := usageHookQueue.CloseAndWait(); err != nil {
+			if closeUsageHooks == nil {
+				return
+			}
+			if err := closeUsageHooks(); err != nil {
 				retErr = errors.Join(retErr, err)
 			}
 		}()
@@ -1925,27 +1930,21 @@ func Run(buildVersion string) (retErr error) {
 	<-previewDone
 	// Daemon replacement detaches providers. Desktop exit stops processes
 	// while keeping the sessions and worktrees available for resume.
-	chatStopTimeout := cfg.ShutdownTimeout
 	if srv.StopAgentsRequested() {
-		chatStopTimeout = max(chatStopTimeout, 30*time.Second)
-	}
-	chatStopCtx, chatCancel := context.WithTimeout(context.Background(), chatStopTimeout)
-	if srv.StopAgentsRequested() {
-		if err := sessMgr.StopAgentsForQuit(chatStopCtx); err != nil {
-			log.Error("desktop quit agent shutdown", "err", err)
-			runErr = errors.Join(runErr, err)
-		}
-		if err := chatSvc.TerminateAll(chatStopCtx); err != nil {
-			log.Error("desktop quit chat shutdown", "err", err)
+		drainUsage := closeUsageHooks
+		closeUsageHooks = nil
+		if err := stopDesktopControllers(max(cfg.ShutdownTimeout, 30*time.Second), drainUsage, sessMgr.StopAgentsForQuit, chatSvc.TerminateAll); err != nil {
+			log.Error("desktop quit controller shutdown", "err", err)
 			runErr = errors.Join(runErr, err)
 		}
 	} else {
+		chatStopCtx, chatCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		if err := chatSvc.StopAll(chatStopCtx); err != nil {
 			log.Error("chat shutdown not settled; original providers retained", "error", err)
 			runErr = errors.Join(runErr, err)
 		}
+		chatCancel()
 	}
-	chatCancel()
 	if usageDone != nil {
 		<-usageDone
 	}
@@ -1977,6 +1976,19 @@ func Run(buildVersion string) (retErr error) {
 		log.Error("cdc pipeline shutdown", "err", err)
 	}
 	return runErr
+}
+
+func stopDesktopControllers(timeout time.Duration, drainUsage func() error, stopAgents, stopChats func(context.Context) error) error {
+	// ExitAgent commits ActivityExited. The collector rejects ordinary hooks
+	// for exited sessions, so accepted hooks must finish before that write.
+	if drainUsage != nil {
+		if err := drainUsage(); err != nil {
+			return fmt.Errorf("drain usage hooks before desktop quit: %w", err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return errors.Join(stopAgents(ctx), stopChats(ctx))
 }
 
 func telemetryAppVersion(configured, buildVersion string) string {
