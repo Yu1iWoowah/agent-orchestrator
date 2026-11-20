@@ -367,9 +367,11 @@ func TestReviewerStopKeepsOwnerWithoutOriginalLaunchProof(t *testing.T) {
 		restart       bool
 		roots         []int
 		lostAfterSave bool
+		noSealProbe   bool
 	}{
 		{name: "local pane already gone"},
 		{name: "local root exits after capturing and forking", roots: []int{101}, lostAfterSave: true},
+		{name: "only one of two roots is visible", roots: []int{101, 102}, noSealProbe: true},
 		{name: "boot with pane already gone", restart: true},
 		{name: "boot can still read old roots", restart: true, roots: []int{101}},
 	} {
@@ -426,12 +428,18 @@ func TestReviewerStopKeepsOwnerWithoutOriginalLaunchProof(t *testing.T) {
 			if tc.lostAfterSave {
 				table = newScriptedTable("101 1 100 0:00 pane")
 			}
+			if len(tc.roots) > 1 {
+				table = newScriptedTable("101 1 100 0:00 visible-pane", "202 1 100 0:00 detached-tool")
+			}
 			// The local force-stop path can discover that roots are absent
 			// after the earlier liveness probe. The boot path sees the old
 			// supervisor gone even when a pane root is still readable.
 			rt := &rootedRuntime{fakeRuntime: &fakeRuntime{alive: !tc.restart, supervisedRecord: true}, roots: tc.roots}
 			launcher := receiptTestLauncher(root, rt, table, "")
 			launcher.forceStop.comparisonScope = func() (string, string) { return "", "" }
+			if tc.noSealProbe {
+				launcher.forceStop.stopped = nil
+			}
 			if tc.lostAfterSave {
 				reads := 0
 				launcher.forceStop.identities = func(ctx context.Context) (map[int]procmem.Identity, error) {
@@ -469,6 +477,65 @@ func TestReviewerStopKeepsOwnerWithoutOriginalLaunchProof(t *testing.T) {
 			accounts.SetUsageOwners(manager.AccountUsageOwners)
 			assertStopOwner(t, store, accounts, account.ID, review.ID)
 		})
+	}
+}
+
+func TestReviewerModeRollbackKeepsOldLaunchStopAuthority(t *testing.T) {
+	ctx := t.Context()
+	fake := &fakeLauncher{handle: "review-mer-1", agentSessionID: "old-terminal-native"}
+	s := newLifecycleEngine(t, fake)
+	oldRun := s.trigger(t)
+	old := s.review(t)
+	now := *s.now
+	if moved, err := s.store.TransitionReviewRun(ctx, oldRun.ID, []domain.ReviewRunStatus{domain.ReviewRunRunning},
+		domain.ReviewRunCompleted, domain.ReviewRunPatch{Verdict: domain.VerdictApproved, EndedAt: &now}); err != nil || !moved {
+		t.Fatalf("complete pass on original pane: %v (%v)", moved, err)
+	}
+	account := domain.ResolvedAgentAccount{AccountID: "rollback-source-owner", Provider: domain.AgentAccountProviderClaude, Source: domain.AgentAccountSourceRole}
+	if err := s.store.BindReviewerAgentAccount(ctx, old.ID, account, now); err != nil {
+		t.Fatal(err)
+	}
+	fail := errors.New("old pane still alive")
+	fake.interfaceMode = domain.ReviewerInterfaceChat
+	fake.handle, fake.launchID, fake.agentSessionID = "review-chat:"+old.ID, "", "different-chat-provider"
+	fake.destroyErr, fake.destroyErrCall = fail, 1
+	s.prs = prAt("sha2")
+	if _, err := triggerWithSourceAndMode(ctx, s.Engine, s.worker.ID, old.Harness, domain.AgentConfig{},
+		domain.ReviewTriggerManual, domain.ReviewerInterfaceChat); !errors.Is(err, fail) {
+		t.Fatalf("expected old pane teardown to fail after replacement spawn: %v", err)
+	}
+	review := s.review(t)
+	if fake.spawnCount != 2 || fake.launchID == old.ReviewerLaunchID || fake.destroyCalls != 2 ||
+		review.ReviewerLaunchID != old.ReviewerLaunchID || review.ReviewerHandleID != old.ReviewerHandleID {
+		t.Fatalf("replacement did not roll back to the original launch: %+v", review)
+	}
+
+	fake.interfaceMode = domain.ReviewerInterfaceTUI
+	s.prs = prAt("sha3")
+	run := s.trigger(t)
+	if fake.spawnCount != 2 || !fake.notified || fake.gotHandle != old.ReviewerHandleID || run.LaunchID != old.ReviewerLaunchID {
+		t.Fatalf("expected Notify to reuse original launch: handle=%q run=%+v", fake.gotHandle, run)
+	}
+
+	rt := &rootedRuntime{fakeRuntime: &fakeRuntime{alive: true, supervisedRecord: true}, roots: []int{101}}
+	table := newScriptedTable("101 1 100 0:00 old-pane", "202 101 100 0:00 provider", "303 1 100 0:00 unrelated")
+	launcher := receiptTestLauncher(t.TempDir(), rt, table, "")
+	launcher.reviewers = fakeReviewerResolver{reviewer: &fakeCancellableReviewer{}, ok: true}
+	s.launcher = launcher
+	if _, err := s.Cancel(ctx, s.worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	s.advance(DefaultRunLifecycleConfig().CancelTimeout)
+	s.pass(t)
+	wantRun(t, s.run(t, run.ID), domain.ReviewRunCancelled, "")
+	if rt.destroyed != old.ReviewerHandleID || len(table.killed) != 2 {
+		t.Fatalf("original launch was not stopped: destroyed=%q killed=%v", rt.destroyed, table.killed)
+	}
+	if pending, err := s.store.HasReviewerStop(ctx, stopKey(old)); err != nil || pending {
+		t.Fatalf("finished stop remains pending: %v (%v)", pending, err)
+	}
+	if open, err := s.store.GetOpenReviewerAccountUse(ctx, account.AccountID); err != nil || open != nil {
+		t.Fatalf("confirmed stop did not release original account owner: %+v (%v)", open, err)
 	}
 }
 

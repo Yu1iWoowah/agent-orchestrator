@@ -321,6 +321,11 @@ func (l *agentLauncher) stopReviewerWithoutRecoveryScope(ctx context.Context, st
 	if err != nil {
 		return receipt, false, err
 	}
+	if len(tree) == 0 {
+		// A missing member of the initial set of roots invalidates that
+		// capture. Do not stop only the part visible on a later probe.
+		return receipt, false, updateStopReason(ctx, store, receipt, "lineage_unavailable")
+	}
 	if err := updateStopReason(ctx, store, receipt, "stop_probe_unavailable"); err != nil {
 		return receipt, false, err
 	}

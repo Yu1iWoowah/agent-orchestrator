@@ -762,6 +762,7 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 	deferInitialMessage := modeChanging && previousHandleID != ""
 	handleID := ""
 	spawned := false
+	var spawnedLaunch LaunchResult
 	previousStopped := false
 	rollbackReplacement := func(cause error) error {
 		rollbackNow := e.clock()
@@ -946,10 +947,10 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		}
 		handleID = launch.HandleID
 		spawned = true
+		spawnedLaunch = launch
 		if launch.LaunchID != "" {
 			reviewRow.ReviewerLaunchID = launch.LaunchID
 		}
-		e.rememberLocalReviewerLaunch(reviewRow.ID, launch)
 		if launch.AgentSessionID != "" {
 			persistedAgentSessionID = launch.AgentSessionID
 		}
@@ -1034,6 +1035,11 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 				}
 			}
 		}
+	}
+	if spawned {
+		// Keep the prior launch's proof until replacement can no longer
+		// roll back, including failure to deliver a deferred prompt.
+		e.rememberLocalReviewerLaunch(reviewRow.ID, spawnedLaunch)
 	}
 	// The prompt reached the reviewer: from here the reaper-driven run
 	// lifecycle owns it.

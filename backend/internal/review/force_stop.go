@@ -197,7 +197,7 @@ func capturesContain(current, previous []capturedProcess) bool {
 		members[process.pid] = process.start
 	}
 	for _, process := range previous {
-		if members[process.pid] != process.start {
+		if start, ok := members[process.pid]; !ok || start != process.start {
 			return false
 		}
 	}
@@ -332,8 +332,8 @@ func (l *agentLauncher) stopCaptured(ctx context.Context, handleID string, tree 
 
 // captureReviewerTree returns every process at or below the runtime's roots,
 // from one Identities reading so tree membership and start identity describe
-// the same processes. A runtime that reports no roots has nothing running. A
-// member whose identity cannot be read makes the capture untrustworthy.
+// the same processes. A runtime that reports no roots yields an empty capture.
+// Durable stops require all roots to be verifiable.
 func (l *agentLauncher) captureReviewerTree(ctx context.Context, handle ports.RuntimeHandle, hooks forceStopHooks) ([]capturedProcess, error) {
 	bounded, err := l.reviewerRoots(ctx, handle)
 	if err != nil {
