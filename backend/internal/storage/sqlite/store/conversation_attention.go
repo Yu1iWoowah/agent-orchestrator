@@ -19,7 +19,7 @@ func (s *Store) ConversationAttention(ctx context.Context, session domain.Sessio
 		return domain.ConversationAttentionPage{}, fmt.Errorf("begin attention read: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	page, err := s.conversationAttentionQueries(ctx, gen.New(tx), session, conversationID, query)
+	page, err := s.conversationAttentionQueries(ctx, s.txQueries(tx), session, conversationID, query)
 	if err != nil {
 		return domain.ConversationAttentionPage{}, err
 	}

@@ -18,7 +18,7 @@ func (s *Store) ReplacementExcerptSourceAllowed(ctx context.Context, session dom
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := gen.New(tx)
+	q := s.txQueries(tx)
 	row, err := q.SelectReplacementExcerptTransfer(ctx, gen.SelectReplacementExcerptTransferParams{TurnID: turn, SourceConversationID: source, TargetConversationID: target, PayloadHash: hash, TargetSessionID: session, TargetGeneration: generation})
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil

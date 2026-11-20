@@ -103,9 +103,11 @@ export function reviewStatusVisual(status: PRReviewState["status"]): {
 }
 
 export function reviewVerdictLabel(run: ReviewRun): string {
-	if (run.status === "running") return "Reviewing";
+	if (run.status === "queued" || run.status === "launching" || run.status === "running") return "Reviewing";
+	if (run.status === "cancelling") return "Cancelling review";
 	if (run.status === "failed") return "Review failed";
 	if (run.status === "cancelled") return "Review cancelled";
+	if (run.status === "superseded") return "Review superseded";
 	if (run.verdict === "approved") return "Approved";
 	if (run.verdict === "changes_requested") return "Changes requested";
 	return "No verdict";
@@ -113,7 +115,7 @@ export function reviewVerdictLabel(run: ReviewRun): string {
 
 /** Only a finished run with findings is worth giving to the worker. */
 export function reviewRunSendable(run: ReviewRun): boolean {
-	return (run.status === "complete" || run.status === "delivered") && Boolean(run.body?.trim());
+	return (run.status === "completed" || run.status === "complete" || run.status === "delivered") && Boolean(run.body?.trim());
 }
 
 /** "harness · trigger · status", adding "delivered" only when the status does not already say so. */
@@ -146,8 +148,12 @@ export function latestAutoReviewFailure(reviews: PRReviewState[], autoReviewEnab
 	if (!autoReviewEnabled) return undefined;
 	return reviews
 		.map((review) => review.latestRun)
-		.filter((run): run is ReviewRun => run?.triggerSource === "auto" && run.status === "failed" && Boolean(run.body.trim()))
+		.filter((run): run is ReviewRun => run?.triggerSource === "auto" && run.status === "failed" && Boolean(reviewFailureDetail(run)))
 		.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+}
+
+export function reviewFailureDetail(run: ReviewRun): string {
+	return run.body?.trim() || run.failureReason?.trim().replaceAll("_", " ") || "";
 }
 
 export function reviewerDestination(data: SessionReviews, review: PRReviewState, sessionId: string, hostId?: string) {

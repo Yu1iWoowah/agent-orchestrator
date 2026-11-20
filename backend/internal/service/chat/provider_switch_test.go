@@ -23,7 +23,7 @@ func TestProviderSwitchPublishesApproximateBranch(t *testing.T) {
 	// the bootstrap came from AO's canonical rows, not provider scrollback.
 	completeTurn(t, h, "keep this context", "provider-turn-1")
 	h.awaitSnapshot(t, func(snapshot store.ConversationSnapshot) bool {
-		return len(snapshot.Messages) == 2
+		return len(snapshot.Messages) == 2 && h.ctrl.PendingTurnIDForTest() == ""
 	})
 
 	// A turn this session had in the Terminal UI lives in the terminal turn

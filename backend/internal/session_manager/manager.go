@@ -145,7 +145,7 @@ var (
 	// harness never confirmed that the agent became active before the
 	// confirmation budget was exhausted (e.g. trailing Enter absorbed or dropped).
 	// The API maps it to a 409; the caller retries or inspects the terminal.
-	ErrDeliveryUnconfirmed = errors.New("session: message delivery was not acknowledged")
+	ErrDeliveryUnconfirmed = ports.ErrDeliveryUnconfirmed
 
 	// Spawn-stage sentinels. Each is the existing log word after "spawn" /
 	// "spawn <id>:" so wrapping them does not change daemon-log wording, while
@@ -5804,9 +5804,21 @@ func (m *Manager) SendWithOptions(ctx context.Context, id domain.SessionID, mess
 	return m.send(ctx, id, message, "", options)
 }
 
+// SendWithClientMessageID delivers an automated message under a caller-chosen
+// client message id. A Chat session records the id with the message, so the
+// caller can later read whether that exact message reached the agent, was
+// queued for a sleeping session, or failed. Terminal sessions deliver as Send.
+func (m *Manager) SendWithClientMessageID(ctx context.Context, id domain.SessionID, message, clientMessageID string) error {
+	return m.send(ctx, id, message, clientMessageID, ports.MessageDeliveryOptions{InteractionAt: m.clock()})
+}
+
 type semanticDeliveryStore interface {
 	SemanticDeliveryAccepted(ctx context.Context, id domain.SessionID, runtimeLaunchID, deliveryID string) (bool, error)
 }
+
+// ErrPromptSubmissionUnobserved reports a prompt that was submitted to the agent,
+// but whose acceptance confirmation was never observed before the deadline.
+var ErrPromptSubmissionUnobserved = errors.New("prompt submission was not observed")
 
 // SendSemantic delivers an internal message and returns only after the target
 // agent has accepted that exact message. Chat uses its native accepted-turn
@@ -5895,7 +5907,7 @@ func (m *Manager) SendSemanticWithOptions(ctx context.Context, id domain.Session
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return fmt.Errorf("%w: prompt submission was not observed", ErrSemanticAcceptanceUnsupported)
+			return fmt.Errorf("%w: %w", ErrSemanticAcceptanceUnsupported, ErrPromptSubmissionUnobserved)
 		case <-ticker.C:
 		}
 	}

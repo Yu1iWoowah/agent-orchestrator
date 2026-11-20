@@ -201,7 +201,7 @@ func (s *Store) ConversationInputCustody(ctx context.Context, conversationID str
 		return nil, fmt.Errorf("read input custody: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := gen.New(tx)
+	q := s.txQueries(tx)
 	rows, err := q.ListConversationInputCustody(ctx, conversationID)
 	if err != nil {
 		return nil, err

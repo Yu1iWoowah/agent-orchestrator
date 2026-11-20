@@ -1,3 +1,5 @@
+import { keptArtifactsQueryKey } from "../hooks/useKeptArtifacts";
+import { Checkbox } from "./ui/checkbox";
 import { useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -822,20 +824,28 @@ export function DeleteArchivedSessionDialog({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const [deleting, setDeleting] = useState(false);
+	const [deleteArtifacts, setDeleteArtifacts] = useState(false);
+	const deleteArtifactsId = useId();
 	const [error, setError] = useState<string | null>(null);
 	// Each opening starts without the last attempt's error.
 	const [wasOpen, setWasOpen] = useState(open);
 	if (open !== wasOpen) {
 		setWasOpen(open);
-		if (open) setError(null);
+		if (open) {
+			setError(null);
+			setDeleteArtifacts(false);
+		}
 	}
+	const local = !session.hostId && !session.cloud;
+	const artifactCount = sessionDeliverables(session).length;
+	const keeping = local && !deleteArtifacts;
 	const released = session.workspaceCleanup === "removed" || session.workspaceCleanup === "not_applicable";
 	const confirmDelete = async () => {
 		setDeleting(true);
 		setError(null);
 		try {
 			const { error: deleteError } = await (session.hostId ? clientForHost(session.hostId) : apiClient).DELETE("/api/v1/sessions/{sessionId}", {
-				params: { path: { sessionId: session.id }, query: { cleanup: true } },
+				params: { path: { sessionId: session.id }, query: { cleanup: true, ...(keeping ? { keepArtifacts: true } : {}) } },
 			});
 			if (deleteError) {
 				setError(apiErrorMessage(deleteError, t("deleteSession.failed")));
@@ -843,7 +853,10 @@ export function DeleteArchivedSessionDialog({
 			}
 			onOpenChange(false);
 			onDeleted?.();
-			await queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(session.hostId) });
+			await Promise.all([
+				queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(session.hostId) }),
+				...(local ? [queryClient.invalidateQueries({ queryKey: keptArtifactsQueryKey })] : []),
+			]);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t("deleteSession.failed"));
 		} finally {
@@ -855,14 +868,24 @@ export function DeleteArchivedSessionDialog({
 			busy={deleting}
 			confirmAriaLabel={t("deleteSession.confirmAria")}
 			confirmLabel={deleting ? t("deleteSession.deleting") : t("deleteSession.confirm")}
-			description={released ? t("deleteSession.body") : t("deleteSession.bodyCleanup")}
+			description={released ? t(keeping ? "deleteSession.bodyKeep" : "deleteSession.body") : t(keeping ? "deleteSession.bodyKeepCleanup" : "deleteSession.bodyCleanup")}
 			destructive
 			error={error}
 			onConfirm={() => void confirmDelete()}
 			onOpenChange={onOpenChange}
 			open={open}
 			title={t("deleteSession.dialog")}
-		/>
+		>
+			{local && artifactCount > 0 ? (
+				<div className="flex items-center gap-2">
+					<Checkbox id={deleteArtifactsId} checked={deleteArtifacts} disabled={deleting} onCheckedChange={(value) => setDeleteArtifacts(value === true)} />
+					<div>
+						<label htmlFor={deleteArtifactsId} className="text-control">{t("deleteSession.deleteArtifacts", { count: artifactCount })}</label>
+						<p className="text-settings-muted">{t(deleteArtifacts ? "deleteSession.deleteArtifactsHint" : "deleteSession.keepArtifactsHint", { count: artifactCount })}</p>
+					</div>
+				</div>
+			) : null}
+		</ConfirmDialog>
 	);
 }
 

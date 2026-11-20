@@ -1227,18 +1227,22 @@ export async function getSessionPR(cfg: ServerConfig, sessionId: string): Promis
 
 // ---- AO review detail ------------------------------------------------------
 
+type DaemonReviewRunStatus = "queued" | "launching" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "superseded";
+
 export type ReviewRun = {
 	id: string;
 	reviewId: string;
 	sessionId: string;
 	batchId: string;
 	harness: string;
-	triggerSource: "manual" | "auto";
+	triggerSource: "manual" | "auto" | "agent";
 	prUrl: string;
 	targetSha: string;
-	status: "running" | "complete" | "delivered" | "failed" | "cancelled";
+	// Older daemons and the Cloud control plane use complete/delivered.
+	status: DaemonReviewRunStatus | "complete" | "delivered";
 	verdict: "" | "approved" | "changes_requested";
 	body: string;
+	failureReason?: string;
 	githubReviewId: string;
 	createdAt: string;
 	deliveredAt?: string | null;
@@ -1281,20 +1285,12 @@ export type ReviewerAgentConfig = {
 
 export async function getSessionReviews(cfg: ServerConfig, sessionId: string): Promise<SessionReviews> {
 	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews`);
-	const data = await res.json();
-	return {
-		reviewerHandleId: typeof data?.reviewerHandleId === "string" ? data.reviewerHandleId : "",
-		reviewerHarness: typeof data?.reviewerHarness === "string" ? data.reviewerHarness : undefined,
-		reviewerActivityState: data?.reviewerActivityState,
-		reviewerSurface: data?.reviewerSurface,
-		reviews: Array.isArray(data?.reviews) ? data.reviews : [],
-		runs: Array.isArray(data?.runs) ? data.runs : [],
-	};
+	return mapSessionReviews(await res.json());
 }
 
 export async function triggerSessionReview(cfg: ServerConfig, sessionId: string): Promise<SessionReviews & { created: boolean }> {
 	const res = await req(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/reviews/trigger`, { method: "POST" });
-	const data = await res.json();
+	const data: (Partial<SessionReviews> & { created?: boolean }) | null = await res.json();
 	return { ...mapSessionReviews(data), created: data?.created === true };
 }
 
@@ -1327,7 +1323,7 @@ export async function switchSessionReviewer(
 	return mapSessionReviews(await res.json());
 }
 
-function mapSessionReviews(data: any): SessionReviews {
+function mapSessionReviews(data: Partial<SessionReviews> | null): SessionReviews {
 	return {
 		reviewerHandleId: typeof data?.reviewerHandleId === "string" ? data.reviewerHandleId : "",
 		reviewerHarness: typeof data?.reviewerHarness === "string" ? data.reviewerHarness : undefined,

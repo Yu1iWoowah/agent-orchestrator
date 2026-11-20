@@ -38,11 +38,13 @@ func TestPragmasSetJournalSizeLimit(t *testing.T) {
 // the daemon: the writer Open returns cuts it back at the next WAL reset.
 func TestOpenWriterTrimsAnInflatedWALAtTheNextReset(t *testing.T) {
 	dir := t.TempDir()
-	store, err := Open(dir)
+	repairDone := make(chan struct{})
+	store, err := openWithTimestampOptions(dir, timestampOpenOptions{fenceBudget: timestampFenceTimeout, repairDone: repairDone})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	<-repairDone
 
 	// Inflate the log from a connection that has no limit. It checkpoints the
 	// log into the database right after the commit, so the writer is free to
@@ -66,6 +68,12 @@ func TestOpenWriterTrimsAnInflatedWALAtTheNextReset(t *testing.T) {
 	}
 	if grown.Size() <= walSizeLimit {
 		t.Fatalf("setup left the -wal file at %d bytes; it must exceed the %d byte cap", grown.Size(), walSizeLimit)
+	}
+	// The size limit takes effect on a WAL reset, which requires all frames
+	// to have been checkpointed and no startup repair reader holding them.
+	var busy, frames, checkpointed int
+	if err := burst.QueryRow(`PRAGMA wal_checkpoint(FULL)`).Scan(&busy, &frames, &checkpointed); err != nil || busy != 0 || frames != checkpointed {
+		t.Fatalf("checkpoint before reset: busy=%d, frames=%d, checkpointed=%d, err=%v", busy, frames, checkpointed, err)
 	}
 
 	if err := store.UpsertProject(context.Background(), domain.ProjectRecord{ID: "after-burst", Path: filepath.Join(dir, "repo")}); err != nil {

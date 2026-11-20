@@ -10,11 +10,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pressly/goose/v3"
 
@@ -116,6 +120,16 @@ func checkLegacyDatabasePath(dataDir string) error {
 	return nil
 }
 
+// timestampFenceTimeout bounds startup repair. A failed fence never publishes
+// readers that could compare legacy timestamps as local wall-clock text.
+const timestampFenceTimeout = 5 * time.Minute
+
+type timestampOpenOptions struct {
+	driver      string
+	fenceBudget time.Duration
+	repairDone  chan<- struct{}
+}
+
 // Open opens (creating if absent) the SQLite database under dataDir and returns
 // a Store. It uses TWO pools against the same file:
 //
@@ -128,15 +142,25 @@ func checkLegacyDatabasePath(dataDir string) error {
 //   - a READER pool (readDB, MaxOpenConns=maxReaders): all reads scale across
 //     it; WAL readers see the latest committed snapshot.
 func Open(dataDir string) (*Store, error) {
+	return openWithTimestampOptions(dataDir, timestampOpenOptions{driver: "ao-sqlite", fenceBudget: timestampFenceTimeout})
+}
+
+func openWithTimestampOptions(dataDir string, opts timestampOpenOptions) (*Store, error) {
+	if opts.driver == "" {
+		opts.driver = "ao-sqlite"
+	}
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 	if err := checkLegacyDatabasePath(dataDir); err != nil {
 		return nil, err
 	}
+	if err := inspectMigrationLedger(dataDir); err != nil {
+		return nil, err
+	}
 	dsn := databaseURI(dataDir) + pragmas
 
-	writeDB, err := sql.Open("sqlite", dsn)
+	writeDB, err := sql.Open(opts.driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite writer: %w", err)
 	}
@@ -146,12 +170,53 @@ func Open(dataDir string) (*Store, error) {
 		_ = writeDB.Close()
 		return nil, err
 	}
-	store, err := withSearchIndex(dataDir, dsn, writeDB)
+	readDB, err := openTimestampReaders(opts.driver, dsn)
 	if err != nil {
 		_ = writeDB.Close()
 		return nil, err
 	}
+	state := newTimestampRepairState()
+	{
+		started := time.Now()
+		slog.Info("checking legacy timestamps before opening readers")
+		ctx, cancel := context.WithTimeout(context.Background(), opts.fenceBudget)
+		result, repairErr := runTimestampRepairState(ctx, writeDB, readDB, true, state)
+		if repairErr == nil {
+			repairErr = ctx.Err()
+		}
+		cancel()
+		if repairErr != nil {
+			_ = readDB.Close()
+			_ = writeDB.Close()
+			return nil, fmt.Errorf("timestamp startup repair incomplete; committed batches retained: %w", repairErr)
+		}
+		slog.Info("timestamp startup fence completed", "duration", time.Since(started), "repaired", result.Repaired, "skipped", result.Skipped, "deleted", result.Deleted)
+	}
+	store, err := withSearchIndexPools(dataDir, dsn, writeDB, readDB)
+	if err != nil {
+		_ = readDB.Close()
+		_ = writeDB.Close()
+		return nil, err
+	}
+	store.StartTimestampRepair(func(ctx context.Context) error {
+		if opts.repairDone != nil {
+			defer close(opts.repairDone)
+		}
+		_, err := runTimestampRepairState(ctx, writeDB, readDB, false, state)
+		return err
+	})
+
 	return store, nil
+}
+
+func openTimestampReaders(driverName, dsn string) (*sql.DB, error) {
+	readDB, err := sql.Open(driverName, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite reader: %w", err)
+	}
+	readDB.SetMaxOpenConns(maxReaders)
+	readDB.SetMaxIdleConns(maxReaders)
+	return readDB, nil
 }
 
 // withSearchIndex opens the reader pool beside an open, migrated writer, then
@@ -161,12 +226,14 @@ func Open(dataDir string) (*Store, error) {
 // is recorded on the store (SessionSearchUnavailable) and search stays off,
 // while every other read and write works as usual.
 func withSearchIndex(dataDir, dsn string, writeDB *sql.DB) (*Store, error) {
-	readDB, err := sql.Open("sqlite", dsn)
+	readDB, err := openTimestampReaders("ao-sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite reader: %w", err)
+		return nil, err
 	}
-	readDB.SetMaxOpenConns(maxReaders)
-	readDB.SetMaxIdleConns(maxReaders)
+	return withSearchIndexPools(dataDir, dsn, writeDB, readDB)
+}
+
+func withSearchIndexPools(dataDir, dsn string, writeDB, readDB *sql.DB) (*Store, error) {
 	store := sqlitestore.NewStore(writeDB, readDB)
 
 	if sessionSearchSwitchedOff() {
@@ -193,7 +260,7 @@ func withSearchIndex(dataDir, dsn string, writeDB *sql.DB) (*Store, error) {
 func OpenReadOnly(ctx context.Context, dataDir string) (*Store, error) {
 	dsn := databaseURI(dataDir) + readOnlyPragmas
 
-	writeDB, err := sql.Open("sqlite", dsn)
+	writeDB, err := sql.Open("ao-sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite read-only writer: %w", err)
 	}
@@ -204,7 +271,7 @@ func OpenReadOnly(ctx context.Context, dataDir string) (*Store, error) {
 		return nil, fmt.Errorf("open sqlite read-only writer: %w", err)
 	}
 
-	readDB, err := sql.Open("sqlite", dsn)
+	readDB, err := sql.Open("ao-sqlite", dsn)
 	if err != nil {
 		_ = writeDB.Close()
 		return nil, fmt.Errorf("open sqlite read-only reader: %w", err)
@@ -289,7 +356,7 @@ func OpenPreMigrated(dataDir string) (*Store, error) {
 
 	dsn := databaseURI(dataDir) + pragmas
 
-	writeDB, err := sql.Open("sqlite", dsn)
+	writeDB, err := sql.Open("ao-sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite writer: %w", err)
 	}
@@ -320,7 +387,80 @@ func OpenPreMigrated(dataDir string) (*Store, error) {
 	return store, nil
 }
 
-func migrate(db *sql.DB) error {
+// inspectMigrationLedger checks the on-disk receipts before the writer opens
+// the database with journal-mode pragmas or performs any repair.
+func inspectMigrationLedger(dataDir string) error {
+	if _, err := os.Stat(filepath.Join(dataDir, "ao.db")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("inspect migration ledger: %w", err)
+	}
+	db, err := sql.Open("sqlite", databaseURI(dataDir)+readOnlyPragmas)
+	if err != nil {
+		return fmt.Errorf("open migration ledger read-only: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+	var ledger bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_schema
+		WHERE type='table' AND name='goose_db_version')`).Scan(&ledger); err != nil || !ledger {
+		return err
+	}
+
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("read embedded migration manifest: %w", err)
+	}
+	known := make(map[int64]struct{}, len(entries))
+	for _, entry := range entries {
+		versionText, _, _ := strings.Cut(entry.Name(), "_")
+		version, err := strconv.ParseInt(versionText, 10, 64)
+		if err != nil {
+			return fmt.Errorf("read migration manifest entry %q: %w", entry.Name(), err)
+		}
+		known[version] = struct{}{}
+	}
+	rows, err := db.Query(`SELECT DISTINCT version_id FROM goose_db_version ORDER BY version_id`)
+	if err != nil {
+		return fmt.Errorf("read migration receipts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var version int64
+		if err := rows.Scan(&version); err != nil {
+			return err
+		}
+		if _, ok := known[version]; ok || legacyMigrationReceipt(version) {
+			continue
+		}
+		if version == 20261120084919464 {
+			return fmt.Errorf("unapproved schema: withdrawn report delivery migration %d", version)
+		}
+		return fmt.Errorf("unapproved schema: migration %d is outside the embedded manifest", version)
+	}
+	return rows.Err()
+}
+
+// These pre-manifest receipts are already recognized by the runner. They are
+// accepted as upgrade inputs, not counted among the canonical migrations.
+func legacyMigrationReceipt(version int64) bool {
+	switch version {
+	case 0:
+		return true // Goose's sentinel.
+	case 22, 203:
+		return true // Burned releases without an embedded file.
+	case 45, 46, 50, 51:
+		return true // Editions described by the existing burned-schema repair.
+	case 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65:
+		return true // The original Chat sequence recognized by the renumber repair.
+	case 201, 216, computerUseBranchMigrationVersion:
+		return true // Existing provider-switch/usage-limit and computer-use aliases.
+	default:
+		return false
+	}
+}
+
+func migrate(db *sql.DB) (err error) {
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
 	goose.SetBaseFS(migrationsFS)
@@ -328,6 +468,24 @@ func migrate(db *sql.DB) error {
 	if err := goose.SetDialect("sqlite3"); err != nil {
 		return fmt.Errorf("set goose dialect: %w", err)
 	}
+	migrations, err := goose.CollectMigrations("migrations", 0, goose.MaxVersion)
+	if err != nil {
+		return fmt.Errorf("collect migrations: %w", err)
+	}
+	versions := make([]int64, len(migrations))
+	for i, migration := range migrations {
+		versions[i] = migration.Version
+	}
+	ctx := context.Background()
+	triggers, err := prepareTimestampSchemaMigration(ctx, db, versions)
+	if err != nil {
+		return fmt.Errorf("prepare timestamp tracking for schema migrations: %w", err)
+	}
+	defer func() {
+		if restoreErr := restoreTimestampProgressTriggers(ctx, db, triggers); restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("restore timestamp repair triggers: %w", restoreErr))
+		}
+	}()
 	if err := repairRenumberedAgentInstallJobsMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered agent-install-jobs migration history: %w", err)
 	}
@@ -2228,7 +2386,18 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 		if _, err := db.Exec(`UPDATE sqlite_master SET sql = replace(sql, '''hermes'', ', '') WHERE type = 'table' AND name = 'sessions'`); err != nil {
 			return fmt.Errorf("schema repair: normalize Hermes constraint: %w", err)
 		}
+		schema = strings.ReplaceAll(schema, "'hermes', ", "")
 		needsNativeAssistant = true
+	}
+	// B's immutable tail migrations can already have widened a known older
+	// CHECK. Carry the exact suffix through the historical repairs.
+	const harnessTail = "'fake'))"
+	tail := harnessTail
+	for _, harness := range []string{"tau", "open-interpreter", "minimax-code", "docker-agent", "stakpak"} {
+		widened := "'" + harness + "', " + tail
+		if strings.Contains(schema, widened) {
+			tail = widened
+		}
 	}
 	type replacement struct {
 		old string
@@ -2346,6 +2515,10 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 		repairs = append(repairs, replacement{"'fake'))", "'memcode', 'fake'))"})
 	}
 	for _, r := range repairs {
+		if strings.HasPrefix(r.old, "CHECK (harness IN (") {
+			r.old = strings.Replace(r.old, harnessTail, tail, 1)
+			r.new = strings.Replace(r.new, harnessTail, tail, 1)
+		}
 		if _, err := db.Exec(
 			`UPDATE sqlite_master
 SET sql = replace(sql, ?, ?)

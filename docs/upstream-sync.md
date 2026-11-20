@@ -247,7 +247,7 @@ CLI 仍走 daemon HTTP，Cloud、HCG 與 `go.work` 保留 fork 原來源。LAN �
 
 | PR #134 thread | A 段處置 | 後段驗收 |
 |---|---|---|
-| `PRRT_kwDOVZZGR8652AK2` | 設定各語系與 CLI 文件恢復 F 的刪除語意。封存自動清理目前會刪除 artifact 檔。 | B 一起接入封存保留、CLI／HTTP 參數、儲存與測試，再更新使用者文案。 |
+| `PRRT_kwDOVZZGR8652AK2` | 設定各語系與 CLI 文件恢復 F 的刪除語意。封存自動清理目前會刪除 artifact 檔。 | 由 UPSYNC2-PR2.08 承接。依 `upsync2-pr2-q1=a_include` 一起啟用本機封存保留、CLI／HTTP 參數、Artifacts 頁面與各語系文案。Cloud share 與遠端 artifact 留 D。 |
 | `PRRT_kwDOVZZGR8652AK7` | 恢復 F 的 Kimi hooks 與 lifecycle。撤回 `1a5d2647` 已匯入的 callback、reducer 及對應測試。 | C 接入同一提交的 CLI scoped approval identity、真實 payload 的 CLI→HTTP 測試與 reducer。 |
 | `PRRT_kwDOVZZGR8652ALA` | 把逐 harness 的驗證錯誤傳給共用 `describeHarness`。父元件測試實際觸發 Check again，驗 Health、Account 與成功重試。 | A 驗證。 |
 | `PRRT_kwDOVZZGR8652ALF` | 恢復 F 的 minimap E2E，配對 A 現有 inspector 行為。 | D 將按 chat 寬度顯示的實作與 E2E 一起接入。 |
@@ -259,3 +259,60 @@ CLI 仍走 daemon HTTP，Cloud、HCG 與 `go.work` 保留 fork 原來源。LAN �
 | I1 | `ed765f56bb` 的 23 條路徑恢復 F，包括 TLS 表單、解析器、新增／編輯呼叫端與測試。 | D.02 一起接入位址推導 TLS、wire 與呼叫端驗收。 |
 | I2 | 撤回 `4b5d3d3f80` 的九條手勢路徑。ChatMarkdown 已維持 F，ChatTimelineItems 的手勢 hunk 也已維持 F，保留 A 的時間格式匯出。 | D.01 一起接入 #8709 的 wheel ownership、通知、圖片、程式碼、表格與 timeline 呼叫端。 |
 | I3 | 舊 retarget 由同一 head 選取實際執行 `changes` 的 run。 | 雙 run fixture 核對略過新 skipped run。新整合分支以 fresh merge ref 驗收。 |
+
+### B 段裁決（UPSYNC2-PR2.06）
+
+| 子工項 | 合併處置 | 驗證接點 |
+|---|---|---|
+| .01、.02、.05 | 加入 U 的 18 份原樣 SQL。沿用 fork 的分段 migration runner、rebuild 與已發布收據，再由具名欄和查詢重產 sqlc。 | fresh、u3、F1、u4／F 以 production Open 驗 schema、收據、資料與第二次開庫。 |
+| .03 | UTC startup fence 與背景修復使用同一儲存邊界。保留 Guardian trigger 產生的 UTC 表示，以及有 active hold 的 conversation queue 順序。WITHOUT ROWID 表以主鍵分批續跑。 | 合成同 instant 帳號碰撞依較高 rowid 保留，記錄修復前後 effective owner 與來源。不同 automation 執行和不允許改寫的列保留並記 skip。AU1 實測政策，AU2 在首次寫入前重新做適用性檢查。 |
+| .04、.07 | review run 狀態機、draft guard、terminal notice、report retry 與 DB trigger CDC 一起接入。保留 fork reviewer 帳號設定與既有 process ownership 判定。 | 兩個帳號使用查詢以 launch reservation 區分 queued，launch、cancel、cleanup 與既有未 exited reviewer 一起驗。 |
+| .08 | 依 `upsync2-pr2-q1=a_include` 接入本機刪除預設保留、封存清理、HTTP／CLI 參數、Artifacts 頁面與文案。 | 註冊檔案與獨立檔案由原 artifact 目錄供唯讀檢視及明確刪除。Cloud share 與 remote artifact 的上游差異留 D。 |
+
+#### B 段第一層審查處置（D-12）
+
+| 發現 | 處置 | 回歸驗證 |
+|---|---|---|
+| P1 · .04／.07 | 帳號 reconcile 遇到 pending stop 時保留 reviewer handle 與 SQLite owner；reaper 以子程序停止確認結算。force-stop 未確認的重試不依 pane 是否存在判定。 | pane 已拆除但仍有 survivor 時，帳號查詢顯示 blocking owner，移除被拒；停止確認後兩個儲存查詢均解除占用。 |
+| P2 · .04 | reviewer 派送只納入取得 launching 的 run。全部 CAS 落空時提早返回持久狀態，跳過 Spawn／Notify。 | SQLite CAS 暫停時並行取消，涵蓋新啟動與重用 reviewer。 |
+| P2 · .04 | Mobile 讀取 daemon 的 `completed` 與 `failureReason`，保留舊 daemon 與 Cloud 的 `complete`／`delivered`。 | 手機 local API 的完成結果可送 worker，無 body 的失敗可顯示原因，並驗 Cloud 映射。 |
+| P2 · .02／.04 | 依有效 claim token 固定 batch 的第一次 render；同一 id 在重啟後送相同文字。新增 fork additive SQL `20261120084919464_report_delivery_payloads.sql`。 | 真實 Chat 收下含失敗摘要的訊息後模擬 ack 中斷，新 coordinator 重試及結算，Chat 只有原本一則。 |
+
+#### B 段 audit 處置（D-13）
+
+| 發現 | 處置 | 驗證接點 |
+|---|---|---|
+| I1 · .08 | 保留刪除先讀 session 的 artifact 目錄。遇到非預設路徑時拒絕，保留 session、登錄及檔案。 | 預設目錄為空且原檔仍可見時，手動保留刪除與封存自動清理均保留原資料。 |
+| I2 · .08 | 已移除 project 的未刪除 session 投影未採用，超出 .08 核准範圍。已刪除 session 的實際 kept 登錄仍可在無 project 群組開啟。 | 只讀 kept 登錄，移除 archived project 掃描、`project-removed` 表示及專用測例。 |
+| M1 | 實作報告的證據索引改列實際壓縮檔名與各自的受測 SHA。 | 按 test 與 package 核對壓縮輸出的通過事件。 |
+| M2 | 既有 Chat queued excerpt 時序已列 backlog。 | 保留全量原始結果。 |
+
+#### B 段差異審查處置（D-14／D-15）
+
+| 發現 | 處置 | 驗證接點 |
+|---|---|---|
+| D-14 P1 · .07 | B 的 `cancel_unconfirmed` 與 captured survivor 新增了跨重啟清理義務。依 D-19 收據補強。 | F 與 A 的相關路徑相同。B 的 boot reaper 只讀 active runs，現有帳號查詢以 review 當前 launch 與 handle 保持占用。 |
+| D-14 P2 · .07 | 已領取而尚無 handle 的 pass 進入 cancelling。Trigger 於 Preflight 返回後和派送前重查，略過已結束或正在取消的工作。已進入 Spawn 的 pass 交回 handle 後可中斷，等待停止確認。 | SQLite barrier 分別驗 Preflight 前後與 in-flight Spawn，並保留 before-CAS 測例。 |
+| D-15 R1-I1 · .02／.04 | 移除暫加的 report payload 表，恢復原定 302 份 migrations。新文字只取既有 report 內容與固定 session ID。Chat 重送沿用既有已接受訊息的 bytes。 | ACK 前中斷、改名、重啟後驗同一 key 和文字、只一則訊息與結算。測例涵蓋新舊 renderer。 |
+
+#### B 段持久化停止收據（D-19）
+
+| 依據 | 處置 | 驗證接點 |
+|---|---|---|
+| `upsync2-pr2-q2=a_sqlite`、`upsync2-pr2-contract-1=approve` · .07、AC5 | Force-stop 先為原 launch 寫 SQLite 收據、程序身分及帳號快照。未封口保留原根證據。開機和後續恢復只觀察。兩個 owner 查詢由收據維持阻擋，確認原範圍全退才以精確世代結算。 | 重開 SQLite、Engine 與 launcher 後，查詢及帳號移除仍擋。程序全退才放行。同 root、同 machine-id 雜湊但不同 boot ID 時保留占用，記 `boot_changed_origin_unverified`。 |
+| 契約 rev2.1 §5、AC2、AU1／AU2 | 唯一新增 fork migration `20261120110913324_reviewer_stop_receipts.sql`。固定 F 284、U 18 與此版本，終態為 303。 | 四組 production Open／reopen 逐 ID 驗唯一套用、DDL／FK。撤回的 report 版本為未核准前態，migration／timestamp 寫入前停止。 |
+
+#### B 段第二輪差異審查處置（D-20）
+
+| 發現 | 處置 | 驗證接點 |
+|---|---|---|
+| P2 · .07 | 缺跨重啟比較範圍時，同一 daemon 在原 launch 與 handle／Chat 世代仍相符的情況下照常執行既有停止。收據及已知程序身分先入帳，取得原生停止確認後才結算。Chat detach 或 controller 缺席不算停止確認。 | 預設 OS hooks 實際停止測試程序。SQLite 重開、新 Engine／launcher 沒有可比較 scope 時維持兩個帳號 owner 查詢的阻擋。Windows／Darwin 驗交叉編譯。 |
+
+#### B 段 audit r2 處置（D-21）
+
+| 發現 | 處置 | 驗證接點 |
+|---|---|---|
+| R2-I1 · .07／AC5 | 已逾時的 Spawn 晚回 handle 時，拆除 runtime 前沿用原 launch 的持久收據。初寫失敗沿用 pending stop 重試。 | 逾時後才交回 handle，拆 pane 後仍有 survivor。以新 Engine／launcher 重開 SQLite，兩個 owner 查詢仍阻擋，原 run 終態維持。 |
+| R2-I2 · .07／AC5 | 原 launch、data root、boot 與 PID namespace 仍可比對時，下一輪重取程序證據並原子補齊收據。重啟恢復沿用純觀察，缺來源或跨 boot 時保留占用。 | 首次程序探測失敗，後續證據恢復。同 daemon 可停止結算，重開 Engine 只補收據且不送訊號。 |
+| R2-I3 · .07／AC5 | Cancel 和兩種派送共用原子准入。取消先到時重讀 run 並阻止派送。已准入的派送沿用現有收尾。 | 在最後一次狀態讀取擋住 fresh Spawn 和 reused Notify。Cancel 回應後解除 barrier，兩條路都未派送。 |
+| R2-I4 · .01／AC2、AU1／AU2 | 開 writer 前唯讀比對實際 embedded migration 清冊。保留既有 runner 已支援的歷史收據，B 終態仍固定為 303 個核准 ID。 | 撤回的 report ID 與一般清冊外 ID 各自觸發拒絕。拒絕前後 SQLite 主檔、收據與 DDL 一致。 |

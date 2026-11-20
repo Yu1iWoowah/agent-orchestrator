@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -75,13 +74,7 @@ func reviewerSettingsMutationSupport(harness domain.ReviewerHarness) error {
 }
 
 func (e *Engine) tryLockWorker(id domain.SessionID) (func(), bool) {
-	e.triggerMu.Lock()
-	mu := e.triggerLocks[id]
-	if mu == nil {
-		mu = &sync.Mutex{}
-		e.triggerLocks[id] = mu
-	}
-	e.triggerMu.Unlock()
+	mu := e.workerMutex(id)
 	if !mu.TryLock() {
 		return nil, false
 	}

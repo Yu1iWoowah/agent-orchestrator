@@ -24,7 +24,7 @@ func (s *Store) InsertExecutionUsage(ctx context.Context, v domain.ExecutionUsag
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := s.qw.WithTx(tx)
+	q := s.txQueries(tx)
 	old, err := q.GetExecutionReceiptDigest(ctx, gen.GetExecutionReceiptDigestParams{SessionID: string(v.SessionID), BillingProvider: v.BillingProvider, ProfileID: v.ProfileID, ProfileRevision: v.ProfileRevision, DelegationID: v.DelegationID, AttemptID: v.AttemptID})
 	if err == nil {
 		if old != digest {

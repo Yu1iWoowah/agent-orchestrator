@@ -67,7 +67,7 @@ func TestRunningReviewerPassProtectsAccountBeforeNativeActivityArrives(t *testin
 	if owner == nil || owner.ReviewID != review.ID {
 		t.Errorf("pending pass allowed native logout: %+v", owner)
 	}
-	_, err = s.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunComplete, domain.VerdictNone, "fake complete", "", false)
+	_, err = s.TransitionReviewRun(ctx, run.ID, []domain.ReviewRunStatus{domain.ReviewRunRunning}, domain.ReviewRunCompleted, domain.ReviewRunPatch{Verdict: domain.VerdictNone})
 	mustNoError(t, err)
 	owners, err = s.ListAgentAccountUsageOwners(ctx, "protected")
 	mustNoError(t, err)
@@ -78,5 +78,60 @@ func TestRunningReviewerPassProtectsAccountBeforeNativeActivityArrives(t *testin
 	mustNoError(t, err)
 	if owner != nil {
 		t.Errorf("completed exited reviewer still blocks logout: %+v", owner)
+	}
+}
+
+func TestReviewerAccountUseTracksLaunchAndCleanup(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status domain.ReviewRunStatus
+		patch  domain.ReviewRunPatch
+		owns   bool
+	}{
+		{name: "ordinary queue", status: domain.ReviewRunQueued},
+		{name: "reserved queue", status: domain.ReviewRunQueued, patch: domain.ReviewRunPatch{LaunchID: "owned", LaunchingAt: new(time.Now().UTC())}, owns: true},
+		{name: "launching", status: domain.ReviewRunLaunching, patch: domain.ReviewRunPatch{LaunchID: "owned"}, owns: true},
+		{name: "cancelling", status: domain.ReviewRunCancelling, patch: domain.ReviewRunPatch{LaunchID: "owned"}, owns: true},
+		{name: "cancel unconfirmed", status: domain.ReviewRunFailed, patch: domain.ReviewRunPatch{LaunchID: "owned", FailureReason: domain.ReviewFailureCancelUnconfirmed}, owns: true},
+		{name: "failure of a previous launch", status: domain.ReviewRunFailed, patch: domain.ReviewRunPatch{LaunchID: "previous", FailureReason: domain.ReviewFailureCancelUnconfirmed}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, s := t.Context(), newTestStore(t)
+			worker := seedUsageSession(t, s, domain.HarnessCodex)
+			now := time.Now().UTC()
+			reviewer := domain.Review{
+				ID: "reviewer", SessionID: worker.ID, ProjectID: worker.ProjectID, Harness: domain.ReviewerCodex,
+				ReviewerActivityState: domain.ActivityExited, ReviewerHandleID: "pane", ReviewerLaunchID: "owned",
+				CreatedAt: now, UpdatedAt: now,
+			}
+			mustNoError(t, s.UpsertReview(ctx, reviewer))
+			mustNoError(t, s.BindReviewerAgentAccount(ctx, reviewer.ID, domain.ResolvedAgentAccount{
+				AccountID: "protected", Provider: domain.AgentAccountProviderCodex, Source: domain.AgentAccountSourceExplicit,
+			}, now))
+			mustNoError(t, s.InsertReviewRun(ctx, domain.ReviewRun{
+				ID: "pass", ReviewID: reviewer.ID, SessionID: worker.ID, Harness: reviewer.Harness,
+				Status: domain.ReviewRunQueued, CreatedAt: now,
+			}))
+			moved, err := s.TransitionReviewRun(ctx, "pass", []domain.ReviewRunStatus{domain.ReviewRunQueued}, tc.status, tc.patch)
+			if err != nil || !moved {
+				t.Fatalf("set reviewer pass: %v %v", moved, err)
+			}
+			assertOwnership := func(want bool) {
+				t.Helper()
+				owners, err := s.ListAgentAccountUsageOwners(ctx, "protected")
+				if err != nil || len(owners) != 1 || owners[0].Blocking != want {
+					t.Fatalf("usage owners = %+v, want blocking=%v, err=%v", owners, want, err)
+				}
+				owner, err := s.GetOpenReviewerAccountUse(ctx, "protected")
+				if err != nil || (owner != nil) != want {
+					t.Fatalf("open use = %+v, want blocking=%v, err=%v", owner, want, err)
+				}
+			}
+			assertOwnership(tc.owns)
+			if tc.status == domain.ReviewRunFailed && tc.owns {
+				mustNoError(t, s.ClearReviewerHandleByHarness(ctx, worker.ID, reviewer.Harness))
+				assertOwnership(false)
+			}
+		})
 	}
 }

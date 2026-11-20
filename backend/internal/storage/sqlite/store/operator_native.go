@@ -51,7 +51,7 @@ func (s *Store) GetOperatorActionConsent(ctx context.Context, plan domain.Operat
 		return "", err
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := s.qr.WithTx(tx)
+	q := s.txQueries(tx)
 	row, err := q.GetOperatorConfirmationByKey(ctx, plan.ActionKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", domain.ErrOperatorActionNotFound

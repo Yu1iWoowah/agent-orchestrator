@@ -1,3 +1,4 @@
+import { keptArtifactsQueryKey } from "../hooks/useKeptArtifacts";
 import { codexAccountsQueryKey, writeCodexAccounts } from "../hooks/codex-accounts-state";
 import type { components } from "../../api/schema";
 import { sessionPlanQueryKey } from "../hooks/useSessionPlan";
@@ -48,6 +49,8 @@ const EVENTSOURCE_CLOSED = 2;
 // the sidebar renders, so they all trigger a (batched) workspace refetch.
 const CDC_EVENT_TYPES = [
 	"session_created",
+	"session_deleted",
+	"project_deleted",
 	"session_updated",
 	"pr_created",
 	"pr_updated",
@@ -96,6 +99,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let pendingAgentAccounts = false;
 			const pendingModelCatalogScopes = new Map<string, { agentId: string; projectId: string }>();
 			let workspaceInvalidationPending = false;
+			let keptArtifactsInvalidationPending = false;
 			let allConversationsInvalidationPending = false;
 			let allEditorHandoffsInvalidationPending = false;
 			// Reviews, interface transitions and model catalogs are otherwise only
@@ -367,6 +371,10 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					lastWorkspaceRefreshAt = Date.now();
 					idOnlyWorkspaceRefreshPending = false;
 				}
+				if (keptArtifactsInvalidationPending || allEventScopedCachesInvalidationPending) {
+					invalidate(keptArtifactsQueryKey);
+					keptArtifactsInvalidationPending = false;
+				}
 				if (allEventScopedCachesInvalidationPending) {
 					invalidate(["session-reviews"]);
 					invalidate(["session-interface-transition"]);
@@ -467,6 +475,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				let conversationOnly = false;
 				let modelCatalogOnly = false;
 				let accountOnly = false;
+				if (event?.type === "session_deleted" || event?.type === "project_deleted") keptArtifactsInvalidationPending = true;
 				let idOnlySessionUpdate = false;
 				if (event === undefined) {
 					// A lifecycle refresh -- reconnect, daemon status change, base-URL change --

@@ -87,7 +87,7 @@ func (s *Store) GetOperatorAction(ctx context.Context, actionKey string) (domain
 		return domain.OperatorActionReceipt{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := s.qr.WithTx(tx)
+	q := s.txQueries(tx)
 	row, err := q.GetOperatorConfirmationByKey(ctx, actionKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.OperatorActionReceipt{}, domain.ErrOperatorActionNotFound

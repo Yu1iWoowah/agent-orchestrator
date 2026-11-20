@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { KeptArtifactSet } from "../hooks/useKeptArtifacts";
 import { useUiStore } from "../stores/ui-store";
 import { useArtifactsViewStore } from "../stores/artifacts-view-store";
 import { aoBridge } from "../lib/bridge";
@@ -42,6 +43,7 @@ vi.mock("./NotificationCenter", () => ({ NotificationCenter: () => <button type=
 
 const mocks = vi.hoisted(() => ({
 	workspaces: [] as WorkspaceSummary[],
+	kept: [] as KeptArtifactSet[],
 	agents: [] as Array<Record<string, unknown>>,
 	navigate: vi.fn(),
 	post: vi.fn(),
@@ -80,6 +82,7 @@ vi.mock("./chat/MermaidBlock", () => ({
 	MermaidBlock: ({ code }: { code: string }) => <div data-testid="mermaid-thumbnail">{code}</div>,
 }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
+vi.mock("../hooks/useKeptArtifacts", () => ({ keptArtifactsQueryKey: ["kept-artifacts"], useKeptArtifacts: () => ({ data: mocks.kept }) }));
 vi.mock("../hooks/useWorkspaceQuery", () => ({
 	workspaceQueryKey: ["workspaces"],
 	cloudSessionsQueryKey: ["cloud-sessions"],
@@ -108,11 +111,13 @@ vi.mock("./ArtifactFileView", () => ({
 		path,
 		rawUrl,
 		readOnly,
+		noFeedback,
 	}: {
 		cloud?: boolean;
 		path: string;
 		rawUrl?: string;
 		readOnly?: boolean;
+		noFeedback?: boolean;
 	}) => (
 		<div
 			data-testid="artifact-file-preview"
@@ -120,6 +125,7 @@ vi.mock("./ArtifactFileView", () => ({
 			data-path={path}
 			data-raw-url={rawUrl}
 			data-read-only={readOnly}
+			data-no-feedback={noFeedback}
 		/>
 	),
 }));
@@ -268,6 +274,7 @@ function expectMenuItems(names: string[]) {
 describe("ArtifactsView", () => {
 	afterEach(() => vi.unstubAllGlobals());
 	beforeEach(() => {
+		mocks.kept = [];
 		mocks.shareAccess = new Map();
 		window.localStorage.removeItem("ao.artifacts.view");
 		useArtifactsViewStore.setState({
@@ -309,6 +316,26 @@ describe("ArtifactsView", () => {
 		mocks.artifactFileChanges.mockReset();
 		useUiStore.setState({ settingsModal: null });
 		useUiStore.getState().clearGlobalToast();
+	});
+
+	it("shows a kept file without its session and opens a read-only preview", async () => {
+		mocks.workspaces = [];
+		mocks.kept = [{
+			sessionId: "gone",
+			title: "Finished work",
+			artifactFiles: [{
+				kind: "markdown", path: "kept-notes.md", name: "kept-notes.md", size: 4,
+				registered: true, updatedAt: "2026-11-16T10:00:00Z",
+				rawUrl: "http://localhost/api/v1/sessions/gone/artifact-files/kept-notes.md",
+			}],
+		}];
+		renderView();
+		await userEvent.click(await screen.findByRole("button", { name: /^kept-notes\.md/ }));
+		const dialog = await screen.findByRole("dialog", { name: "kept-notes.md" });
+		expect(dialog).toHaveTextContent("Finished work · Session deleted");
+		expect(within(dialog).queryByRole("button", { name: "Open in session" })).not.toBeInTheDocument();
+		expect(within(dialog).getByTestId("artifact-file-preview")).toHaveAttribute("data-read-only", "true");
+		expect(within(dialog).getByTestId("artifact-file-preview")).toHaveAttribute("data-no-feedback", "true");
 	});
 
 	it("lists every artifact once, newest first, with its project and session, in no sections", () => {

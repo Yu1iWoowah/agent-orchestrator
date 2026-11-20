@@ -207,6 +207,7 @@ func (c *ReviewsController) trigger(w http.ResponseWriter, r *http.Request) {
 		AgentAccountID:     in.AgentAccountID,
 		Harness:            in.Harness,
 		Config:             in.AgentConfig,
+		RequesterSessionID: in.RequesterSessionID,
 		Source:             domain.ReviewTriggerSource(strings.TrimSpace(in.Source)),
 		InterfaceMode:      in.InterfaceMode,
 		PRURL:              strings.TrimSpace(in.PRURL),

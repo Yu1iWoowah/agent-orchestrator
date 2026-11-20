@@ -36,6 +36,17 @@ func (e *Engine) reviewerAccountContext(ctx context.Context, worker domain.Sessi
 	return ports.WithAgentAccount(ctx, selected), nil
 }
 
+// holdReviewerAccount keeps account mutations excluded until a native launch
+// and the durable pass/handle writes have either completed or rolled back.
+func (e *Engine) holdReviewerAccount(ctx context.Context) (func(), error) {
+	account, resolved := ports.AgentAccountFromContext(ctx)
+	guard, guarded := e.accounts.(ports.AgentAccountUseGuard)
+	if !resolved || !guarded {
+		return func() {}, nil
+	}
+	return guard.AcquireAccountUses(ctx, account.AccountID)
+}
+
 // ReviewerModels is the same account-scoped catalog used by worker preflight.
 type ReviewerModels interface {
 	ModelCatalog(context.Context, string, string, bool) (ports.AgentModelCatalog, error)

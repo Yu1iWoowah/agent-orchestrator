@@ -1534,7 +1534,25 @@ type RollbackSessionResponse struct {
 
 // DeleteSessionQuery is the query string accepted by DELETE /api/v1/sessions/{sessionId}.
 type DeleteSessionQuery struct {
-	Cleanup bool `query:"cleanup,omitempty" description:"When true, a worktree that is still on disk is cleaned up first, the way session cleanup does it; a dirty or locked worktree is never forced and refuses the delete."`
+	Cleanup       bool `query:"cleanup,omitempty" description:"When true, a worktree that is still on disk is cleaned up first, the way session cleanup does it; a dirty or locked worktree is never forced and refuses the delete."`
+	KeepArtifacts bool `query:"keepArtifacts,omitempty" description:"When true, the session's artifact files are kept, view only, and listed by GET /api/v1/kept-artifacts until they are deleted one by one. Otherwise they are deleted with the session."`
+}
+
+// ListKeptArtifactsResponse is the body of GET /api/v1/kept-artifacts.
+type ListKeptArtifactsResponse struct {
+	Sets []KeptArtifactsView `json:"sets"`
+}
+
+// KeptArtifactsView is the artifact set of a deleted session.
+// Its files are view only; DELETE /api/v1/sessions/{sessionId}/artifact-files
+// deletes one.
+type KeptArtifactsView struct {
+	SessionID domain.SessionID `json:"sessionId"`
+	// ProjectID is the session's project; absent when it has none any more.
+	ProjectID     domain.ProjectID      `json:"projectId,omitempty"`
+	Title         string                `json:"title"`
+	At            time.Time             `json:"at" description:"When the session was deleted."`
+	ArtifactFiles []SessionArtifactView `json:"artifactFiles"`
 }
 
 // DeleteSessionResponse is the body of DELETE /api/v1/sessions/{sessionId}.
@@ -4653,11 +4671,12 @@ func capabilityNames(caps ports.ChatCapabilities) []string {
 // it for this pass only, without editing project config, so one session's choice
 // cannot change what another session in the project runs.
 type TriggerReviewRequest struct {
-	AgentAccountID string                       `json:"agentAccountId,omitempty" maxLength:"200"`
-	Harness        domain.ReviewerHarness       `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,opencode-v2,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
-	AgentConfig    domain.AgentConfig           `json:"agentConfig,omitempty"`
-	InterfaceMode  domain.ReviewerInterfaceMode `json:"interfaceMode,omitempty" enum:"chat,tui"`
-	PRURL          string                       `json:"prUrl,omitempty" description:"Restrict the pass to this pull request, attaching it to the session first if AO does not track it yet (never from another active session). Omit to review every eligible PR on the session."`
+	AgentAccountID     string                       `json:"agentAccountId,omitempty" maxLength:"200"`
+	Harness            domain.ReviewerHarness       `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,opencode-v2,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
+	AgentConfig        domain.AgentConfig           `json:"agentConfig,omitempty"`
+	InterfaceMode      domain.ReviewerInterfaceMode `json:"interfaceMode,omitempty" enum:"chat,tui"`
+	PRURL              string                       `json:"prUrl,omitempty" description:"Restrict the pass to this pull request, attaching it to the session first if AO does not track it yet (never from another active session). Omit to review every eligible PR on the session."`
+	RequesterSessionID domain.SessionID             `json:"requesterSessionId,omitempty" description:"Agent session that requested the pass and should receive its final outcome."`
 	// Source labels who asked for the pass. Omitted means a person (manual).
 	Source string `json:"source,omitempty" enum:"manual,agent" description:"Who requested the pass: manual (a person, the default) or agent (an AO session through the CLI)."`
 	// RejectReviewedHead is the CLI's same-commit policy. Omitting it keeps the

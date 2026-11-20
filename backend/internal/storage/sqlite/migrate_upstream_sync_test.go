@@ -2,9 +2,11 @@ package sqlite
 
 import (
 	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -12,77 +14,42 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/pressly/goose/v3"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
-// These are U=53a545ad's files absent from F1=b2c8f3bb. Removing them
-// reconstructs the shipped fork, rather than approximating it by MAX(version).
-var upstreamSyncImportedVersions = map[int64]bool{
-	20261023123504180: true,
-	20261026083409462: true,
-	20261026185532680: true,
-	20261028124744441: true,
-	20261028180000000: true,
-	20261028224250364: true,
-	20261028233910979: true,
-	20261029072736970: true,
-	20261029191416441: true,
-	20261030044053264: true,
-	20261030120740000: true,
-	20261030141527623: true,
-	20261030182857119: true,
-	20261030182857237: true,
-	20261030182857344: true,
-	20261030230920365: true,
-	20261030234657125: true,
-	20261031021251693: true,
-	20261031173315209: true,
-	20261031173316629: true,
-	20261101055144579: true,
-	20261101102149555: true,
-	20261101145613011: true,
-	20261101192928401: true,
-	20261102100313400: true,
-	20261102164353715: true,
-	20261103000000000: true,
-	20261103030401452: true,
-	20261103094403671: true,
-	20261105105237146: true,
-	20261107181854835: true,
-	20261109072438921: true,
-	20261109094334974: true,
-	20261109120000000: true,
-	20261109153109361: true,
-	20261110172911382: true,
-	20261111145612313: true,
-	20261113111818788: true,
-	20261113173435236: true,
-	20261114072016988: true,
-	20261114182101000: true,
-}
+// Captured from 0ea30936 (u3), b2c8f3bb (F1), and 816d7820 (F).
+// u4 a74c4d4493 has identical migration paths and bytes as F. By pinning
+// the sets, a later import with an old version cannot enter an older fixture.
+//
+//go:embed testdata/upstream_sync_fixture_migrations.tsv
+var upstreamSyncFixtureMigrations string
 
 func upstreamSyncLegacyDatabase(t *testing.T, dir string, version int64) map[string]string {
 	t.Helper()
 	legacy := fstest.MapFS{}
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		id, err := strconv.ParseInt(strings.SplitN(entry.Name(), "_", 2)[0], 10, 64)
-		if err != nil {
-			t.Fatal(err)
+	for _, entry := range strings.Split(strings.TrimSpace(upstreamSyncFixtureMigrations), "\n") {
+		snapshot, filename, ok := strings.Cut(entry, "\t")
+		firstSeen, err := strconv.ParseInt(snapshot, 10, 64)
+		if !ok || err != nil {
+			t.Fatalf("invalid historical fixture entry %q", entry)
 		}
-		if id > version || upstreamSyncImportedVersions[id] {
+		if firstSeen > version {
 			continue
 		}
-		name := "migrations/" + entry.Name()
+		name := "migrations/" + filename
 		data, err := migrationsFS.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		legacy[name] = &fstest.MapFile{Data: data}
+	}
+	want := map[int64]int{20261114020404081: 241, 20261115050041608: 242, 20261116001259486: 284}[version]
+	if want == 0 || len(legacy) != want {
+		t.Fatalf("historical fixture %d has %d migrations, want %d", version, len(legacy), want)
 	}
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "ao.db")+snapshotDSN)
 	if err != nil {
@@ -111,7 +78,7 @@ func TestUpstreamSyncInstallsAndUpgrades(t *testing.T) {
 		name    string
 		version int64
 	}{
-		{"fresh", 0}, {"u3", 20261114020404081}, {"F1", 20261115050041608},
+		{"fresh", 0}, {"u3", 20261114020404081}, {"F1", 20261115050041608}, {"u4-and-F", 20261116001259486},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -135,6 +102,9 @@ func TestUpstreamSyncInstallsAndUpgrades(t *testing.T) {
 				{"conversation_turns", "failure_code"},
 				{"model_usage_events", "service_tier"},
 				{"model_usage_events", "provider_message_id"},
+				{"review_run", "worker_notice"},
+				{"shell_terminals", "agent_conversation_id"},
+				{"kept_artifact_sessions", "kept_at"},
 			} {
 				var found int
 				if err = db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, field.table, field.column).Scan(&found); err != nil || found != 1 {
@@ -232,7 +202,7 @@ func TestUpstreamSyncRebuildPreservesNonEmptyValues(t *testing.T) {
 func upstreamSyncSchema(t *testing.T, db *sql.DB) map[string]string {
 	t.Helper()
 	result := sharedInputObjects(t, db)
-	for _, table := range []string{"app_settings", "conversation_turns", "model_usage_events"} {
+	for _, table := range []string{"app_settings", "conversation_turns", "model_usage_events", "review_run", "shell_terminals"} {
 		key := "table:" + table
 		statement := result[key]
 		start, end := strings.IndexByte(statement, '('), strings.LastIndexByte(statement, ')')
@@ -299,15 +269,29 @@ func upstreamSyncSchema(t *testing.T, db *sql.DB) map[string]string {
 
 func assertUpstreamSyncLedger(t *testing.T, db *sql.DB) {
 	t.Helper()
+	assertUpstreamSyncLedgerThrough(t, db, goose.MaxVersion)
+	var total int
+	if err := db.QueryRow(`SELECT count(*) FROM goose_db_version WHERE version_id<>0`).Scan(&total); err != nil || total != len(shippedMigrations) {
+		t.Fatalf("ledger has %d receipts, want fixed manifest of %d: %v", total, len(shippedMigrations), err)
+	}
+}
+
+func assertUpstreamSyncLedgerThrough(t *testing.T, db *sql.DB, lastVersion int64) {
+	t.Helper()
 	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
 		t.Fatal(err)
 	}
+	var checked int
 	for _, entry := range entries {
 		version, err := strconv.ParseInt(strings.SplitN(entry.Name(), "_", 2)[0], 10, 64)
 		if err != nil {
 			t.Fatal(err)
 		}
+		if version > lastVersion {
+			continue
+		}
+		checked++
 		var applied, total int
 		if err := db.QueryRow(`SELECT count(*),COALESCE(sum(is_applied),0) FROM goose_db_version WHERE version_id=?`, version).Scan(&total, &applied); err != nil {
 			t.Fatal(err)
@@ -334,7 +318,7 @@ func assertUpstreamSyncLedger(t *testing.T, db *sql.DB) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("all %d embedded migrations have exactly one applied receipt", len(entries))
+	t.Logf("verified one applied receipt for each of %d migrations", checked)
 }
 
 func assertUpstreamSyncConstraints(t *testing.T, db *sql.DB) {
@@ -433,7 +417,7 @@ func TestUpstreamSyncSchemaAdoptsCRLF(t *testing.T) {
 	if got := upstreamSyncRows(t, db, query); got != before {
 		t.Fatalf("CRLF adoption changed values: %s -> %s", before, got)
 	}
-	assertUpstreamSyncLedger(t, db)
+	assertUpstreamSyncLedgerThrough(t, db, upstreamSyncSchemaVersion)
 	assertUpstreamSyncConstraints(t, db)
 }
 
@@ -830,4 +814,158 @@ ALTER TABLE model_usage_events DROP COLUMN provider_message_id;`)
 	}
 	assertUpstreamSyncLedger(t, db)
 	assertUpstreamSyncConstraints(t, db)
+}
+
+func TestUnapprovedMigrationReceiptStopsBeforeMigration(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version int64
+		note    string
+	}{
+		{"withdrawn report delivery", 20261120084919464, "withdrawn report delivery migration"},
+		{"foreign receipt", 20261120110913325, "outside the embedded manifest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			upstreamSyncLegacyDatabase(t, dir, 20261116001259486)
+			db, err := sql.Open("sqlite", databaseURI(dir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustExec(t, db, `PRAGMA journal_mode=DELETE`)
+			mustExec(t, db, `INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`, tc.version)
+			ledger := upstreamSyncRows(t, db, `SELECT * FROM goose_db_version ORDER BY id`)
+			objects := sharedInputObjects(t, db)
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "ao.db")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(dir)
+			if err == nil {
+				_ = store.Close()
+				t.Fatal("production Open accepted a non-manifest migration")
+			}
+			if !strings.Contains(err.Error(), tc.note) || !strings.Contains(err.Error(), strconv.FormatInt(tc.version, 10)) {
+				t.Fatalf("Open failed at the wrong boundary: %v", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("refused preflight wrote the database file: %v", err)
+			}
+			db, err = sql.Open("sqlite", databaseURI(dir)+readOnlyPragmas)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			if got := upstreamSyncRows(t, db, `SELECT * FROM goose_db_version ORDER BY id`); got != ledger ||
+				!reflect.DeepEqual(objects, sharedInputObjects(t, db)) {
+				t.Fatal("refused preflight wrote migration receipts or schema")
+			}
+		})
+	}
+}
+
+func TestReviewerStopMigrationSeedsOnlyExactCleanupOwners(t *testing.T) {
+	dir := t.TempDir()
+	ctx := t.Context()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.UpsertProject(ctx, domain.ProjectRecord{ID: "stop-fixture", Path: dir, RegisteredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		id       string
+		reason   domain.ReviewFailureReason
+		archived bool
+		handle   string
+		launch   string
+		bound    bool
+		seeded   bool
+	}{
+		{"unconfirmed", domain.ReviewFailureCancelUnconfirmed, false, "pane", "launch", true, true},
+		{"never-started", domain.ReviewFailureNeverStarted, false, "pane", "launch", true, true},
+		{"timed-out", domain.ReviewFailureTimedOut, false, "pane", "launch", true, true},
+		{"archived", domain.ReviewFailureTimedOut, true, "pane", "launch", true, false},
+		{"absent-pane", domain.ReviewFailureTimedOut, false, "", "launch", true, false},
+		{"obsolete", domain.ReviewFailureTimedOut, false, "pane", "old-launch", true, false},
+		{"no-binding", domain.ReviewFailureTimedOut, false, "pane", "launch", false, false},
+		{"process-exited", domain.ReviewFailureProcessExited, false, "pane", "launch", true, false},
+	}
+	for _, tc := range cases {
+		rec, err := store.CreateSession(ctx, domain.SessionRecord{
+			ProjectID: "stop-fixture", Kind: domain.KindWorker, Harness: domain.HarnessCodex, CreatedAt: now, UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		review := domain.Review{ID: tc.id, SessionID: rec.ID, ProjectID: rec.ProjectID, Harness: domain.ReviewerClaudeCode,
+			ReviewerHandleID: tc.handle, ReviewerLaunchID: "launch", ReviewerActivityState: domain.ActivityExited,
+			IsArchived: tc.archived, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := store.UpsertReview(ctx, review); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.InsertReviewRun(ctx, domain.ReviewRun{
+			ID: tc.id, ReviewID: tc.id, SessionID: rec.ID, Harness: review.Harness, TargetSHA: "head",
+			CreatedAt: now, Status: domain.ReviewRunRunning,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		moved, err := store.TransitionReviewRun(ctx, tc.id, []domain.ReviewRunStatus{domain.ReviewRunRunning},
+			domain.ReviewRunFailed, domain.ReviewRunPatch{FailureReason: tc.reason, LaunchID: tc.launch})
+		if err != nil || !moved {
+			t.Fatalf("set up legacy failed review %s: moved=%v (%v)", tc.id, moved, err)
+		}
+		if tc.bound {
+			if err := store.BindReviewerAgentAccount(ctx, tc.id, domain.ResolvedAgentAccount{
+				AccountID: tc.id, Provider: domain.AgentAccountProviderClaude, Source: domain.AgentAccountSourceRole,
+			}, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", databaseURI(dir)+pragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The dedicated migration is additive. Recreate its immediately preceding
+	// schema over these rows without touching a released migration.
+	mustExec(t, db, `DROP TABLE reviewer_stop_processes;
+DROP TABLE reviewer_stop_accounts;
+DROP TABLE reviewer_stop_receipts;
+DELETE FROM goose_db_version WHERE version_id=20261120110913324;`)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	receipts, err := store.ListReviewerStopReceipts(ctx)
+	if err != nil || len(receipts) != 3 {
+		t.Fatalf("seeded receipts: %+v (%v)", receipts, err)
+	}
+	for _, tc := range cases {
+		have, err := store.HasReviewerStop(ctx, domain.ReviewerStopKey{ReviewID: tc.id, LaunchID: "launch"})
+		if err != nil || have != tc.seeded {
+			t.Fatalf("seeded receipt %s = %v, want %v (%v)", tc.id, have, tc.seeded, err)
+		}
+	}
+	for _, receipt := range receipts {
+		if receipt.State != domain.ReviewerStopUnknown || receipt.Reason != "historical_missing_lineage" ||
+			receipt.DataRoot != "" || receipt.BootID != "" || receipt.PIDNamespace != "" {
+			t.Fatalf("historical receipt guessed a scope: %+v", receipt)
+		}
+	}
 }

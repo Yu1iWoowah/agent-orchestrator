@@ -399,7 +399,7 @@ func (s *Store) DeleteTaskPreparation(ctx context.Context, id domain.SessionID) 
 		return false, fmt.Errorf("begin delete task preparation %s: %w", id, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := s.qw.WithTx(tx)
+	q := s.txQueries(tx)
 	row, err := q.GetSession(ctx, id)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, fmt.Errorf("read task preparation %s: %w", id, err)
@@ -752,10 +752,14 @@ func activitySignalProjectionParams(rec domain.SessionRecord, expectedRevision i
 func (s *Store) RecordSessionLatestUserPrompt(ctx context.Context, id domain.SessionID, prompt string, updatedAt time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.RecordSessionLatestUserPrompt(ctx, gen.RecordSessionLatestUserPromptParams{
-		LatestUserPrompt: prompt,
-		UpdatedAt:        timeToNullTime(updatedAt),
-		ID:               id,
+	var rows int64
+	err := s.inTxDB(ctx, "record latest user prompt", func(q *gen.Queries, db gen.DBTX) error {
+		if err := normalizeSessionGuardTimes(ctx, db, id); err != nil {
+			return err
+		}
+		var err error
+		rows, err = q.RecordSessionLatestUserPrompt(ctx, gen.RecordSessionLatestUserPromptParams{LatestUserPrompt: prompt, UpdatedAt: timeToNullTime(updatedAt), ID: id})
+		return err
 	})
 	if err != nil {
 		return false, fmt.Errorf("record latest user prompt for session %s: %w", id, err)
@@ -994,7 +998,7 @@ func (s *Store) DeleteSession(ctx context.Context, id domain.SessionID) (bool, e
 		return false, fmt.Errorf("begin delete seed session: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := s.qw.WithTx(tx)
+	q := s.txQueries(tx)
 
 	isSeed, err := q.SessionIsSeed(ctx, id)
 	if err != nil {
@@ -1090,7 +1094,7 @@ var sessionDeleteDrains = []string{
 //
 // Returns deleted=false when id does not name a terminated session.
 func (s *Store) DeleteTerminatedSession(ctx context.Context, id domain.SessionID) (bool, error) {
-	if _, _, ok, err := deletableTerminatedSession(ctx, s.readDB, id); err != nil || !ok {
+	if _, _, ok, err := deletableTerminatedSession(ctx, s.readDB, s.qr, id); err != nil || !ok {
 		return false, err
 	}
 	for _, query := range sessionDeleteDrains {
@@ -1107,7 +1111,8 @@ func (s *Store) DeleteTerminatedSession(ctx context.Context, id domain.SessionID
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	projectID, num, ok, err := deletableTerminatedSession(ctx, tx, id)
+	queries := s.txQueries(tx)
+	projectID, num, ok, err := deletableTerminatedSession(ctx, tx, queries, id)
 	if err != nil || !ok {
 		return false, err
 	}
@@ -1120,7 +1125,7 @@ INSERT INTO session_num_floors (id_prefix, max_num) VALUES (?, ?)
 ON CONFLICT (id_prefix) DO UPDATE SET max_num = MAX(max_num, excluded.max_num)`, prefix, num); err != nil {
 		return false, fmt.Errorf("delete session %s: record number floor: %w", id, err)
 	}
-	if err := foldDeletedSessionAccountUsage(ctx, s.qw.WithTx(tx), id); err != nil {
+	if err := foldDeletedSessionAccountUsage(ctx, queries, id); err != nil {
 		return false, fmt.Errorf("delete session %s: keep account usage: %w", id, err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -1155,11 +1160,7 @@ WHERE conversation_id IN (SELECT id FROM conversations WHERE session_id = ?1)
 	return true, nil
 }
 
-type rowQueryer interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
-func deletableTerminatedSession(ctx context.Context, q rowQueryer, id domain.SessionID) (sql.NullString, int64, bool, error) {
+func deletableTerminatedSession(ctx context.Context, q gen.DBTX, queries *gen.Queries, id domain.SessionID) (sql.NullString, int64, bool, error) {
 	var projectID sql.NullString
 	var num int64
 	err := q.QueryRowContext(ctx, `SELECT project_id, num FROM sessions WHERE id = ? AND is_terminated = 1`, id).Scan(&projectID, &num)
@@ -1168,6 +1169,13 @@ func deletableTerminatedSession(ctx context.Context, q rowQueryer, id domain.Ses
 	}
 	if err != nil {
 		return projectID, 0, false, fmt.Errorf("delete session %s: read: %w", id, err)
+	}
+	pendingReviewerStop, err := queries.HasUnsealedReviewerStop(ctx, string(id))
+	if err != nil {
+		return projectID, 0, false, fmt.Errorf("delete session %s: check reviewer stop: %w", id, err)
+	}
+	if pendingReviewerStop {
+		return projectID, 0, false, fmt.Errorf("delete session %s: %w", id, domain.ErrReviewerStopPending)
 	}
 	var shared bool
 	if err := q.QueryRowContext(ctx, `
@@ -1215,7 +1223,7 @@ SELECT EXISTS (
 // CheckTerminatedSessionDeletable runs DeleteTerminatedSession's refusals
 // without writing, so a caller can refuse before any other delete step.
 func (s *Store) CheckTerminatedSessionDeletable(ctx context.Context, id domain.SessionID) error {
-	_, _, _, err := deletableTerminatedSession(ctx, s.readDB, id)
+	_, _, _, err := deletableTerminatedSession(ctx, s.readDB, s.qr, id)
 	return err
 }
 
@@ -1680,7 +1688,8 @@ func timeToNullTime(t time.Time) sql.NullTime {
 	if t.IsZero() {
 		return sql.NullTime{}
 	}
-	return sql.NullTime{Time: t, Valid: true}
+	// Also used by handwritten SQL that does not go through utcTimes.
+	return sql.NullTime{Time: t.UTC(), Valid: true}
 }
 
 func nullTimeToTimePtr(t sql.NullTime) *time.Time {

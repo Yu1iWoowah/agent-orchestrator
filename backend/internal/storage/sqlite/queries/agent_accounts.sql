@@ -130,16 +130,30 @@ VALUES (?,?,?,?,?) ON CONFLICT(review_id,provider) DO NOTHING;
 SELECT account_id,provider,resolution_source FROM reviewer_agent_accounts WHERE review_id=? AND provider=?;
 
 -- name: GetOpenReviewerAccountUse :one
-SELECT r.id AS review_id,r.session_id,r.harness
+SELECT review_id, session_id, harness FROM (
+SELECT r.id AS review_id,r.session_id,r.harness,r.created_at
 FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id
-WHERE a.account_id=? AND r.is_archived=0
+WHERE a.account_id=sqlc.arg(account_id) AND r.is_archived=0
   AND (r.reviewer_activity_state<>'exited'
-       OR EXISTS(SELECT 1 FROM review_run AS pass WHERE pass.review_id=r.id AND pass.status='running'))
-ORDER BY r.created_at,r.id,a.provider LIMIT 1;
+       OR EXISTS (
+           SELECT 1 FROM review_run AS pass WHERE pass.review_id=r.id
+           AND (pass.status IN ('launching','running','cancelling')
+                OR (pass.status='queued' AND pass.launch_id=r.reviewer_launch_id
+                    AND pass.launch_id<>'' AND pass.launching_at IS NOT NULL)
+                OR (pass.status='failed' AND pass.failure_reason IN ('never_started','timed_out','cancel_unconfirmed')
+                    AND pass.launch_id=r.reviewer_launch_id AND pass.launch_id<>'' AND r.reviewer_handle_id<>''))
+       ))
+UNION
+SELECT s.review_id, s.session_id, s.harness, CAST('' AS TIMESTAMP)
+FROM reviewer_stop_accounts AS a JOIN reviewer_stop_receipts AS s USING (review_id, launch_id)
+WHERE a.account_id=sqlc.arg(account_id)
+)
+ORDER BY created_at, review_id LIMIT 1;
 
 -- Current bindings are owners; older receipts remain historical attribution.
--- A running pass owns its profile before native activity replaces an old exited
--- observation; the launch lease may return before the caller commits its handle.
+-- Launching and cancelling passes own their profile before native activity
+-- confirms the new state. A queued pass needs an exact launch reservation.
+-- Failed passes whose exact runtime still needs cleanup retain ownership.
 -- Transition targets are owners before a binding is committed. No profile path
 -- or provider output is part of this local-only projection.
 -- A committed target is owned by its current session binding, never by a
@@ -156,9 +170,29 @@ WHERE a.account_id=sqlc.arg(account_id)
 UNION ALL
 SELECT 'reviewer', CAST(COALESCE(s.project_id,'') AS TEXT), s.id, s.display_name, r.id, r.pr_url, r.harness, '',
        CAST(r.is_archived=0 AND (r.reviewer_activity_state<>'exited'
-         OR EXISTS(SELECT 1 FROM review_run AS pass WHERE pass.review_id=r.id AND pass.status='running')) AS INTEGER)
+         OR EXISTS (
+           SELECT 1 FROM review_run AS pass WHERE pass.review_id=r.id
+           AND (pass.status IN ('launching','running','cancelling')
+                OR (pass.status='queued' AND pass.launch_id=r.reviewer_launch_id
+                    AND pass.launch_id<>'' AND pass.launching_at IS NOT NULL)
+                OR (pass.status='failed' AND pass.failure_reason IN ('never_started','timed_out','cancel_unconfirmed')
+                    AND pass.launch_id=r.reviewer_launch_id AND pass.launch_id<>'' AND r.reviewer_handle_id<>''))
+       )) AS INTEGER)
 FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id JOIN sessions AS s ON s.id=r.session_id
 WHERE a.account_id=sqlc.arg(account_id)
+  AND NOT EXISTS (
+    SELECT 1 FROM reviewer_stop_accounts AS stop
+    WHERE stop.account_id=a.account_id AND stop.review_id=r.id
+  )
+UNION ALL
+SELECT 'reviewer', CAST(COALESCE(s.project_id,'') AS TEXT), s.session_id,
+       CAST(COALESCE(worker.display_name,'') AS TEXT), s.review_id,
+       CAST(COALESCE(r.pr_url,'') AS TEXT), s.harness, '', 1
+FROM reviewer_stop_accounts AS a JOIN reviewer_stop_receipts AS s USING (review_id, launch_id)
+LEFT JOIN sessions AS worker ON worker.id=s.session_id
+LEFT JOIN review AS r ON r.id=s.review_id
+WHERE a.account_id=sqlc.arg(account_id)
+GROUP BY s.review_id
 UNION ALL
 SELECT 'transition', CAST(COALESCE(s.project_id,'') AS TEXT), s.id, s.display_name, '', '', s.harness, t.id, 1
 FROM session_interface_transitions AS t JOIN sessions AS s ON s.id=t.session_id

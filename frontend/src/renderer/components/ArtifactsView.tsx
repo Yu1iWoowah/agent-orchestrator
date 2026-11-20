@@ -1,3 +1,4 @@
+import { keptArtifactsQueryKey, useKeptArtifacts } from "../hooks/useKeptArtifacts";
 import { FilterChip, ToolbarSearch } from "./PageToolbar";
 import { hidesShellTopbar } from "../lib/platform";
 import {
@@ -31,6 +32,7 @@ import {
 	galleryLegacyKey,
 	isCatalogArtifact,
 	legacyGalleryGroups,
+	withKeptGalleryGroups,
 	newestGalleryFirst,
 	migratableGalleryRows,
 	type GalleryRow,
@@ -50,6 +52,8 @@ import {
 	ARTIFACT_SHARINGS,
 	ARTIFACT_TYPES,
 	artifactChangeError,
+	artifactContext,
+	withKeptArtifacts,
 	canChangeSessionArtifacts,
 	groupArtifactsByProject,
 	withShareAccess, artifactType, artifactSharing,
@@ -129,6 +133,8 @@ function ArtifactsGallery() {
 	const cloudArtifacts = useCloudOffering().artifacts;
 	const workspaceQuery = useWorkspaceQuery({ includeCloud: cloudArtifacts });
 	const workspaces = workspaceQuery.data;
+	const kept = useKeptArtifacts().data;
+	const noProjectName = t("artifacts.noProject");
 	const catalog = useArtifactCatalogs(workspaces);
 	const { query, projectId, source, archive, visibleCount } = useArtifactsViewStore(
 		useShallow((state) => {
@@ -165,7 +171,7 @@ function ArtifactsGallery() {
     const publishedRows = useMemo(() => withShareAccess(groupArtifactsByProject(workspaces ?? [], t("artifacts.source.orchestrator")), shareAccess).flatMap((group) => group.rows), [workspaces, shareAccess, t]);
 	const groups = useMemo(
 		() =>
-			[
+			withKeptGalleryGroups([
 				...catalog.projects.map((project) =>
 					catalogArtifactGroup(
 						project,
@@ -174,7 +180,7 @@ function ArtifactsGallery() {
 					),
 				),
 				...legacyGalleryGroups(workspaces ?? [], catalog.connection),
-			].map((group) => ({ ...group, rows: group.rows.flatMap((row) => {
+			], catalog.connection, withKeptArtifacts([], kept, workspaces ?? [], noProjectName)).map((group) => ({ ...group, rows: group.rows.flatMap((row) => {
                 if (!isCatalogArtifact(row) || row.connection.kind !== "local" || row.target.kind !== "artifact") return [row];
                 const sessionId = row.target.sessionId;
                 const published = publishedRows.find((entry) => entry.sessionId === sessionId && (entry.path === row.path || (entry.bundle && row.path.startsWith(entry.bundle.path + "/"))));
@@ -189,7 +195,7 @@ function ArtifactsGallery() {
 							? 1
 							: a.id.localeCompare(b.id),
 			),
-		[catalog.projects, catalog.connection, catalog.data, workspaces, publishedRows],
+		[catalog.projects, catalog.connection, catalog.data, workspaces, publishedRows, kept, noProjectName],
 	);
 	const allRows = useMemo(() => groups.flatMap((group) => group.rows), [groups]);
 	const complete = catalog.data !== undefined && catalog.data.every((entry) => !entry.loading);
@@ -327,6 +333,7 @@ function ArtifactsGallery() {
 			setSelectedIds((current) => new Set([...current].filter((id) => !deleted.includes(id))));
 			await Promise.all([
 				queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost() }),
+				...(rows.some((row) => !isCatalogArtifact(row) && row.kept) ? [queryClient.invalidateQueries({ queryKey: keptArtifactsQueryKey })] : []),
                 queryClient.invalidateQueries({ queryKey: ["artifact-catalogs", catalog.connection.kind, catalog.connection.identity] }),
 				...(rows.some((row) => !isCatalogArtifact(row) && row.cloud) ? [queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey })] : []),
 			]);
@@ -740,7 +747,7 @@ const ArtifactCard = memo(function ArtifactCard({ row, pinId, projectName, view,
 	const navigateToSession = useNavigateToSession();
 	const KindIcon = artifactFileIcon(row);
 	const selectionDescriptionId = useId();
-	const context = `${projectName} · ${row.sessionTitle}`;
+	const context = artifactContext(t, row, projectName);
 
 	const open = () => {
 		onPreview(row, projectName);
@@ -819,7 +826,7 @@ const ArtifactCard = memo(function ArtifactCard({ row, pinId, projectName, view,
 							session={{ id: row.sessionId, cloud: row.cloud }}
 							iconOnly
 							share={share}
-							onOpenInSession={openInSession}
+							onOpenInSession={row.kept ? undefined : openInSession}
 							pinned={pinned}
 							onTogglePin={() => togglePinnedArtifact(id, legacyPin)}
 							className="bg-[var(--solid-bg-secondary,var(--color-bg-secondary))] hover:bg-[var(--solid-accent,var(--accent))] dark:hover:bg-[var(--solid-accent,var(--accent))] transition-none duration-0 [@media(hover:hover)]:opacity-0 group-hover/artifact:opacity-100 group-focus-within/artifact:opacity-100 data-[state=open]:opacity-100"
@@ -844,7 +851,7 @@ const ArtifactCard = memo(function ArtifactCard({ row, pinId, projectName, view,
 					session={{ id: row.sessionId, cloud: row.cloud }}
 					iconOnly
 					share={share}
-					onOpenInSession={openInSession}
+					onOpenInSession={row.kept ? undefined : openInSession}
 					pinned={pinned}
 					onTogglePin={() => togglePinnedArtifact(id, legacyPin)}
 					className="bg-[var(--solid-bg-secondary,var(--color-bg-secondary))] hover:bg-[var(--solid-accent,var(--accent))] dark:hover:bg-[var(--solid-accent,var(--accent))] transition-none duration-0 [@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100"

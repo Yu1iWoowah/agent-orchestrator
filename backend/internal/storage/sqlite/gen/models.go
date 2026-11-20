@@ -851,6 +851,22 @@ type GuardianWatermark struct {
 	CleanedBefore time.Time
 }
 
+type KeptArtifact struct {
+	ID            string
+	SessionID     string
+	Path          string
+	RegisteredAt  sql.NullTime
+	PreviousPaths string
+	CreatedAt     time.Time
+}
+
+type KeptArtifactSession struct {
+	SessionID string
+	ProjectID sql.NullString
+	Title     string
+	KeptAt    time.Time
+}
+
 type ManagedHarnessRelease struct {
 	Harness   string
 	Release   string
@@ -1078,6 +1094,8 @@ type PR struct {
 	ProviderID               string
 	AuthorAvatarURL          string
 	ReviewPartial            bool
+	HeadFromFork             bool
+	HeadIsDefaultBranch      bool
 }
 
 type PRCheck struct {
@@ -1188,23 +1206,24 @@ type ReplacementHumanIntakeReceipt struct {
 }
 
 type Report struct {
-	ID                 string
-	SessionID          string
-	ProjectID          string
-	State              string
-	Note               string
-	Message            string
-	CreatedAt          time.Time
-	DeliveryState      string
-	AvailableAt        time.Time
-	SettlementDeadline sql.NullTime
-	RepeatCount        int64
-	ClaimToken         string
-	ClaimedAt          sql.NullTime
-	DeliveryAttempts   int64
-	AcknowledgedAt     sql.NullTime
-	LastError          string
-	DeliveryBatchID    string
+	ID                     string
+	SessionID              string
+	ProjectID              string
+	State                  string
+	Note                   string
+	Message                string
+	CreatedAt              time.Time
+	DeliveryState          string
+	AvailableAt            time.Time
+	SettlementDeadline     sql.NullTime
+	RepeatCount            int64
+	ClaimToken             string
+	ClaimedAt              sql.NullTime
+	DeliveryAttempts       int64
+	AcknowledgedAt         sql.NullTime
+	LastError              string
+	DeliveryBatchID        string
+	UnacknowledgedAttempts int64
 }
 
 type ReportOutput struct {
@@ -1246,23 +1265,37 @@ type Review struct {
 }
 
 type ReviewRun struct {
-	ID                    string
-	ReviewID              string
-	SessionID             domain.SessionID
-	Harness               domain.ReviewerHarness
-	PRURL                 string
-	TargetSha             string
-	Status                domain.ReviewRunStatus
-	Verdict               domain.ReviewVerdict
-	Body                  string
-	CreatedAt             time.Time
-	GithubReviewID        string
-	DeliveredAt           sql.NullTime
-	BatchID               string
-	AutoInjectReview      bool
-	TriggerSource         domain.ReviewTriggerSource
-	AgentSettingsJson     sql.NullString
-	AgentSettingsRevision sql.NullInt64
+	ID                      string
+	ReviewID                string
+	SessionID               domain.SessionID
+	Harness                 domain.ReviewerHarness
+	PRURL                   string
+	TargetSha               string
+	Status                  domain.ReviewRunStatus
+	Verdict                 domain.ReviewVerdict
+	Body                    string
+	CreatedAt               time.Time
+	GithubReviewID          string
+	DeliveredAt             sql.NullTime
+	BatchID                 string
+	AutoInjectReview        bool
+	TriggerSource           domain.ReviewTriggerSource
+	ReviewerModel           string
+	WorkerNotice            string
+	WorkerNoticeAttempts    int64
+	WorkerNoticeError       string
+	WorkerNoticeAttemptedAt sql.NullTime
+	AgentSettingsJson       sql.NullString
+	AgentSettingsRevision   sql.NullInt64
+	FailureReason           domain.ReviewFailureReason
+	CancelledBy             domain.ReviewCancelledBy
+	LaunchID                string
+	LaunchingAt             sql.NullTime
+	StartedAt               sql.NullTime
+	FirstActivityAt         sql.NullTime
+	CancelRequestedAt       sql.NullTime
+	EndedAt                 sql.NullTime
+	RequesterSessionID      domain.SessionID
 }
 
 type ReviewerAgentAccount struct {
@@ -1291,6 +1324,38 @@ type ReviewerAgentSettingsOperation struct {
 	RequestFingerprint string
 	OperationJson      string
 	CreatedAt          time.Time
+}
+
+type ReviewerStopAccount struct {
+	ReviewID  string
+	LaunchID  string
+	Provider  string
+	AccountID string
+}
+
+type ReviewerStopProcess struct {
+	ReviewID      string
+	LaunchID      string
+	Pid           int64
+	StartIdentity string
+	StartedAt     sql.NullTime
+}
+
+type ReviewerStopReceipt struct {
+	ReviewID             string
+	LaunchID             string
+	SessionID            string
+	ProjectID            sql.NullString
+	Harness              string
+	HandleID             string
+	InterfaceMode        string
+	ControllerGeneration string
+	DataRoot             string
+	BootID               string
+	PidNamespace         string
+	ChatScope            string
+	State                string
+	Reason               string
 }
 
 type Session struct {
@@ -1595,6 +1660,9 @@ type ShellTerminal struct {
 	CommandOwner              string
 	TitleExplicit             bool
 	AppTitle                  string
+	EndedAt                   sql.NullTime
+	LastAgentHarness          string
+	AgentConversationID       string
 }
 
 type TelemetryEvent struct {
@@ -1612,6 +1680,19 @@ type TelemetryEvent struct {
 type TelemetryLifetimeSession struct {
 	Singleton int64
 	Count     int64
+}
+
+type TimestampRepairControl struct {
+	ID     int64
+	Paused int64
+}
+
+type TimestampRepairProgress struct {
+	TableName  string
+	Signature  string
+	Generation int64
+	Completed  int64
+	Rejected   int64
 }
 
 type UsageBinding struct {

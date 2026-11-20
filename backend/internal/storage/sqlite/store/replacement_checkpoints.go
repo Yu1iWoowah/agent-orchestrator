@@ -263,7 +263,7 @@ func (s *Store) replacementRead(ctx context.Context, read func(context.Context, 
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := gen.New(tx)
+	q := s.txQueries(tx)
 	return read(context.WithValue(ctx, replacementTransactionKey{}, q), q)
 }
 
