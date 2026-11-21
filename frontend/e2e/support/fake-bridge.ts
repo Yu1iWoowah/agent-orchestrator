@@ -159,6 +159,7 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 				},
 				theme: {
 					set: async () => undefined,
+					systemAppearance: async (): Promise<"light" | "dark"> => (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"),
 					persistTerminal: async () => undefined,
 					setWindowBackground: async () => undefined,
 					setWindowTranslucent: async () => undefined,
@@ -182,6 +183,7 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					available: async () => true,
 					inspect: async () => ({ name: "", size: 0, unsupported: false, fingerprint: "" }),
 					list: async () => ({ shares: [], limit: 3, used: 0, unlimited: false, privateLinks: false }),
+					hostLinks: async () => [],
 					publish: async () => ({ status: "cancelled" as const }),
 					cancel: async () => undefined,
 					unpublish: async () => undefined,
@@ -1255,6 +1257,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				},
 				theme: {
 					set: async () => undefined,
+					systemAppearance: async (): Promise<"light" | "dark"> => (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"),
 					persistTerminal: async () => undefined,
 					setWindowBackground: async () => undefined,
 					setWindowTranslucent: async () => undefined,
@@ -1274,6 +1277,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					available: async () => true,
 					inspect: async () => ({ name: "", size: 0, unsupported: false, fingerprint: "" }),
 					list: async () => ({ shares: [], limit: 3, used: 0, unlimited: false, privateLinks: false }),
+					hostLinks: async () => [],
 					publish: async () => ({ status: "cancelled" as const }),
 					cancel: async () => undefined,
 					unpublish: async () => undefined,

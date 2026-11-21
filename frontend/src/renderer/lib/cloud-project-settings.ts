@@ -1,5 +1,5 @@
 import { sameSetting, settingsObject, settingsPatch } from "./project-settings-patch";
-import type { CloudCpAgentProvider, CloudCpProject, CloudCpProjectAgentConfig, CloudCpProjectSettingsRequest, CloudCpProjectTrackerIntake } from "./cloud-cp";
+import type { CloudCpAgentProvider, CloudCpOrchestratorSandboxProvider, CloudCpProject, CloudCpProjectAgentConfig, CloudCpProjectSettingsRequest, CloudCpProjectTrackerIntake } from "./cloud-cp";
 import { CLOUD_AGENT_PROVIDERS } from "./cloud-agents";
 
 export type CloudProjectRoleDraft = {
@@ -16,6 +16,7 @@ export type CloudProjectSettingsDraft = {
 	reviewer: CloudProjectRoleDraft;
 	autoReview: boolean;
 	coder: { workspaceNamePrefix: string; parameters: Record<string, string> };
+	orchestratorSandboxProvider?: CloudCpOrchestratorSandboxProvider;
 
 	workersRequestReview: boolean;
 	/** Agent commits name the AO GitHub App as a co-author; on unless turned off. */
@@ -63,6 +64,7 @@ export function cloudProjectSettingsDraft(project: CloudCpProject): CloudProject
 		coAuthorCommits: config.coAuthorCommits ?? true,
 		intake: { enabled: intake.enabled ?? false, repo: intake.repo ?? "", assignee: intake.assignee ?? "" },
 		coder: { workspaceNamePrefix: typeof coder.workspaceNamePrefix === "string" ? coder.workspaceNamePrefix : "", parameters },
+		orchestratorSandboxProvider: config.orchestratorSandboxProvider ?? "freestyle",
 	};
 }
 
@@ -70,6 +72,7 @@ export function cloudProjectSettingsDraft(project: CloudCpProject): CloudProject
 export function cloudProjectSettingsPatch(
 	before: CloudProjectSettingsDraft,
 	after: CloudProjectSettingsDraft,
+	supportsOrchestratorPlacement = false,
 ): CloudCpProjectSettingsRequest {
 	const document = (draft: CloudProjectSettingsDraft) => ({
 		displayName: draft.displayName.trim(),
@@ -86,6 +89,10 @@ export function cloudProjectSettingsPatch(
 		},
 	});
 	const patch: CloudCpProjectSettingsRequest = settingsPatch(document(before), document(after));
+	if (supportsOrchestratorPlacement && after.orchestratorSandboxProvider !== undefined &&
+		before.orchestratorSandboxProvider !== after.orchestratorSandboxProvider) {
+		patch.config = { ...patch.config, orchestratorSandboxProvider: after.orchestratorSandboxProvider };
+	}
 	const coder: NonNullable<NonNullable<CloudCpProjectSettingsRequest["config"]>["coder"]> = {};
 	if (before.coder.workspaceNamePrefix.trim() !== after.coder.workspaceNamePrefix.trim())
 		coder.workspaceNamePrefix = after.coder.workspaceNamePrefix.trim();

@@ -2116,10 +2116,120 @@ textarea,
 	will-change: transform;
 }
 
+/* The same sweep for sidebar rows, where several run at once while a chat is typed in.
+   A masked copy of the title moves with transforms (the inner span cancels the move), so
+   the sweep runs on the compositor instead of repainting each title every frame. The band
+   is 0.75 title widths and its center travels from 1.4 to -0.4 widths, like the gradient. */
+.sidebar-working-shimmer {
+	position: absolute;
+	inset-block: 0;
+	left: -77.5%;
+	width: 180%;
+	pointer-events: none;
+	user-select: none;
+	mask-image: linear-gradient(100deg, transparent 0, black 20.8%, transparent 41.7%);
+	mask-repeat: no-repeat;
+	animation: sidebar-working-shimmer 2.4s ease-in-out infinite;
+}
+
+.sidebar-working-shimmer > span {
+	display: block;
+	animation: sidebar-working-shimmer-counter 2.4s ease-in-out infinite;
+}
+
+.sidebar-working-shimmer > span > span {
+	display: block;
+	width: calc(100% / 1.8);
+	margin-left: calc(100% * 0.775 / 1.8);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	/* Tinted toward the working blue at low strength, like the row's spinner, so a
+	   working title reads apart from an idle one without a row fill. */
+	color: color-mix(in oklab, var(--color-status-working) 40%, var(--color-foreground));
+}
+
+@keyframes sidebar-working-shimmer {
+	from { transform: translateX(100%); }
+	to { transform: translateX(0); }
+}
+
+@keyframes sidebar-working-shimmer-counter {
+	from { transform: translateX(-100%); }
+	to { transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.sidebar-working-shimmer {
+		display: none;
+	}
+}
+
 /* The live row's label (current step, retry chip, setup label) fades in once when the
    row changes what it is showing; the text inside then updates in place. */
 .chat-live-label {
 	animation: chat-live-label-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Usage-limit sign (right of the model) and its tooltip: the status hue on the icon and label only. */
+.quota-sign,
+.quota-tip-title {
+	--quota-tone: var(--color-status-in-review);
+}
+.quota-sign[data-severity="full"],
+.quota-tip-title[data-severity="full"] {
+	--quota-tone: var(--color-status-exited);
+}
+.quota-sign {
+	display: inline-flex;
+	flex-shrink: 0;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border-radius: 999px;
+	color: var(--quota-tone);
+	cursor: default;
+	animation: quota-sign-in 280ms var(--ease-out);
+}
+.quota-sign:focus-visible {
+	outline: 2px solid var(--color-ring);
+	outline-offset: 1px;
+}
+.quota-sign > svg {
+	width: 14px;
+	height: 14px;
+}
+@keyframes quota-sign-in {
+	from { opacity: 0; transform: scale(0.5); }
+}
+.quota-tip {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	font-size: 12px;
+	line-height: 16px;
+}
+.quota-tip-title {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-weight: 500;
+	color: color-mix(in srgb, var(--quota-tone) 80%, var(--color-foreground));
+}
+.quota-tip-title > svg {
+	width: 13px;
+	height: 13px;
+	flex-shrink: 0;
+	color: var(--quota-tone);
+}
+.quota-tip-meta {
+	color: var(--color-muted-foreground);
+	font-size: 11.5px;
+	font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+	.quota-sign { animation: none; }
 }
 
 @keyframes chat-live-label-in {
@@ -6305,6 +6415,19 @@ html:root[data-window-translucent="true"] {
  * material still shows through. */
 html:root[data-theme="light"][data-window-translucent="true"] {
 	--ao-shell-tint: color-mix(in srgb, color-mix(in srgb, var(--sidebar), white 75%) 72%, transparent);
+}
+
+/* A named color theme is recognized by its canvas color, which the sidebar
+ * tint washes out. Named themes tint the shell with the canvas color instead,
+ * at the same 70%, so the theme reads at a glance and the blurred desktop
+ * still shows through. Light named themes skip the push toward white above,
+ * which would bleach their sidebar. The default theme keeps the looks above. */
+html:root[data-style-theme][data-window-translucent="true"] {
+	--ao-shell-tint: color-mix(in srgb, var(--background) 70%, transparent);
+}
+
+html:root[data-style-theme][data-theme="light"][data-window-translucent="true"] {
+	--ao-shell-tint: color-mix(in srgb, var(--sidebar) 70%, transparent);
 }
 
 /* Chrome: clear canvases, overlay fills. Declared on body so the theme's

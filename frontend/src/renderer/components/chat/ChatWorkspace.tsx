@@ -119,7 +119,7 @@ import { labelForHost } from "../../lib/host-clients";
 import type { ApprovalMode } from "../../types/conversation";
 import type { ConversationLocalEcho } from "../../hooks/useConversation";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
-import { inspectorIsOpen, sidebarOccupiesLayout, useUiStore } from "../../stores/ui-store";
+import { sidebarOccupiesLayout, useUiStore } from "../../stores/ui-store";
 import type { TerminalTarget } from "../../types/terminal";
 import {
 	isOrchestratorSession,
@@ -199,6 +199,7 @@ import type { ComposerPromptSuggestion } from "./ComposerEditor";
 import { ChatTokenSkills } from "./sentComposerTokens";
 import { ChatComposer, type ChatComposerHandle, type StoredComposerAttachment } from "./ChatComposer";
 import { ContextMeter } from "./ContextMeter";
+import { nearQuotaWindow, QuotaSign, QuotaStatus } from "./QuotaReadout";
 import { stagedAttachmentParts, attachmentName } from "./messageAttachments";
 import type { QueuedMessageEditOptions } from "../../types/conversation";
 import { QueuedMessageDock, type QueuedMessage } from "./QueuedMessageDock";
@@ -214,6 +215,7 @@ import { ChatLoginBand, type ChatLoginBandProps } from "./ChatLoginBand";
 import { ImportedAgentBlocked, McpServerBanner, ReauthBanner, ThreadStateBanner, VersionSwitchBanner } from "./ChatStatusBanners";
 import { HostAwayBanner } from "../HostOfflineStatus";
 import type { AgentBlock } from "../../lib/session-import";
+import type { OutgoingAttachment } from "../../lib/attachment-uploads";
 import { UsageLimitNotice } from "./UsageLimitNotice";
 import {
 	activeTurn,
@@ -656,7 +658,7 @@ export interface ChatWorkspaceProps {
 	 * can open. Absent means no attach control is offered — the fixture preview has
 	 * no worktree to write into.
 	 */
-	onStageAttachments?: (attachments: { mimeType: string; data: string; name?: string }[], signal?: AbortSignal) => Promise<string[]>;
+	onStageAttachments?: (attachments: OutgoingAttachment[], signal?: AbortSignal) => Promise<string[]>;
 	/** Staged files are uploaded to AO Cloud, up to maxBytes each; see ChatComposer. */
 	cloudAttachments?: { maxBytes: number };
 	/** The provider negotiated native image prompt blocks. */
@@ -1814,8 +1816,11 @@ function ChatWorkspaceContent({
 	// Claude Code compacts at the window picked for it, well before its model's full context.
 	const compactsAt = snapshot.harness === "claude-code" ? snapshot.settings?.autoCompactWindow : undefined;
 	const stableUsage = useStableValue(snapshot.usage);
-	// The account's quota, for the meter's warning pill from 75%.
-	const stableRateLimits = useStableValue(snapshot.rateLimits);
+	// Near the account's usage limit, a warning sign sits right of the model; its tooltip says why.
+	const nearQuota = useStableValue(nearQuotaWindow(snapshot.rateLimits));
+	// The running agent's limit; a pending switch names another agent, so the sign steps aside.
+	const runningQuota = agentSwitch?.pending ? undefined : nearQuota;
+	const quotaSign = runningQuota ? <QuotaSign quota={runningQuota} /> : null;
 	// A reroute describes the model it was recorded against; once the user picks a
 	// different model it no longer says anything about the next turn.
 	const currentModelReroute =
@@ -1833,7 +1838,8 @@ function ChatWorkspaceContent({
 			settingsReady && (onChooseSettings || onChooseConfigOption) ? (
 				<TurnSettingsBar
 					agentSwitch={agentSwitch}
-					beforePicker={agentSwitch ? <ContextMeter usage={stableUsage} rateLimits={stableRateLimits} compactsAt={compactsAt} /> : undefined}
+					beforePicker={agentSwitch ? <ContextMeter usage={stableUsage} compactsAt={compactsAt} /> : undefined}
+					afterPicker={quotaSign}
 					// While the agent wakes or starts; a chat reads "hibernated" until ready.
 					modelsLoading={settingsLoading}
 					lastModel={lastModel}
@@ -1880,7 +1886,7 @@ function ChatWorkspaceContent({
 			models,
 			agentSwitch,
 			stableUsage,
-			stableRateLimits,
+			nearQuota,
 			newWorkDisabled,
 			session?.provisionState,
 			onChooseConfigOption,
@@ -2469,7 +2475,10 @@ function ChatWorkspaceContent({
 										onContinue={canContinue && !queueEdit && !openingStarting ? onContinueTurn : undefined}
 										commandError={queueDraftError ?? (queueEdit && !queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId) ? "chat.draft.queueMissing" : commandError)}
 										settings={draftSettings ?? <>
-											{agentSwitch ? null : <ContextMeter usage={snapshot.usage} rateLimits={snapshot.rateLimits} compactsAt={compactsAt} />}
+											{agentSwitch ? null : <ContextMeter usage={snapshot.usage} compactsAt={compactsAt} />}
+											{/* Normally right of the model control; with no settings bar, beside the ring. */}
+											{composerSettings ? null : quotaSign}
+											<QuotaStatus quota={runningQuota} />
 											{composerSettings}
 										</>}
 										addMenuItems={agentSwitch ? (
@@ -3277,6 +3286,23 @@ const relatchBand = (node: HTMLElement) => Math.min(320, Math.round(node.clientH
 const CHAT_ESTIMATED_TURN_HEIGHT = 600;
 const CHAT_TURN_GAP = 18;
 const CHAT_INITIAL_VIEWPORT_HEIGHT = 800;
+/**
+ * Space the minimap needs between the text column and its track. The hovered
+ * dash grows 7px past the track's left edge; the rest keeps it off the text.
+ */
+const MINIMAP_TEXT_CLEARANCE_PX = 16;
+
+/**
+ * Whether the minimap, in the timeline's right gutter, would sit over the
+ * centered text column: the chat is too narrow for both.
+ */
+function minimapCrowdsText(track: HTMLElement, content: HTMLElement): boolean {
+	const trackRect = track.getBoundingClientRect();
+	const contentRect = content.getBoundingClientRect();
+	// Not laid out yet: nothing on screen to overlap.
+	if (!trackRect.width || !contentRect.width) return false;
+	return trackRect.left - contentRect.right < MINIMAP_TEXT_CLEARANCE_PX;
+}
 
 /**
  * The conversation transcript: turn grouping, live status, "Worked for", and
@@ -3828,13 +3854,11 @@ export function Timeline({
 		() => () => setChatDraftBoundary(draftScope.sessionId, "inline-edit", undefined),
 		[draftScope.sessionId],
 	);
-	// The inspector changes the minimap's visibility, but it must not cause this
-	// entire timeline to rerender. A live conversation can contain hundreds of
-	// DOM nodes, and inspector toggles are otherwise a broad synchronous commit.
-	// Keep that small accessibility/interaction boundary imperative instead.
-	const inspectorOpenRef = useRef(
-		inspectorIsOpen(useUiStore.getState().inspectorSessions, uiSessionId),
-	);
+	// True while the chat is too narrow for the minimap to sit beside the text.
+	// Resizes flip it, but they must not rerender this entire timeline: a live
+	// conversation can contain hundreds of DOM nodes. Keep that small
+	// accessibility/interaction boundary imperative instead.
+	const minimapCrowdedRef = useRef(false);
 	const turn = activeTurn(snapshot, { controllerStopped });
 	// The daemon refuses a retry while any turn is open, settled on screen or not.
 	const durableTurn = activeTurn(snapshot);
@@ -3851,10 +3875,9 @@ export function Timeline({
 			visible: boolean;
 		}>,
 	});
-	// Show turn ticks whenever the inspector is closed and there are human
-	// prompts — not only when the transcript overflows. Closing the rail
-	// widens chat; shorter histories (common on non-Codex harnesses) often
-	// stop overflowing and used to lose the minimap exactly then.
+	// Show turn ticks whenever there are human prompts — not only when the
+	// transcript overflows. A wider chat often fits a short history (common on
+	// non-Codex harnesses), and the minimap used to vanish exactly then.
 	const minimapEnabled = scrollbar.markers.length > 0;
 	// Replies rendered with the chat's first commit were already on screen
 	// before the switch; streamed text in them must not fade in again.
@@ -3863,8 +3886,8 @@ export function Timeline({
 		chatOpening.current = false;
 	}, []);
 	// The minimap appears once the opened chat is measured. That first reveal is
-	// part of opening the chat, so it is instant; only later changes (the inspector
-	// covering it) fade.
+	// part of opening the chat, so it is instant; only later changes (the chat
+	// narrowing past it) fade.
 	const [minimapRevealed, setMinimapRevealed] = useState(false);
 	useEffect(() => {
 		if (!minimapEnabled || minimapRevealed) return;
@@ -3974,32 +3997,42 @@ export function Timeline({
 		if (draftPersistenceAvailable && readChatSessionDraft(draftScope).inlineEditDelivery) return;
 		setMessageEdit(undefined);
 	}, [draftPersistenceAvailable, draftScope, snapshot.activeBranchId, snapshot.sessionId]);
-	useEffect(() => {
-		const setInspectorOpen = (isOpen: boolean) => {
-			inspectorOpenRef.current = isOpen;
+	// Measured before paint, so a chat that opens too narrow never flashes the
+	// minimap; then on every resize (a narrow window, split view, either sidebar).
+	useLayoutEffect(() => {
+		const setCrowded = (crowded: boolean) => {
+			minimapCrowdedRef.current = crowded;
 			const track = scrollTrack.current;
 			if (track) {
-				track.dataset.inspectorOpen = String(isOpen);
-				track.setAttribute("aria-hidden", String(isOpen));
-				track.tabIndex = minimapEnabled && !isOpen ? 0 : -1;
-				track.classList.toggle("cursor-pointer", minimapEnabled && !isOpen);
-				track.classList.toggle("pointer-events-none", !minimapEnabled || isOpen);
-				track.classList.toggle("opacity-100", minimapEnabled && !isOpen);
-				track.classList.toggle("opacity-0", !minimapEnabled || isOpen);
-				if (isOpen && document.activeElement === track) track.blur();
+				track.dataset.crowded = String(crowded);
+				track.setAttribute("aria-hidden", String(crowded));
+				track.tabIndex = minimapEnabled && !crowded ? 0 : -1;
+				track.classList.toggle("cursor-pointer", minimapEnabled && !crowded);
+				track.classList.toggle("pointer-events-none", !minimapEnabled || crowded);
+				track.classList.toggle("opacity-100", minimapEnabled && !crowded);
+				track.classList.toggle("opacity-0", !minimapEnabled || crowded);
+				if (crowded && document.activeElement === track) track.blur();
 			}
-			if (isOpen) {
+			if (crowded) {
 				drag.current = null;
 				if (hoveredMarkerRef.current !== null) setHoveredMarker(null);
 			}
 		};
-		setInspectorOpen(inspectorIsOpen(useUiStore.getState().inspectorSessions, uiSessionId));
-		return useUiStore.subscribe((state, previous) => {
-			const currentOpen = inspectorIsOpen(state.inspectorSessions, uiSessionId);
-			const previousOpen = inspectorIsOpen(previous.inspectorSessions, uiSessionId);
-			if (currentOpen !== previousOpen) setInspectorOpen(currentOpen);
+		const crowdsText = () => {
+			const track = scrollTrack.current;
+			const content = scrollContent.current;
+			return Boolean(minimapEnabled && track && content && minimapCrowdsText(track, content));
+		};
+		setCrowded(crowdsText());
+		const node = scroller.current;
+		if (!minimapEnabled || !node || typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(() => {
+			const crowded = crowdsText();
+			if (crowded !== minimapCrowdedRef.current) setCrowded(crowded);
 		});
-	}, [minimapEnabled, uiSessionId]);
+		observer.observe(node);
+		return () => observer.disconnect();
+	}, [minimapEnabled]);
 	// The chat works these out once, for its login band too. A page find jumped to
 	// brings turns of its own, and a side chat passes none: then they are worked out here.
 	const retryableTurns = useMemo(
@@ -5342,7 +5375,7 @@ export function Timeline({
 
 	function onScrollbarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
 		cancelScrollFollow();
-		if (!minimapEnabled || inspectorOpenRef.current) return;
+		if (!minimapEnabled || minimapCrowdedRef.current) return;
 		const track = scrollTrack.current;
 		const node = scroller.current;
 		if (!track || !node) return;
@@ -5368,7 +5401,7 @@ export function Timeline({
 	}
 
 	function onScrollbarPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-		if (!minimapEnabled || inspectorOpenRef.current) return;
+		if (!minimapEnabled || minimapCrowdedRef.current) return;
 		const active = drag.current;
 		const node = scroller.current;
 		const track = scrollTrack.current;
@@ -5405,7 +5438,7 @@ export function Timeline({
 
 	function onScrollbarWheel(event: ReactWheelEvent<HTMLDivElement>) {
 		cancelScrollFollow();
-		if (!minimapEnabled || inspectorOpenRef.current) return;
+		if (!minimapEnabled || minimapCrowdedRef.current) return;
 		const node = scroller.current;
 		if (!node) return;
 		event.preventDefault();
@@ -5415,7 +5448,7 @@ export function Timeline({
 
 	function onScrollbarKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
 		cancelScrollFollow();
-		if (!minimapEnabled || inspectorOpenRef.current) return;
+		if (!minimapEnabled || minimapCrowdedRef.current) return;
 		const node = scroller.current;
 		if (!node) return;
 		const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
@@ -5662,9 +5695,9 @@ export function Timeline({
 					ref={scrollTrack}
 					role="scrollbar"
 					data-testid="chat-conversation-minimap"
-					data-inspector-open={inspectorOpenRef.current}
-					tabIndex={minimapEnabled && !inspectorOpenRef.current ? 0 : -1}
-					aria-hidden={inspectorOpenRef.current || undefined}
+					data-crowded={minimapCrowdedRef.current}
+					tabIndex={minimapEnabled && !minimapCrowdedRef.current ? 0 : -1}
+					aria-hidden={minimapCrowdedRef.current}
 				aria-label="Conversation scrollbar"
 				aria-orientation="vertical"
 				aria-valuemin={0}
@@ -5677,7 +5710,7 @@ export function Timeline({
 				onWheel={onScrollbarWheel}
 				onKeyDown={onScrollbarKeyDown}
 				onFocus={() => {
-						if (!minimapEnabled || inspectorOpenRef.current || scrollbar.markers.length === 0) return;
+						if (!minimapEnabled || minimapCrowdedRef.current || scrollbar.markers.length === 0) return;
 					setHoveredMarker(
 						Math.min(
 							scrollbar.markers.length - 1,
@@ -5690,14 +5723,15 @@ export function Timeline({
 					className={cn(
 						"group/scroll absolute inset-y-3 right-1 z-10 w-6 touch-none rounded-full outline-none focus-visible:ring-1 focus-visible:ring-logo-accent/60",
 						minimapRevealed && "transition-opacity",
-						minimapEnabled && !inspectorOpenRef.current
+						minimapEnabled && !minimapCrowdedRef.current
 							? "cursor-pointer opacity-100"
 							: "pointer-events-none opacity-0",
-						"data-[inspector-open=true]:pointer-events-none data-[inspector-open=true]:opacity-0",
+						"data-[crowded=true]:pointer-events-none data-[crowded=true]:opacity-0",
 					)}
 				>
+					{/* Kept while crowded: widening the chat reveals the track without a rerender. */}
 					<div className="absolute inset-0 cursor-grab group-active/scroll:cursor-grabbing">
-						{minimapEnabled && !inspectorOpenRef.current
+						{minimapEnabled
 						? scrollbar.markers.map((marker, index) => {
 								const distance =
 									hoveredMarker === null

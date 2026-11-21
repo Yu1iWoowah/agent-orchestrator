@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudShareFile, CloudShareGrant, CloudShareInspection, CloudShareLink, CloudShareLinks, CloudSharePublishResult } from "../../shared/cloud-share";
 import { workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
 import { aoBridge } from "../lib/bridge";
-import { ShareArtifactButton, ShareArtifactMenuPopover, publishTitle, resetShareCachesForTests, useArtifactShareFile, useReconciledShareLinks } from "./ShareArtifactPopover";
+import { ShareArtifactButton, ShareArtifactMenuPopover, publishTitle, resetShareCachesForTests, useArtifactShareFile, useHostShareLinks, useReconciledShareLinks } from "./ShareArtifactPopover";
 import { TooltipProvider } from "./ui/tooltip";
 
 const mocks = vi.hoisted(() => ({
@@ -106,6 +106,28 @@ describe("ShareArtifactButton on a cloud session's file", () => {
 		expect(screen.getByText("Owner")).toBeTruthy();
 		// The toolbar button now reads Published.
 		expect(await screen.findByRole("button", { name: "Published: report.html" })).toBeTruthy();
+	});
+
+	it("says what a published page left out of the files it uses", async () => {
+		stub(inspection, links, { status: "published", replaced: false, share, pageFiles: { included: 2, skipped: 3, videos: 1, unsupported: false } });
+		const popover = await openPopover(cloudFile);
+		await within(popover).findByText("Published");
+		expect(popover.textContent).toContain("3 files this page uses weren't included, so the shared page won't show them. Videos can't be shared with a page yet.");
+	});
+
+	it("says a page's images were not included when Orchestrator Cloud cannot share them yet", async () => {
+		stub(inspection, links, { status: "published", replaced: false, share, pageFiles: { included: 0, skipped: 0, videos: 0, unsupported: true } });
+		const popover = await openPopover(cloudFile);
+		await within(popover).findByText("Published");
+		expect(popover.textContent).toContain("This page's images weren't included: Orchestrator Cloud can't share them with a page yet.");
+	});
+
+	it("says nothing more when a page included every file it uses", async () => {
+		stub(inspection, links, { status: "published", replaced: false, share, pageFiles: { included: 2, skipped: 0, videos: 0, unsupported: false } });
+		const popover = await openPopover(cloudFile);
+		await within(popover).findByText("Published");
+		expect(popover.textContent).not.toContain("weren't included");
+		expect(popover.textContent).not.toContain("wasn't included");
 	});
 
 	it("names the file without its extension", async () => {
@@ -837,6 +859,12 @@ describe("useArtifactShareFile", () => {
 		const untracked = renderHook(() => useArtifactShareFile({ sessionId: "sess-1", path: "notes.md", projectId: "proj-1" }), { wrapper });
 		expect(untracked.result.current).not.toHaveProperty("artifactId");
 	});
+
+	it("names a remote host's file by its host, so it is downloaded from there", () => {
+		const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;
+		const { result } = renderHook(() => useArtifactShareFile({ id: "art-1", hostId: "https://h-vm.useao.dev", sessionId: "sess-1", path: "deck.html", projectId: "proj-1" }), { wrapper });
+		expect(result.current).toEqual({ source: "host", hostId: "https://h-vm.useao.dev", sessionId: "sess-1", path: "deck.html", projectId: "proj-1", artifactId: "art-1" });
+	});
 });
 
 describe("useReconciledShareLinks", () => {
@@ -871,6 +899,22 @@ describe("useReconciledShareLinks", () => {
 		expect(result.current.get("https://pub.share.test/")).toBe("anyone");
 	});
 
+	it("marks a remote artifact published only when its link belongs to the current Cloud account", async () => {
+		vi.spyOn(aoBridge.cloudShare, "available").mockResolvedValue(true);
+		vi.spyOn(aoBridge.cloudShare, "list").mockImplementation(async () => ({ ...links, shares: mocks.userId === "u-1" ? [share] : [] }));
+		const record = { hostId: "host-a", sessionId: "session-1", path: "docs/report.html", url: share.viewerUrl!, access: "anyone" as const };
+		vi.spyOn(aoBridge.cloudShare, "hostLinks").mockResolvedValue([record]);
+		const client = new QueryClient();
+		const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+		const { result, rerender } = renderHook(() => useHostShareLinks(useReconciledShareLinks()), { wrapper });
+		await waitFor(() => expect(result.current).toEqual([{ ...record, access: "restricted" }]));
+		mocks.userId = "u-2";
+		rerender();
+		expect(result.current).toEqual([]);
+		await waitFor(() => expect(client.getQueriesData({ queryKey: ["host-share-links", mocks.baseUrl, "u-2"] })[0]?.[1]).toEqual([record]));
+		expect(result.current).toEqual([]);
+	});
+
 	it("shares one list read between surfaces mounted together", async () => {
 		mocks.baseUrl = "https://reconcile-shared.test";
 		vi.spyOn(aoBridge.cloudShare, "available").mockResolvedValue(true);
@@ -883,7 +927,9 @@ describe("useReconciledShareLinks", () => {
 		await waitFor(() => expect(first.result.current.size).toBe(1));
 		expect(second.result.current.get("https://viewer.test/artifact/abc")).toBe("restricted");
 		expect(list).toHaveBeenCalledTimes(1);
-		expect(invalidate).toHaveBeenCalledTimes(1);
+		// Once for the artifact lists, once for the links of remote hosts' files.
+		expect(invalidate).toHaveBeenCalledTimes(2);
+		expect(invalidate).toHaveBeenCalledWith({ queryKey: ["host-share-links"] });
 	});
 
 	it("asks for nothing while signed out", async () => {

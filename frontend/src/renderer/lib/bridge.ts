@@ -75,6 +75,7 @@ export const aoBridge: AoBridge =
 		},
 		theme: {
 			set: async () => undefined,
+			systemAppearance: async (): Promise<"light" | "dark"> => (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"),
 			persistTerminal: async () => undefined,
 			setWindowBackground: async () => undefined,
 			setWindowTranslucent: async () => undefined,
@@ -137,6 +138,7 @@ export const aoBridge: AoBridge =
 			list: async () => {
 				throw new Error("Sharing needs the Orchestrator desktop app.");
 			},
+			hostLinks: async () => [],
 			publish: async () => {
 				throw new Error("Sharing needs the Orchestrator desktop app.");
 			},

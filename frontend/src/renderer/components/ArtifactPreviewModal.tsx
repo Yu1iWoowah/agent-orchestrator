@@ -8,6 +8,7 @@ import { useCloudArtifactAccess, usePinnedArtifactUrl } from "../hooks/useCloudA
 import { useCloudCp } from "../hooks/useCloudCp";
 import { artifactContentUrl } from "../lib/artifact-content-url";
 import { artifactContext, artifactKey, type ArtifactRow } from "../lib/artifacts";
+import { LOCAL_HOST } from "../lib/hosts";
 import { useNavigateToSession } from "../lib/navigate-to-session";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
@@ -40,8 +41,8 @@ export function ArtifactPreviewModal({ artifact, projectName, onClose, pinId }: 
 	const openInSession = () => {
 		if (!artifact) return;
 		onClose();
-		requestWorkspaceFileOpen(artifact.sessionId, artifact.path, undefined, "artifact");
-		navigateToSession(artifact.projectId, artifact.sessionId);
+		requestWorkspaceFileOpen(artifact.sessionId, artifact.path, artifact.hostId, "artifact");
+		navigateToSession(artifact.projectId, artifact.sessionId, artifact.hostId ?? LOCAL_HOST);
 	};
 	return (
 		<Dialog open={Boolean(artifact)} onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -65,6 +66,7 @@ export function ArtifactPreviewModal({ artifact, projectName, onClose, pinId }: 
 							<ArtifactActionsMenu
 								artifact={artifact}
 								pinId={id}
+								hostId={artifact.hostId}
 								session={{ id: artifact.sessionId, cloud: artifact.cloud }}
 								iconOnly
 								verticalDots
@@ -106,8 +108,10 @@ function ArtifactPreviewBody({ artifact }: { artifact: ArtifactRow }) {
 	const { client: cloudClient } = useCloudCp(cloud);
 	const page = artifact.kind === "html" && artifact.inlineUrl && isInlineArtifactUrl(artifact.inlineUrl) ? artifact.inlineUrl : undefined;
 	const contentUrl = artifactContentUrl(artifact.sessionId, artifact.path, artifact.rawUrl);
-	// A file the agent rewrites while it is open shows the new content.
-	useArtifactFileChanges({ id: artifact.sessionId, cloud: artifact.cloud }, true);
+	// A file the agent rewrites while it is open shows the new content. The
+	// change stream is this computer's daemon's, so a remote host's file is
+	// not followed.
+	useArtifactFileChanges({ id: artifact.sessionId, cloud: artifact.cloud }, !artifact.hostId);
 	if (artifact.cloud) {
 		const orgId = artifact.cloud.orgId;
 		if (access.isError) return <PanelMessage action={<RetryButton onClick={() => { void access.refetch(); }} />}>{t("artifacts.accessError")}</PanelMessage>;
@@ -119,9 +123,13 @@ function ArtifactPreviewBody({ artifact }: { artifact: ArtifactRow }) {
 		if (artifact.kind === "html") return <CloudArtifactFrame onAccessRefused={accessRefused} title={artifact.name} url={pinned.url} />;
 		return <ArtifactFileView artifactName={artifact.name} artifactRoot={pinned.root} cloud onAccessRefused={accessRefused} path={artifact.path} rawUrl={pinned.url} readOnly sendMessage={async (message) => { await cloudClient.sendSessionMessage(orgId, artifact.sessionId, { text: message }); }} sessionId={artifact.sessionId} />;
 	}
+	// Another host's page has no inline origin here: it is framed, sandboxed, from its proxy's artifact origin.
+	if (artifact.kind === "html" && artifact.hostId && artifact.hostId !== LOCAL_HOST && artifact.rawUrl) {
+		return <CloudArtifactFrame key={`${artifact.rawUrl}:${artifact.updatedAt}`} source="host" title={artifact.name} url={artifact.rawUrl} />;
+	}
 	if (page) {
 		return <iframe className="h-full w-full border-0 bg-background" key={`${page}:${artifact.updatedAt}`} sandbox="allow-scripts allow-same-origin" src={page} title={artifact.name} />;
 	}
 	if (!contentUrl) return <PanelMessage>{t("artifactLink.noPreview")}</PanelMessage>;
-	return <ArtifactFileView artifactName={artifact.name} path={artifact.path} rawUrl={artifact.rawUrl} noFeedback={artifact.archived} readOnly sessionId={artifact.sessionId} />;
+	return <ArtifactFileView artifactName={artifact.name} hostId={artifact.hostId} path={artifact.path} rawUrl={artifact.rawUrl} noFeedback={artifact.archived} readOnly sessionId={artifact.sessionId} />;
 }

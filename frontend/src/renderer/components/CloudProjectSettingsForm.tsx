@@ -22,7 +22,7 @@ import { cloudProjectsQueryKey } from "../hooks/useWorkspaceQuery";
 import { CLOUD_AGENT_PROVIDERS, connectedCredentialType, credentialModelScope } from "../lib/cloud-agents";
 import { agentLabel } from "../lib/agent-options";
 import { coderWorkspaceNamePrefixFor, isValidCoderWorkspaceNamePrefix } from "../lib/coder-workspace-name";
-import { CODER_PROVIDER, projectSandboxProvider } from "../lib/cloud-offering";
+import { CODER_PROVIDER, ORCHESTRATOR_ON_CODER_FEATURE, projectSandboxProvider } from "../lib/cloud-offering";
 import { isCloudWorkspaceProject, isStandaloneCloudProject, projectAdditionalRepos, projectConfigText, projectRepositoryUrls, repoDirName } from "../lib/cloud-project-repos";
 import { CloudCpError, type CloudCpProject, type CloudCpProjectCoderConfig, type CloudCpProjectSettingsRequest } from "../lib/cloud-cp";
 import { CLOUD_SETTINGS_ATOMIC_PATHS, cloudProjectSettingsDraft, cloudProjectSettingsPatch, type CloudProjectRoleDraft, type CloudProjectSettingsDraft } from "../lib/cloud-project-settings";
@@ -103,8 +103,9 @@ function CloudSettingsAdapter({
 	// Coder settings belong only to a project that runs on Coder: the provider
 	// stored on the project, else the org's default, and only while the org's
 	// offering includes coder. Any other project (and every B2C org) sees none.
-	const offering = useCloudOffering();
+	const offering = useCloudOffering(true, project.orgId);
 	const usesCoder = offering.hasCoder && projectSandboxProvider(project.config, offering) === CODER_PROVIDER;
+	const orchestratorPlacement = usesCoder && offering.features.includes(ORCHESTRATOR_ON_CODER_FEATURE);
 	const standalone = isStandaloneCloudProject(project);
 	const additionalRepos = projectAdditionalRepos(project.config);
 	const workspace = isCloudWorkspaceProject(project);
@@ -120,17 +121,20 @@ function CloudSettingsAdapter({
 		queryClient.setQueryData(cloudProjectSettingsQueryKey(baseUrl, project.orgId, project.id), latest);
 	};
 	const save = async (values: ProjectSettingsDraft) => {
-		const patch = cloudProjectSettingsPatch(cloudProjectSettingsDraft(baseline.current), toCloudDraft(values));
+		const patch = cloudProjectSettingsPatch(cloudProjectSettingsDraft(baseline.current), toCloudDraft(values), orchestratorPlacement);
 		if (!Object.keys(patch).length) return { values: toEditorDraft(cloudProjectSettingsDraft(baseline.current)) };
 		const expected = settingsExpected(patch, snapshot(baseline.current), CLOUD_SETTINGS_ATOMIC_PATHS);
 		const latest = await client.getProject(project.orgId, project.id);
 		const paths = conflictingSettings(patch, expected, snapshot(latest.project), CLOUD_SETTINGS_ATOMIC_PATHS);
+		if (patch.config?.orchestratorSandboxProvider !== undefined && projectSandboxProvider(latest.project.config, offering) !== CODER_PROVIDER) {
+			paths.push("config.orchestratorSandboxProvider");
+		}
 		if (paths.length) throw new ProjectSettingsConflict(paths);
   let updated: CloudCpProject | undefined;
   try {
    updated = (await client.updateProjectSettings(project.orgId, project.id, patch)).project;
   } catch (error) {
-   if (patch.config?.coAuthorCommits === undefined || !coAuthorCommitsUnsupported(error)) throw error;
+   if (patch.config?.orchestratorSandboxProvider !== undefined || patch.config?.coAuthorCommits === undefined || !coAuthorCommitsUnsupported(error)) throw error;
    const { coAuthorCommits: _unsupported, ...config } = patch.config;
    const rest: CloudCpProjectSettingsRequest = { ...patch };
    if (Object.keys(config).length > 0) rest.config = config;
@@ -180,7 +184,8 @@ function CloudSettingsAdapter({
 		workspaceRepos={workspace ? projectRepositoryUrls(project).map((url) => ({ name: repoDirName(url), relativePath: repoDirName(url), repo: url })) : undefined}
    generalExtra={usesCoder || intakeVisible ? (draft, patch) => <>
     {intakeVisible ? <CloudIntakeStatus project={project} /> : null}
-    {usesCoder ? <CloudProjectCoderSettings project={project} value={draft.coder ?? { parameters: {}, workspaceNamePrefix: "" }} onChange={(coder) => patch({ coder })} /> : null}
+    {usesCoder ? <CloudProjectCoderSettings project={project} value={draft.coder ?? { parameters: {}, workspaceNamePrefix: "" }} onChange={(coder) => patch({ coder })}
+     placement={orchestratorPlacement ? { value: draft.orchestratorSandboxProvider ?? "freestyle", onChange: (orchestratorSandboxProvider) => patch({ orchestratorSandboxProvider }) } : undefined} /> : null}
    </> : undefined}
 			validateExtra={(draft) =>
 				usesCoder && !isValidCoderWorkspaceNamePrefix(draft.coder?.workspaceNamePrefix?.trim() ?? "")
@@ -223,10 +228,15 @@ export function CloudProjectCoderSettings({
 	project,
 	value,
 	onChange,
+	placement,
 }: {
 	project: CloudCpProject;
 	value: NonNullable<ProjectSettingsDraft["coder"]>;
 	onChange: (value: NonNullable<ProjectSettingsDraft["coder"]>) => void;
+	placement?: {
+		value: NonNullable<ProjectSettingsDraft["orchestratorSandboxProvider"]>;
+		onChange: (value: NonNullable<ProjectSettingsDraft["orchestratorSandboxProvider"]>) => void;
+	};
 }) {
 	const { t } = useTranslation();
 	const coder = coderConfigOf(project);
@@ -270,6 +280,19 @@ export function CloudProjectCoderSettings({
 				)}
 			</ProjectSettingsRow>
 			{coder?.size ? <ProjectSettingsValueRow label={t("settings.project.coderSize")} value={coder.size} /> : null}
+			{placement ? (
+				<SettingsRow label={t("settings.project.orchestratorSandbox.label")} description={t("settings.project.orchestratorSandbox.description")}>
+					<SettingsOptionMenu
+						aria-label={t("settings.project.orchestratorSandbox.label")}
+						value={placement.value}
+						onChange={placement.onChange}
+						options={[
+							{ value: "freestyle", label: t("settings.project.orchestratorSandbox.freestyle") },
+							{ value: "coder", label: t("settings.project.orchestratorSandbox.coder") },
+						]}
+					/>
+				</SettingsRow>
+			) : null}
 			{/* Workspace naming is a bring-your-own-Coder control; an existing
 		    prefix stays visible so it can still be cleared. */}
 			{orgCoderConfig != null || (coder?.workspaceNamePrefix?.trim() ?? "") !== "" ? (
@@ -402,6 +425,7 @@ function toEditorDraft(values: CloudProjectSettingsDraft): ProjectSettingsDraft 
 		workerEffort: values.worker.agentConfig.effort, orchestratorEffort: values.orchestrator.agentConfig.effort, reviewerEffort: values.reviewer.agentConfig.effort,
 		workerPermissions: values.worker.agentConfig.permissions, orchestratorPermissions: values.orchestrator.agentConfig.permissions, reviewerPermissions: values.reviewer.agentConfig.permissions,
 		coder: values.coder,
+		orchestratorSandboxProvider: values.orchestratorSandboxProvider,
 	};
 }
 
@@ -430,6 +454,7 @@ function toCloudDraft(values: ProjectSettingsDraft): CloudProjectSettingsDraft {
 	return {
 		displayName: values.displayName, defaultBranch: values.defaultBranch, sessionPrefix: values.sessionPrefix, autoReview: values.autoReview,
 		coder: values.coder ?? { parameters: {}, workspaceNamePrefix: "" },
+		orchestratorSandboxProvider: values.orchestratorSandboxProvider,
 		workersRequestReview: values.workersRequestReview ?? false,
 		coAuthorCommits: values.coAuthorCommits ?? true,
 		intake: { enabled: values.intakeEnabled, repo: values.intakeRepo, assignee: values.intakeAssignee },

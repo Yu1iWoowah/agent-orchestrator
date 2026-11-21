@@ -47,22 +47,26 @@ import {
 import { DocumentSheet } from "./chat/DocumentSheet";
 import { CatalogArtifactCard } from "./CatalogArtifactCard";
 import { deleteSessionArtifactFile } from "../hooks/useSessionWorkspaceFiles";
-import { cloudSessionsQueryKey, useWorkspaceQuery, workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
+import { cloudSessionsQueryKey, useRemoteWorkspaces, useWorkspaceQuery, workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
 import {
 	ARTIFACT_SHARINGS,
 	ARTIFACT_TYPES,
 	artifactChangeError,
 	artifactContext,
+	artifactLocation,
 	withKeptArtifacts,
 	canChangeSessionArtifacts,
 	groupArtifactsByProject,
 	withShareAccess, artifactType, artifactSharing,
+	hostArtifactLocation,
 	type ArtifactLocation,
 	type ArtifactRow,
 	type ArtifactSharing,
 	type ArtifactType,
 } from "../lib/artifacts";
 import { formatTimeCompact } from "../lib/format-time";
+import { LOCAL_HOST } from "../lib/hosts";
+import { useShellMaybe } from "../lib/shell-context";
 import { useNavigateToSession } from "../lib/navigate-to-session";
 import { cn } from "../lib/utils";
 import {
@@ -74,7 +78,7 @@ import {
 import { useUiStore } from "../stores/ui-store";
 import { CLOUD_PROJECT_KIND, STANDALONE_WORKSPACE_ID, type WorkspaceSummary } from "../types/workspace";
 import { DeferredArtifactActionsMenu } from "./ArtifactActionsMenu";
-import { useArtifactShareFile, useReconciledShareLinks } from "./ShareArtifactPopover";
+import { useArtifactShareFile, useHostShareLinks, useReconciledShareLinks } from "./ShareArtifactPopover";
 import { ArtifactGalleryCard, type ArtifactCardSelection } from "./ArtifactGalleryCard";
 import { ArtifactShareMark } from "./ArtifactShareMark";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -133,6 +137,14 @@ function ArtifactsGallery() {
 	const cloudArtifacts = useCloudOffering().artifacts;
 	const workspaceQuery = useWorkspaceQuery({ includeCloud: cloudArtifacts });
 	const workspaces = workspaceQuery.data;
+	// Every saved remote host, so an offline host's last list still shows.
+	const remoteHosts = useShellMaybe()?.remoteHosts;
+	const remoteHostIds = useMemo(() => remoteHosts?.map((host) => host.hostId), [remoteHosts]);
+	const remote = useRemoteWorkspaces({ cachedHostIds: remoteHostIds });
+	const remoteWorkspaces = remote.data;
+	const hostLabels = useMemo(() => new Map((remoteHosts ?? []).map((host) => [host.hostId, host.label])), [remoteHosts]);
+	const shareAccess = useReconciledShareLinks();
+	const hostShareLinks = useHostShareLinks(shareAccess);
 	const kept = useKeptArtifacts().data;
 	const noProjectName = t("artifacts.noProject");
 	const catalog = useArtifactCatalogs(workspaces);
@@ -167,7 +179,6 @@ function ArtifactsGallery() {
 		row: ArtifactRow & { connection: GalleryRow["connection"] };
 		projectName: string;
 	} | null>(null);
-    const shareAccess = useReconciledShareLinks();
     const publishedRows = useMemo(() => withShareAccess(groupArtifactsByProject(workspaces ?? [], t("artifacts.source.orchestrator")), shareAccess).flatMap((group) => group.rows), [workspaces, shareAccess, t]);
 	const groups = useMemo(
 		() =>
@@ -179,7 +190,7 @@ function ArtifactsGallery() {
 						catalog.data?.find((entry) => entry.projectId === project.id)?.items ?? [],
 					),
 				),
-				...legacyGalleryGroups(workspaces ?? [], catalog.connection),
+				...legacyGalleryGroups([...(workspaces ?? []), ...remoteWorkspaces], catalog.connection, hostShareLinks),
 			], catalog.connection, withKeptArtifacts([], kept, workspaces ?? [], noProjectName)).map((group) => ({ ...group, rows: group.rows.flatMap((row) => {
                 if (!isCatalogArtifact(row) || row.connection.kind !== "local" || row.target.kind !== "artifact") return [row];
                 const sessionId = row.target.sessionId;
@@ -195,7 +206,7 @@ function ArtifactsGallery() {
 							? 1
 							: a.id.localeCompare(b.id),
 			),
-		[catalog.projects, catalog.connection, catalog.data, workspaces, publishedRows, kept, noProjectName],
+		[catalog.projects, catalog.connection, catalog.data, workspaces, remoteWorkspaces, hostShareLinks, publishedRows, kept, noProjectName],
 	);
 	const allRows = useMemo(() => groups.flatMap((group) => group.rows), [groups]);
 	const complete = catalog.data !== undefined && catalog.data.every((entry) => !entry.loading);
@@ -231,7 +242,7 @@ function ArtifactsGallery() {
             .map((group) => ({ ...group, rows: group.rows.filter((row) => {
                 const artifact = artifactFor(row);
                 const sharing = artifact ? artifactSharing(artifact) : "private";
-                return (!location || (group.cloud ? "cloud" : "local") === location)
+                return (!location || artifactLocation({ hostId: group.hostId }, group) === location)
                     && (types.length === 0 || types.includes(artifactType(row)))
                     && (sharings.length === 0 || Boolean(sharing && sharings.includes(sharing)));
             }) })).filter((group) => group.rows.length > 0),
@@ -241,10 +252,10 @@ function ArtifactsGallery() {
 		() =>
 			visibleGroups
 				.flatMap((group) =>
-					group.rows.map((row) => ({ row, projectName: group.isScratchpad ? scratchpadName : group.name })),
+					group.rows.map((row) => ({ row, projectName: withHostLabel(group.isScratchpad ? scratchpadName : group.name, group.hostId && hostLabels.get(group.hostId)) })),
 				)
 				.sort((a, b) => newestGalleryFirst(a.row, b.row)),
-		[visibleGroups, scratchpadName],
+		[visibleGroups, scratchpadName, hostLabels],
 	);
 	const pinnedCards = useMemo(() => {
 		const byId = new Map(cards.map((card) => [galleryArtifactKey(card.row), card]));
@@ -257,14 +268,27 @@ function ArtifactsGallery() {
 	const orderedCards = [...pinnedCards, ...cards.filter(({ row }) => !pinnedKeys.has(galleryArtifactKey(row)))];
     const livePreviews = new Set(orderedCards.filter(({ row }) => {
         const artifact = artifactFor(row);
-        return artifact && ((artifact.kind === "html" && (artifact.cloud || (artifact.inlineUrl && artifact.rawUrl))) || (/\.pdf$/i.test(row.path) && (artifact.cloud || artifact.rawUrl)));
+        return artifact && ((artifact.kind === "html" && (artifact.cloud || (artifact.rawUrl && (artifact.inlineUrl || artifact.hostId)))) || (/\.pdf$/i.test(row.path) && (artifact.cloud || artifact.rawUrl)));
     }).slice(0, 4).map(({ row }) => galleryArtifactKey(row)));
-    const previewRow = preview ? { ...preview, row: { ...(publishedRows.find((row) => row.sessionId === preview.row.sessionId && row.path === preview.row.path) ?? preview.row), connection: preview.row.connection } } : null;
+    const previewRows = preview?.row.hostId ? allRows.filter((row): row is ArtifactRow & { connection: GalleryRow["connection"] } => !isCatalogArtifact(row)) : publishedRows;
+    const previewRow = preview ? { ...preview, row: { ...(previewRows.find((row) => row.sessionId === preview.row.sessionId && row.path === preview.row.path && row.hostId === preview.row.hostId && row.cloud?.orgId === preview.row.cloud?.orgId) ?? preview.row), connection: preview.row.connection } } : null;
 	const openPreview = (row: GalleryRow, projectName: string) => {
 		if (isCatalogArtifact(row)) {
 			if (reader) openReadingDocument(reader, row.target);
 		} else setPreview({ row, projectName });
 	};
+	const locationOptions: { value: ArtifactLocation | undefined; label: string }[] = [
+		{ value: undefined, label: t("artifacts.locationAll") },
+		{ value: "local", label: t("artifacts.locationLocal") },
+		// One per saved remote host, under the name the host is listed by.
+		...(remoteHosts ?? []).map((host) => ({ value: hostArtifactLocation(host.hostId), label: host.label })),
+		// Cloud artifacts show only where the control plane keeps them.
+		...(cloudArtifacts ? [{ value: "cloud" as const, label: t("artifacts.locationCloud") }] : []),
+	];
+	// Machines whose list did not load, among those shown: said so, with a retry, instead of
+	// leaving their artifacts silently missing.
+	const failedHosts = (remoteHosts ?? []).filter((host) => remote.failedHostIds.includes(host.hostId)
+		&& (location === undefined || location === hostArtifactLocation(host.hostId)));
 	const queryClient = useQueryClient();
 	const { client: cloudClient } = useCloudCp(cloudArtifacts);
 	const cloudUserId = useCloudMeUserId(cloudArtifacts);
@@ -324,15 +348,17 @@ function ArtifactsGallery() {
                 if (blocked || !artifact) return Promise.reject(new Error(blocked ?? t("artifacts.viewOnly")));
                 return artifact.cloud
                     ? cloudClient.deleteSessionArtifact(artifact.cloud.orgId, artifact.sessionId, artifact.path).catch((error: unknown) => { throw artifactChangeError(error, t("artifacts.viewOnly")); })
-                    : deleteSessionArtifactFile({ path: artifact.path, sessionId: artifact.sessionId });
+                    : deleteSessionArtifactFile({ path: artifact.path, sessionId: artifact.sessionId, hostId: artifact.hostId });
             }));
 			const deleted = rows.filter((_, index) => results[index]?.status === "fulfilled").map(galleryArtifactKey);
 			const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
 			const { unpinArtifact } = useArtifactsViewStore.getState();
 			for (const id of deleted) unpinArtifact(id);
 			setSelectedIds((current) => new Set([...current].filter((id) => !deleted.includes(id))));
+			const hostIds = new Set(rows.flatMap((row) => !isCatalogArtifact(row) && row.hostId && !row.cloud ? [row.hostId] : []));
 			await Promise.all([
 				queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost() }),
+				...[...hostIds].map((hostId) => queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) })),
 				...(rows.some((row) => !isCatalogArtifact(row) && row.kept) ? [queryClient.invalidateQueries({ queryKey: keptArtifactsQueryKey })] : []),
                 queryClient.invalidateQueries({ queryKey: ["artifact-catalogs", catalog.connection.kind, catalog.connection.identity] }),
 				...(rows.some((row) => !isCatalogArtifact(row) && row.cloud) ? [queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey })] : []),
@@ -485,10 +511,10 @@ function ArtifactsGallery() {
 										<DropdownMenuLabel>{t("artifacts.filterProject")}</DropdownMenuLabel>
 										<FilterOption checked={projectIds.length === 0} onToggle={() => selectProjects([])}>{t("artifacts.allProjects")}</FilterOption>
 										{groups
-											.filter((group) => !location || (group.cloud ? "cloud" : "local") === location)
+											.filter((group) => !location || artifactLocation({ hostId: group.hostId }, group) === location)
 											.map((group) => (
 												<FilterOption key={group.id} checked={projectIds.includes(group.id)} onToggle={() => selectProjects(toggled(projectIds, group.id))}>
-													<span className="truncate">{(group.isScratchpad ? scratchpadName : group.name)}</span>
+															<span className="truncate">{withHostLabel(group.isScratchpad ? scratchpadName : group.name, group.hostId && hostLabels.get(group.hostId))}</span>
 												</FilterOption>
 											))}
 										<DropdownMenuSeparator />
@@ -605,7 +631,7 @@ function ArtifactsGallery() {
                     [t("artifacts.filterSharing"), sharings.map((value) => t(`artifacts.sharing.${value}`)), () => setSharings([])],
                 ] as const).map(([label, values, clear]) => values.length ? <FilterChip key={label} label={label} value={values.join(", ")} removeLabel={t("artifacts.removeFilter", { filter: `${label}: ${values.join(", ")}` })} onRemove={clear} /> : null)}
                 <div role="group" aria-label={t("artifacts.location")}>
-                    {([undefined, "local", ...(cloudArtifacts ? ["cloud"] : [])] as const).map((value) => <Button key={value ?? "all"} type="button" variant="ghost" size="sm" aria-pressed={location === value} onClick={() => setLocation(value as ArtifactLocation | undefined)}>{t(value === "local" ? "artifacts.locationLocal" : value === "cloud" ? "artifacts.locationCloud" : "artifacts.locationAll")}</Button>)}
+                    {locationOptions.map(({ value, label }) => <Button key={value ?? "all"} type="button" variant="ghost" size="sm" aria-pressed={location === value} onClick={() => setLocation(value)}>{label}</Button>)}
                 </div>
                 {selecting ? <div role="group" aria-label={t("artifacts.selection")} className="flex items-center gap-2">
                     <span aria-live="polite">{t("artifacts.selectedCount", { count: selectedRows.length })}</span>
@@ -631,6 +657,12 @@ function ArtifactsGallery() {
 						}}
 					>
 						<div className="px-4 pb-4">
+							{failedHosts.map((host) => (
+								<div key={host.hostId} role="alert" className="mt-2 flex items-center gap-2 text-xs text-destructive">
+									<span className="min-w-0 truncate">{t("artifacts.hostLoadFailed", { host: host.label })}</span>
+									<Button type="button" size="sm" variant="quiet" onClick={() => void remote.refetch()}>{t("artifacts.hostLoadRetry")}</Button>
+								</div>
+							))}
 							{catalog.isFetching || workspaceQuery.isLoading ? (
 								<p role="status" className="py-2 text-sm text-muted-foreground">
 									{t("artifacts.loading")}
@@ -671,7 +703,7 @@ function ArtifactsGallery() {
 							) : null}
 							{!hasArtifacts && !incomplete && !workspaceQuery.isLoading ? (
 								<EmptyArtifacts workspaces={workspaces ?? []} />
-							) : cards.length === 0 && !catalog.isFetching ? (
+							) : cards.length === 0 && location && failedHosts.length > 0 ? null : cards.length === 0 && !catalog.isFetching ? (
 								<div className="py-8 text-center">
 									<p>{t(incomplete ? "artifacts.noLoadedMatches" : "artifacts.noMatches")}</p>
 									<Button variant="ghost" onClick={clearFilters}>
@@ -720,6 +752,11 @@ function ArtifactsGallery() {
 	);
 }
 
+/** A remote host's project name with the host's, so equal names on two machines tell apart. */
+function withHostLabel(name: string, hostLabel: string | false | undefined): string {
+	return hostLabel ? `${name} · ${hostLabel}` : name;
+}
+
 /** `values` with `value` added, or removed when it is already there. */
 function toggled<T>(values: readonly T[], value: T): readonly T[] {
 	return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
@@ -753,8 +790,8 @@ const ArtifactCard = memo(function ArtifactCard({ row, pinId, projectName, view,
 		onPreview(row, projectName);
 	};
 	const openInSession = () => {
-		requestWorkspaceFileOpen(row.sessionId, row.path, undefined, "artifact");
-		navigateToSession(row.projectId, row.sessionId);
+		requestWorkspaceFileOpen(row.sessionId, row.path, row.hostId, "artifact");
+		navigateToSession(row.projectId, row.sessionId, row.hostId ?? LOCAL_HOST);
 	};
 
 	if (view === "list") {
@@ -823,6 +860,7 @@ const ArtifactCard = memo(function ArtifactCard({ row, pinId, projectName, view,
 						{row.bundle ? null : <DeferredArtifactActionsMenu
 							artifact={row}
 						pinId={id}
+							hostId={row.hostId}
 							session={{ id: row.sessionId, cloud: row.cloud }}
 							iconOnly
 							share={share}
@@ -848,6 +886,7 @@ const ArtifactCard = memo(function ArtifactCard({ row, pinId, projectName, view,
 				<DeferredArtifactActionsMenu
 					artifact={row}
 							pinId={id}
+					hostId={row.hostId}
 					session={{ id: row.sessionId, cloud: row.cloud }}
 					iconOnly
 					share={share}

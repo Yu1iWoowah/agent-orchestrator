@@ -747,6 +747,58 @@ describe("Cloud project Coder template options", () => {
 	});
 });
 
+describe("Cloud orchestrator placement", () => {
+	const label = "Orchestrator runs on";
+	const offering = { providers: ["freestyle", "coder"], defaultProvider: "coder", billingMode: "contract", kind: "both", features: ["orchestrator-on-coder"] };
+	const save = () => fireEvent.submit(document.getElementById("project-settings-form")!);
+	const rename = async () => {
+		await userEvent.click(await screen.findByRole("button", { name: "Edit Project name" }));
+		fireEvent.change(screen.getByRole("textbox", { name: "Project name" }), { target: { value: "New name" } });
+	};
+
+	it("saves placement with the rest of the draft in one explicit write", async () => {
+		mocks.me.mockResolvedValue({ organizations: [], offering });
+		mount("general");
+		expect(await screen.findByRole("button", { name: label })).toHaveTextContent("Instant VM (default)");
+		await choose(label, "Coder");
+		await rename();
+		expect(mocks.patch).not.toHaveBeenCalled();
+		save();
+		await waitFor(() => expect(mocks.patch).toHaveBeenCalledExactlyOnceWith("org", "project", {
+			displayName: "New name", config: { orchestratorSandboxProvider: "coder" },
+		}));
+	});
+
+	it("does not offer or send placement when only a different organization declares it", async () => {
+		mocks.me.mockResolvedValue({ organizations: [
+			{ id: "other", offering },
+			{ id: "org", offering: { ...offering, features: [] } },
+		], activeOrganizationId: "other", offering });
+		mount("general");
+		expect(await screen.findByText("Coder template")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument();
+		await rename();
+		save();
+		await waitFor(() => expect(mocks.patch).toHaveBeenCalledExactlyOnceWith("org", "project", { displayName: "New name" }));
+	});
+
+	it.each(["conflict", "422"])("keeps the draft and leaves the persisted name alone on %s", async (failure) => {
+		mocks.me.mockResolvedValue({ organizations: [], offering });
+		const saves = vi.fn();
+		mount("general", saves);
+		await screen.findByRole("button", { name: label });
+		await choose(label, "Coder");
+		await rename();
+		if (failure === "conflict") project = { ...project, config: { ...project.config, orchestratorSandboxProvider: "coder" } };
+		else mocks.patch.mockRejectedValueOnce(new CloudCpError("Placement unavailable", { status: 422, code: "provider_unavailable" }));
+		save();
+		await waitFor(() => expect(saves.mock.lastCall?.[0].phase).toBe("failed"));
+		expect(mocks.patch).toHaveBeenCalledTimes(failure === "conflict" ? 0 : 1);
+		expect(project.displayName).toBe("Cloud project");
+		expect(screen.getByRole("textbox", { name: "Project name" })).toHaveValue("New name");
+	});
+});
+
 it("sends only orchestrator effort and refuses a stale same-leaf Cloud save", async () => {
 	project.config.orchestrator = { agent: "claude-code", agentConfig: { model: "orchestrator-model", effort: "high" } };
 	const states = vi.fn();
