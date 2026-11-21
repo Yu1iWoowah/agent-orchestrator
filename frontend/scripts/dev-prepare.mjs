@@ -193,6 +193,9 @@ export function daemonSourceFiles(root, work, { dryRun = false, run = capture } 
 		graph = goOutput(["list", "-mod=readonly", ...packages]);
 	}
 	for (const pkg of JSON.parse(`[${graph.replace(/\r?\n(?=\{)/g, ",\n")}]`)) {
+		// Even standard packages such as runtime/cgo can depend on headers or
+		// libraries outside Go's package file list and this checkout.
+		if (pkg.CgoFiles?.length || pkg.SwigFiles?.length || pkg.SwigCXXFiles?.length) return null;
 		if (pkg.Standard) continue;
 		if (!pkg.Module || !pkg.Dir) throw new Error("Go package provenance is unavailable");
 		if (!pkg.Module.Main && (!pkg.Module.Replace || pkg.Module.Replace.Version)) continue;
@@ -262,6 +265,7 @@ export function steps({ platform = process.platform, arch = process.arch, dryRun
 				const status = runGit(repoRoot, ["status", "--porcelain", "--untracked-files=normal"]);
 				if (!revision || status == null) return { uncacheable: "checkout revision is unavailable" };
 				const files = daemonSourceFiles(repoRoot, go.env.GOWORK, { dryRun });
+				if (!files) return { uncacheable: "CGO compiler inputs cannot be fully verified" };
 				const appVersion = JSON.parse(readFileSync(path.join(frontend, "package.json"), "utf8")).version;
 				return {
 					files: [...files, frontendFile("scripts/build-daemon.mjs"), frontendFile("scripts/go-version.mjs")],
@@ -372,11 +376,19 @@ function stepKey(step, platform, arch) {
 	};
 }
 
+function buildEnvironment(step) {
+	const go = step.name === "daemon" ? goToolchain() : null;
+	if (go?.env.CGO_ENABLED !== "1") return process.env;
+	// Go's own build cache also omits external CGO inputs. Rebuild rather
+	// than allowing that cache to stand in for an unkeyed daemon build.
+	return { ...process.env, GOFLAGS: `${go.env.GOFLAGS} -a`.trim() };
+}
+
 // Runs a build script with its output prefixed by the step name, so parallel
 // builds stay readable.
 function runBuild(step) {
 	return new Promise((resolve) => {
-		const child = spawn(process.execPath, step.command, { cwd: frontend, stdio: ["inherit", "pipe", "pipe"], windowsHide: true });
+		const child = spawn(process.execPath, step.command, { cwd: frontend, env: buildEnvironment(step), stdio: ["inherit", "pipe", "pipe"], windowsHide: true });
 		const prefix = (stream, target) => {
 			let pending = "";
 			stream.on("data", (chunk) => {
@@ -395,7 +407,7 @@ function runBuild(step) {
 }
 
 function runBuildInherited(step) {
-	const result = spawnSync(process.execPath, step.command, { cwd: frontend, stdio: "inherit", windowsHide: true });
+	const result = spawnSync(process.execPath, step.command, { cwd: frontend, env: buildEnvironment(step), stdio: "inherit", windowsHide: true });
 	return result.status === 0;
 }
 

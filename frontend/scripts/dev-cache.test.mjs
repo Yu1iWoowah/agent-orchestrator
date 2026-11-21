@@ -198,6 +198,43 @@ describe("keying", () => {
 		assert.match(complete, /daemon\s+build\s+no cached output for inputs [a-f0-9]{12}/);
 		assert.equal(readFileSync(`${work}.sum`, "utf8"), completeSum);
 	}, 15_000);
+
+	test.skipIf(process.platform !== "linux")("an external CGO header cannot yield a reusable daemon key", ({ skip }) => {
+		const scratch = realpathSync(tempDir());
+		const repo = path.join(scratch, "repo");
+		const header = path.join(scratch, "outside.h");
+		const env = {
+			...process.env,
+			GOWORK: "off", GOTOOLCHAIN: "local", GOFLAGS: "", GOENV: "off", GOPROXY: "off",
+			CGO_ENABLED: "1", CGO_CFLAGS: `-g -O2 -include "${header}"`,
+			AO_DEV_BUILD_CACHE: "1", AO_DEV_DAEMON_REUSE: "",
+		};
+		if (spawnSync("go", ["version"], { cwd: scratch, env }).error?.code === "ENOENT") skip();
+		const commands = ["ao", "ao-chat-host", "ao-mcp"];
+		for (const name of commands) mkdirSync(path.join(repo, "backend", "cmd", name), { recursive: true });
+		mkdirSync(path.join(repo, "frontend"));
+		writeFileSync(path.join(repo, "frontend", "package.json"), "{}\n");
+		writeFileSync(path.join(repo, "backend", "go.mod"), "module example.com/backend\n\ngo 1.22.0\n");
+		for (const name of commands) {
+			writeFileSync(path.join(repo, "backend", "cmd", name, "main.go"), 'package main\nimport _ "net"\nfunc main() {}\n');
+		}
+		const run = (command, args) => {
+			const result = spawnSync(command, args, { cwd: repo, env, encoding: "utf8" });
+			if (result.error) throw result.error;
+			assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+			return result.stdout;
+		};
+		run("git", ["init", "-q"]);
+		run("git", ["add", "."]);
+		run("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"]);
+		const prepare = fileURLToPath(new URL("./dev-prepare.mjs", import.meta.url));
+		const args = [prepare, "--worktree", repo, "--dry-run"];
+		writeFileSync(header, "/* valid header */\n");
+		const initial = run(process.execPath, args);
+		writeFileSync(header, '#error "external header changed"\n');
+		const changed = run(process.execPath, args);
+		for (const output of [initial, changed]) assert.match(output, /daemon\s+build\s+uncached: CGO compiler inputs/);
+	}, 15_000);
 });
 
 describe("import closure", () => {
