@@ -316,3 +316,35 @@ CLI 仍走 daemon HTTP，Cloud、HCG 與 `go.work` 保留 fork 原來源。LAN �
 | R2-I2 · .07／AC5 | 原 launch、data root、boot 與 PID namespace 仍可比對時，下一輪重取程序證據並原子補齊收據。重啟恢復沿用純觀察，缺來源或跨 boot 時保留占用。 | 首次程序探測失敗，後續證據恢復。同 daemon 可停止結算，重開 Engine 只補收據且不送訊號。 |
 | R2-I3 · .07／AC5 | Cancel 和兩種派送共用原子准入。取消先到時重讀 run 並阻止派送。已准入的派送沿用現有收尾。 | 在最後一次狀態讀取擋住 fresh Spawn 和 reused Notify。Cancel 回應後解除 barrier，兩條路都未派送。 |
 | R2-I4 · .01／AC2、AU1／AU2 | 開 writer 前唯讀比對實際 embedded migration 清冊。保留既有 runner 已支援的歷史收據，B 終態仍固定為 303 個核准 ID。 | 撤回的 report ID 與一般清冊外 ID 各自觸發拒絕。拒絕前後 SQLite 主檔、收據與 DDL 一致。 |
+
+### UPSYNC2 E 段（PR5）
+
+整合分支為 `ao/upsync2-design/upsync2-integration`。E 從 D 的 squash `bae906e48ab6e13c0313170c45f53bc91c57c04b` 開始。A 至 D 的來源以 Git 可重建，先使用 A [PR #134](https://github.com/Yu1iWoowah/agent-orchestrator/pull/134) 的逐路徑帳本及本文件的人工裁決，再看各段的範圍。
+
+| 基準 | SHA 或 Git 範圍 |
+| --- | --- |
+| F | `3beedae6eff6ea2299f2345a41a87b6fa7312658` |
+| U | `fc15acf55a68d530a4b71b5ee357ffd8a6ad36a8`，固定上游 150 個 commit |
+| A | `816d7820`，保留 F 與 U 的祖先 |
+| B | `816d7820..a8fc16c4` |
+| C | `a8fc16c4..222601ff` |
+| D | `222601ff..bae906e4` |
+| E | `bae906e4..<受測 E head>`，受測 HEAD、tree 與證據在 E 交件紀錄 |
+
+以 `git diff -M --raw <base> <head>` 核原樣、修改、新增、刪除、rename 與兩端 blob。若審 E 對 fork 的取捨，另看 `U..E`，按路徑去重，沿用 A 的原樣清單。E 追加以下人工差異。
+
+| 處置 | 依據與可核證結果 |
+| --- | --- |
+| 保留 fork Setup 和 `predev` | Q3-B。一般 `cd frontend && npm run dev` 仍重建。要用上游顯式暖機時先 `npm run dev:warm`，所有輸出準備完成後以 `npm run dev --ignore-scripts` 啟動該 checkout。 |
+| 暖機 daemon cache | F08。以實際 Go workspace、模組、本機 replace 及三個可執行檔的編譯／embed 閉包取 key。僅改 HCG 檔就不會命中舊 key。讀不到閉包或有越界時由原 build 接手。 |
+| 版本與 updater feed | F09。u5 版本固定為 `0.15.3-woowah.6.u5`，隨 manifest 與 lockfile 審查。`AO_RELEASE_REPO=Yu1iWoowah/agent-orchestrator` 為候選與正式打包的明確輸入。fork 的 u5 workflow 要求完整受審 SHA、三處版號一致。 |
+| 一個 helper 啟用點 | F05。沿 C 的 daemon、chat-host、MCP 與 host bundle 現有入口。E 核包內 bytes、實際執行和供應來源。 |
+| E0 | Q2-B。開工時 fork main 仍是 F，F 已是 D squash 的祖先。交件前再核；若前進立即交主控核祖先與 E0 條件。 |
+
+最終 PR 應由主控在 ready 或重觸發前設定既有 `ci:full`，確認 `full=true`、`macos=true`、`vitest=all`。實際 runner 須核 provider merge ref、雙親與 tree，並列各 lane 的 job 結論。整合分支沿 A 接線。兩層審查、CI 或大 PR 所需之證明不足，停在 ready 或 merge 前。
+
+預備凍結及交件時用 `git merge-base --is-ancestor <fork-main> <integration>` 和同指令核固定 U，再比對 `git merge-tree --write-tree <fork-main> <integration>` 與受驗 tree。若 main 已前進且未成為祖先，由主控一次保雙親合回。E 後續維持 squash，正式整合到 main 時保有 U 祖先。
+
+候選包由核定的 E revision 在乾淨 lab 建置，只抽取驗證。E 交件紀錄區分候選檔、SHA-256、內含的 daemon／helper、平台與 updater repo。正式包另由最終核定 SHA 重打，核實包裝、updater、sandbox、macOS 簽章驗證及隔離安裝入口。AU2 只使用名冊中的正式檔與 hash。
+
+依 `upsync2-pr5-release-1=e_without_au1`，本段只準備 AU1 計畫。真資料演練、timestamp 政策和 stable 安裝各待具名放行。若演練核出的政策需改程式，回 B 後重驗。AU2 在第一次寫入前用最新停寫備份重核政策、303 個確切 ID、DDL、停止收據與有效 owner。
