@@ -110,7 +110,7 @@ test("chat minimap does not make the session pane scroll horizontally", async ({
 	expect(pane.overflowX).toBe("hidden");
 });
 
-test("chat minimap stays while the chat has room beside the text, even with the inspector open", async ({ page }) => {
+test("chat minimap stays while the chat has room beside the text, even with the inspector open @P0", async ({ page }) => {
 	const minimap = page.getByTestId("chat-conversation-minimap");
 	await page.setViewportSize({ width: 1800, height: 900 });
 	await page.getByRole("button", { name: "Open inspector panel", exact: true }).last().click();
