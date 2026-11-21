@@ -19,7 +19,7 @@ type resumeOutcome struct {
 func startResume(t *testing.T, m *Manager, id domain.SessionID) (<-chan resumeOutcome, error) {
 	t.Helper()
 	done := make(chan resumeOutcome, 1)
-	_, err := m.StartResumeAgent(ctx, id, func(result RestoreResult, err error) {
+	_, err := m.StartResumeAgent(ctx, id, false, func(result RestoreResult, err error) {
 		done <- resumeOutcome{result: result, err: err}
 	})
 	return done, err
@@ -121,6 +121,29 @@ func TestStartResumeAgent_AnswersRefusalsWithoutBackgroundWork(t *testing.T) {
 	m, _, _ := newExitedResumeManager(t, &fakeRuntime{}, supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex"}}})
 	if _, err := startResume(t, m, "missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown session = %v, want ErrNotFound", err)
+	}
+}
+
+func TestStartResumeAgent_ChatStoppedForQuitStillWarmsOnOpen(t *testing.T) {
+	launcher := &recordingLauncher{}
+	m, st, _ := newChatManager(launcher)
+	seedChatResumeSession(st, domain.ActivityIdle)
+	rec := st.sessions["mer-1"]
+	rec.Metadata.ControllerGeneration = "before-quit"
+	st.sessions[rec.ID] = rec
+	ctx := t.Context()
+	if err := m.StopAgentsForQuit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	if _, err := m.StartResumeAgent(ctx, rec.ID, true, func(_ RestoreResult, err error) { done <- err }); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.WaitBackgroundWorkers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil || len(launcher.started) != 1 {
+		t.Fatalf("automatic resume after quit: %v, starts = %d", err, len(launcher.started))
 	}
 }
 

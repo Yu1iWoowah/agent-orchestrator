@@ -49,6 +49,7 @@ var (
 	ErrTerminated                    = errors.New("session: terminated")
 	ErrAgentExited                   = errors.New("session: agent exited")
 	ErrAgentNotExited                = errors.New("session: agent has not exited")
+	ErrChatExplicitlyExited          = errors.New("session: Chat worker was explicitly exited")
 	ErrAgentExitInProgress           = errors.New("session: agent exit is already in progress")
 	ErrIncompleteHandle              = errors.New("session: incomplete teardown handle")
 	// ErrProjectNotResolvable means the spawn's project has no usable repo
@@ -376,6 +377,7 @@ type Store interface {
 	CommitClientRequestSession(ctx context.Context, id domain.SessionID) error
 	UpdateSession(ctx context.Context, rec domain.SessionRecord) error
 	UpdateSessionModel(ctx context.Context, id domain.SessionID, model string) (bool, error)
+	SetSessionChatExplicitExit(ctx context.Context, id domain.SessionID, generation string) (bool, error)
 	RenameSessionIfDisplayName(ctx context.Context, id domain.SessionID, currentDisplayName, displayName string, updatedAt time.Time) (bool, error)
 	// UpdateSessionArtifactOutput is the only write that changes artifact_dir
 	// and session_output_type on an existing row; UpdateSession leaves them
@@ -3626,6 +3628,10 @@ func (m *Manager) relaunchRestoredSession(ctx context.Context, rec domain.Sessio
 // terminal identity, and provider-native conversation remain available for an
 // exact ResumeAgentWithMode call.
 func (m *Manager) ExitAgent(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	return m.exitAgent(ctx, id, true)
+}
+
+func (m *Manager) exitAgent(ctx context.Context, id domain.SessionID, explicit bool) (domain.SessionRecord, error) {
 	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, id)
 	if err != nil {
 		return domain.SessionRecord{}, err
@@ -3665,6 +3671,15 @@ func (m *Manager) ExitAgent(ctx context.Context, id domain.SessionID) (domain.Se
 	}
 	if err := m.recordAgentExited(ctx, rec); err != nil {
 		return domain.SessionRecord{}, fmt.Errorf("exit agent %s: record exit: %w", id, err)
+	}
+	if explicit && rec.Mode == domain.SessionModeChat && rec.Kind == domain.KindWorker {
+		marked, err := m.store.SetSessionChatExplicitExit(ctx, id, rec.Metadata.ControllerGeneration)
+		if err != nil {
+			return domain.SessionRecord{}, fmt.Errorf("exit agent %s: record explicit Chat exit: %w", id, err)
+		}
+		if !marked {
+			return domain.SessionRecord{}, fmt.Errorf("exit agent %s: %w", id, ErrSwitchSourceStopUnconfirmed)
+		}
 	}
 	exited, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
@@ -3836,7 +3851,7 @@ func (m *Manager) WakeHibernatedChat(ctx context.Context, id domain.SessionID) e
 		if rec.HibernatedAt == nil && m.chat != nil && m.chat.HasLiveChatController(id) {
 			return nil
 		}
-		_, err = m.resumeAgentWithMode(ctx, id, false)
+		_, err = m.resumeAgentWithMode(ctx, id, false, true)
 		if errors.Is(err, ErrResumeInProgress) {
 			m.agentOpMu.Lock()
 			operation = m.agentOperations[id]
@@ -3854,7 +3869,7 @@ func (m *Manager) WakeHibernatedChat(ctx context.Context, id domain.SessionID) e
 // identity and never changes the durable terminated flag as an intermediate
 // step.
 func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (result RestoreResult, err error) {
-	return m.resumeAgentWithMode(context.WithValue(ctx, explicitTUISettingsRecoveryKey{}, true), id, false)
+	return m.resumeAgentWithMode(context.WithValue(ctx, explicitTUISettingsRecoveryKey{}, true), id, false, false)
 }
 
 // StartResumeAgent answers only the resume preconditions that need no waiting,
@@ -3864,13 +3879,14 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 // runs in the background, so the request is not bound by the REST deadline.
 // done receives the outcome once; ResumeAgentWithMode re-checks every
 // precondition, so a change between the two reports there.
-func (m *Manager) StartResumeAgent(ctx context.Context, id domain.SessionID, done func(RestoreResult, error)) (domain.SessionRecord, error) {
+func (m *Manager) StartResumeAgent(ctx context.Context, id domain.SessionID, automatic bool, done func(RestoreResult, error)) (domain.SessionRecord, error) {
 	rec, err := m.checkResumeAgent(ctx, id)
 	if err != nil {
 		return domain.SessionRecord{}, fmt.Errorf("resume agent %s: %w", id, err)
 	}
 	m.runInBackground(func() {
-		result, err := m.ResumeAgentWithMode(m.backgroundContext, id)
+		ctx := context.WithValue(m.backgroundContext, explicitTUISettingsRecoveryKey{}, true)
+		result, err := m.resumeAgentWithMode(ctx, id, false, automatic)
 		if err == nil && result.Session.ProvisionState.IsProvisioning() {
 			result, err = m.awaitRetriedChatSpawn(m.backgroundContext, id, result)
 		}
@@ -3955,7 +3971,7 @@ func (m *Manager) checkResumeAgent(ctx context.Context, id domain.SessionID) (do
 
 // resumeAgentWithMode preserves strict native-history intent for automatic
 // retries, including update stops that have no stale-binary failure marker.
-func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory bool) (result RestoreResult, err error) {
+func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, requireNativeHistory, automatic bool) (result RestoreResult, err error) {
 	ctx, releaseReplacement, err := m.beginReplacementResume(ctx, id)
 	if err != nil {
 		return RestoreResult{}, err
@@ -3993,6 +4009,9 @@ func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, 
 	}
 	if !ok {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrNotFound)
+	}
+	if automatic && rec.ChatExplicitlyExited() {
+		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrChatExplicitlyExited)
 	}
 	if rec.HibernatedAt != nil && m.persistentHostReconcileDone != nil {
 		select {

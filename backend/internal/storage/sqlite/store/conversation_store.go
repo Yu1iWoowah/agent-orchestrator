@@ -830,6 +830,9 @@ func (s *Store) commitChatSpawn(
 				return fmt.Errorf("project native provider history: %w", err)
 			}
 		}
+		if err := q.ClearSessionChatExplicitExit(ctx, rec.ID); err != nil {
+			return err
+		}
 		if err := updateSessionRow(ctx, q, rec); err != nil {
 			return fmt.Errorf("commit Chat session owner: %w", err)
 		}

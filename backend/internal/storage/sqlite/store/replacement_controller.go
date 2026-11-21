@@ -94,6 +94,9 @@ func (s *Store) CommitChatControllerReady(ctx context.Context, ready domain.Sess
 		if err != nil {
 			return err
 		}
+		if err := q.ClearSessionChatExplicitExit(ctx, ready.ID); err != nil {
+			return err
+		}
 		if err := q.UpdateSession(ctx, recordToUpdate(ready)); err != nil {
 			return err
 		}

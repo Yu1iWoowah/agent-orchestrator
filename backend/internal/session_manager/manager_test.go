@@ -214,6 +214,18 @@ func (f *fakeStore) SetSessionRuntimeReleased(_ context.Context, id domain.Sessi
 	f.sessions[id] = rec
 	return true, nil
 }
+func (f *fakeStore) SetSessionChatExplicitExit(_ context.Context, id domain.SessionID, generation string) (bool, error) {
+	rec, ok := f.sessions[id]
+	if !ok || generation == "" || rec.Metadata.ControllerGeneration != generation ||
+		rec.Mode != domain.SessionModeChat || rec.Kind != domain.KindWorker ||
+		rec.Activity.State != domain.ActivityExited || rec.IsTerminated {
+		return false, nil
+	}
+	rec.Metadata.RuntimeReleasedLaunchID = "chat:" + generation
+	rec.HibernatedAt = nil
+	f.sessions[id] = rec
+	return true, nil
+}
 func (f *fakeStore) UpdateSessionModel(_ context.Context, id domain.SessionID, model string) (bool, error) {
 	if f.updateSessionErr != nil {
 		return false, f.updateSessionErr

@@ -440,7 +440,7 @@ func (f *fakeSessionService) ExitAgent(_ context.Context, id domain.SessionID) (
 	return sessionsvc.ExitAgentOutcome{Session: s}, nil
 }
 
-func (f *fakeSessionService) StartResumeAgent(_ context.Context, id domain.SessionID) (domain.Session, error) {
+func (f *fakeSessionService) StartResumeAgent(_ context.Context, id domain.SessionID, _ bool) (domain.Session, error) {
 	s := f.sessions[id]
 	if f.resumeStatus == nil {
 		f.resumeStatus = map[domain.SessionID]sessionsvc.ResumeAgentStatus{}

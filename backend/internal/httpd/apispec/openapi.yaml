@@ -17594,6 +17594,14 @@ paths:
         schema:
           description: Session identifier, e.g. project-1.
           type: string
+      - description: Whether this resume comes from passive viewing. Omit for an explicit
+          Resume agent action.
+        in: query
+        name: automatic
+        schema:
+          description: Whether this resume comes from passive viewing. Omit for an
+            explicit Resume agent action.
+          type: boolean
       responses:
         "202":
           content:
@@ -17601,6 +17609,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ResumeAgentResponse'
           description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
         "404":
           content:
             application/json:
@@ -26220,6 +26234,10 @@ components:
           type: boolean
         branchState:
           $ref: '#/components/schemas/SessionBranchState'
+        chatExplicitlyExited:
+          description: Whether the current Chat worker was explicitly stopped and
+            requires a manual resume.
+          type: boolean
         chatProviderPreserved:
           type: boolean
         createdAt:

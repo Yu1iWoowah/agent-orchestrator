@@ -89,7 +89,7 @@ import { isArchivedSession } from "../lib/standalone-archive";
 import { hasTrustedApiBaseUrl } from "../lib/api-client";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
 import { useEdgeFade } from "../hooks/useEdgeFade";
-import { canResumeAgent, resumeAgentOnOpen, useCanResumeAgent } from "../hooks/useCanResumeAgent";
+import { canAutoResumeAgent, resumeLocalAgent, useCanResumeAgent } from "../hooks/useCanResumeAgent";
 import { cloudSessionsQueryKey, workspaceQueryKey, workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
 import { useCloudOffering } from "../hooks/useCloudOffering";
 import { conversationQueryKey, conversationQueryOptions } from "../hooks/useConversation";
@@ -2863,7 +2863,7 @@ const SessionRow = memo(function SessionRow({
 	// Hover only warms an explicitly adopted local session; other sessions stay read-only.
 	const resumeTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 	const canPrefetchChat = session.mode === "chat" && !session.cloud && !active && !listIsDragging && !reorder?.isDragging;
-	const canWarmAgent = canPrefetchChat && !session.hostId && session.needsResume === false && canResumeAgent(session);
+	const canWarmAgent = canPrefetchChat && !session.hostId && session.needsResume === false && canAutoResumeAgent(session);
     useEffect(() => () => { clearTimeout(hoverTimerRef.current); clearTimeout(resumeTimerRef.current); }, [canPrefetchChat, canWarmAgent]);
 	const prefetchConversation = () => {
 		if (!canPrefetchChat || (!session.hostId && !hasTrustedApiBaseUrl()) || queryClient.getQueryData(conversationQueryKey(session.id, session.hostId))) return;
@@ -2972,7 +2972,11 @@ const SessionRow = memo(function SessionRow({
 							onMouseEnter={() => {
 								if (!canPrefetchChat) return;
 								hoverTimerRef.current = setTimeout(prefetchConversation, 100);
-                                if (canWarmAgent && hasTrustedApiBaseUrl()) resumeTimerRef.current = setTimeout(() => { void resumeAgentOnOpen(session.id, refreshWorkspaces).catch(() => undefined); }, 300);
+								if (canWarmAgent && hasTrustedApiBaseUrl()) {
+									resumeTimerRef.current = setTimeout(() => {
+										void resumeLocalAgent(session.id, refreshWorkspaces, "automatic").catch(() => undefined);
+									}, 300);
+								}
 							}}
 							onMouseLeave={() => {
 								clearTimeout(hoverTimerRef.current);

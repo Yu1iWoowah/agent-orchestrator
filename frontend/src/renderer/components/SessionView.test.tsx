@@ -1292,7 +1292,7 @@ describe("SessionView", () => {
 		expect(chatSurfaceTransitionRenders[0]).toBe(true);
 		await waitFor(() => expect(resumeAgentPostMock).toHaveBeenCalledTimes(1));
 		expect(resumeAgentPostMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", {
-			params: { path: { sessionId: "sess-1" } },
+			params: { path: { sessionId: "sess-1" }, query: { automatic: true } },
 		});
 		await waitFor(() => expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "false"));
 		view.rerender(<StrictMode><SessionView sessionId="sess-1" /></StrictMode>);
@@ -1316,7 +1316,7 @@ describe("SessionView", () => {
 		expect(chatSurfaceTransitionRenders[0]).toBe(true);
 		await waitFor(() => expect(resumeAgentPostMock).toHaveBeenCalledTimes(2));
 		expect(resumeAgentPostMock).toHaveBeenLastCalledWith("/api/v1/sessions/{sessionId}/resume-agent", {
-			params: { path: { sessionId: "sess-2" } },
+			params: { path: { sessionId: "sess-2" }, query: { automatic: true } },
 		});
 	});
 
@@ -1328,7 +1328,7 @@ describe("SessionView", () => {
 		const view = render(<StrictMode><SessionView sessionId="sess-1" /></StrictMode>);
 		await waitFor(() => expect(resumeAgentPostMock).toHaveBeenCalledTimes(1));
 		expect(resumeAgentPostMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", {
-			params: { path: { sessionId: "sess-1" } },
+			params: { path: { sessionId: "sess-1" }, query: { automatic: true } },
 		});
 		view.rerender(<StrictMode><SessionView sessionId="sess-1" /></StrictMode>);
 		await act(async () => {});
@@ -1384,6 +1384,23 @@ describe("SessionView", () => {
 		session.activity = { state: "exited", lastActivityAt: "" };
 		return session;
 	}
+
+	it("keeps an explicitly exited Chat readable on open and selected-page restore", async () => {
+		const session = exitedSession("chat");
+		session.chatExplicitlyExited = true;
+		try {
+			const view = render(<SessionView sessionId="sess-1" />);
+			await act(async () => {});
+			expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "false");
+			view.unmount();
+			render(<SessionView sessionId="sess-1" />);
+			await act(async () => {});
+			expect(screen.getByTestId("chat-surface")).toHaveAttribute("data-transitioning", "false");
+			expect(resumeAgentPostMock).not.toHaveBeenCalled();
+		} finally {
+			delete session.chatExplicitlyExited;
+		}
+	});
 
 	it("follows a resume the daemon is already running instead of starting another", async () => {
 		exitedSession("chat");

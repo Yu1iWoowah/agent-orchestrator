@@ -91,7 +91,7 @@ type commander interface {
 	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error)
 	RunBackgroundTask(ctx context.Context, id domain.SessionID, systemPrompt, prompt string) (string, error)
 	RestoreWithMode(ctx context.Context, id domain.SessionID) (sessionmanager.RestoreResult, error)
-	StartResumeAgent(ctx context.Context, id domain.SessionID, done func(sessionmanager.RestoreResult, error)) (domain.SessionRecord, error)
+	StartResumeAgent(ctx context.Context, id domain.SessionID, automatic bool, done func(sessionmanager.RestoreResult, error)) (domain.SessionRecord, error)
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 	RequestKill(ctx context.Context, id domain.SessionID) (sessionmanager.KillResult, error)
 	RetireForReplacement(ctx context.Context, id domain.SessionID) error
@@ -191,10 +191,12 @@ type ResumeAgentStatus struct {
 // resumeAgentOperation is the in-memory record of one resume-agent request;
 // a daemon restart forgets it.
 type resumeAgentOperation struct {
-	state    ResumeAgentState
-	mode     RestoreModeView
-	err      error
-	finished *time.Time
+	automatic      bool
+	explicitQueued bool
+	state          ResumeAgentState
+	mode           RestoreModeView
+	err            error
+	finished       *time.Time
 }
 
 // ExitAgentOutcome reports the still-live AO session after only its agent
@@ -1181,22 +1183,27 @@ func (s *Service) ExitAgent(ctx context.Context, id domain.SessionID) (ExitAgent
 // StartResumeAgent admits a relaunch of an exited agent without restoring a
 // terminated session or recreating its workspace. It answers the preconditions
 // that need no waiting and returns while the relaunch runs in the background;
-// ResumeAgentStatus reports its outcome. A session with a resume still running
-// answers the existing in-progress conflict.
-func (s *Service) StartResumeAgent(ctx context.Context, id domain.SessionID) (domain.Session, error) {
+// ResumeAgentStatus reports its outcome. An automatic operation can carry one
+// explicit request that arrives while it is running.
+func (s *Service) StartResumeAgent(ctx context.Context, id domain.SessionID, automatic bool) (domain.Session, error) {
 	s.resumeAgentsMu.Lock()
 	previous := s.resumeAgents[id]
 	if previous != nil && previous.state == ResumeAgentRunning {
+		if previous.automatic && !automatic && !previous.explicitQueued {
+			previous.explicitQueued = true
+			s.resumeAgentsMu.Unlock()
+			return s.Get(ctx, id)
+		}
 		s.resumeAgentsMu.Unlock()
 		return domain.Session{}, toAPIError(fmt.Errorf("resume agent %s: %w", id, sessionmanager.ErrResumeInProgress))
 	}
-	op := &resumeAgentOperation{state: ResumeAgentRunning}
+	op := &resumeAgentOperation{state: ResumeAgentRunning, automatic: automatic}
 	if s.resumeAgents == nil {
 		s.resumeAgents = map[domain.SessionID]*resumeAgentOperation{}
 	}
 	s.resumeAgents[id] = op
 	s.resumeAgentsMu.Unlock()
-	rec, err := s.manager.StartResumeAgent(ctx, id, func(res sessionmanager.RestoreResult, err error) {
+	rec, err := s.manager.StartResumeAgent(ctx, id, automatic, func(res sessionmanager.RestoreResult, err error) {
 		s.finishResumeAgent(id, op, res, err)
 	})
 	if err != nil {
@@ -1215,19 +1222,33 @@ func (s *Service) StartResumeAgent(ctx context.Context, id domain.SessionID) (do
 }
 
 func (s *Service) finishResumeAgent(id domain.SessionID, op *resumeAgentOperation, res sessionmanager.RestoreResult, err error) {
+	ctx := s.backgroundContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	state, mode, mapped := ResumeAgentSucceeded, restoreModeView(res.Mode), error(nil)
 	if err != nil {
-		ctx := s.backgroundContext
-		if ctx == nil {
-			ctx = context.Background()
-		}
 		state, mode, mapped = ResumeAgentFailed, "", s.resumeAgentError(ctx, id, err)
-		s.emitRelaunchFailed(ctx, "resume_agent", id, err, mapped)
 	}
 	finished := s.now()
 	s.resumeAgentsMu.Lock()
+	if op.automatic && op.explicitQueued && errors.Is(err, sessionmanager.ErrChatExplicitlyExited) {
+		// Keep the original status running while the queued explicit request
+		// goes through the same manager admission, after the passive one ended.
+		op.automatic = false
+		s.resumeAgentsMu.Unlock()
+		if _, startErr := s.manager.StartResumeAgent(ctx, id, false, func(res sessionmanager.RestoreResult, err error) {
+			s.finishResumeAgent(id, op, res, err)
+		}); startErr != nil {
+			s.finishResumeAgent(id, op, sessionmanager.RestoreResult{}, startErr)
+		}
+		return
+	}
 	op.state, op.mode, op.err, op.finished = state, mode, mapped, &finished
 	s.resumeAgentsMu.Unlock()
+	if err != nil && !errors.Is(err, sessionmanager.ErrChatExplicitlyExited) {
+		s.emitRelaunchFailed(ctx, "resume_agent", id, err, mapped)
+	}
 }
 
 // ResumeAgentStatus reports the session's latest resume-agent request since the
@@ -2164,6 +2185,8 @@ func mapSessionError(err error) error {
 	case errors.Is(err, sessionmanager.ErrAgentNotExited):
 		return apierr.Conflict("AGENT_NOT_EXITED",
 			"The agent is still running; only exited agents can be resumed", nil)
+	case errors.Is(err, sessionmanager.ErrChatExplicitlyExited):
+		return apierr.Conflict("CHAT_EXPLICITLY_EXITED", "The Chat worker was explicitly exited. Use Resume agent to start it.", nil)
 	case errors.Is(err, sessionmanager.ErrSessionOpenElsewhere):
 		return apierr.Conflict("SESSION_OPEN_ELSEWHERE", sessionmanager.ErrSessionOpenElsewhere.Error(), nil)
 	case errors.Is(err, sessionmanager.ErrResumeInProgress):

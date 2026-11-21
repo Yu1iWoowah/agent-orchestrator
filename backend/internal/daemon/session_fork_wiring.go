@@ -170,7 +170,7 @@ func wireSessionFork(store *sqlite.Store, sessionSvc *sessionsvc.Service, mgr se
 				return err
 			}
 			resume := func(ctx context.Context, id domain.SessionID) error {
-				_, err := sessionSvc.StartResumeAgent(ctx, id)
+				_, err := sessionSvc.StartResumeAgent(ctx, id, false)
 				return err
 			}
 			if err := tellPRMoved(ctx, messenger.Send, queue, resume, from, message); err != nil {
