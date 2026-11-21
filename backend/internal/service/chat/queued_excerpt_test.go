@@ -157,14 +157,16 @@ func TestQueuedExcerptValidationFailureContinuesDrain(t *testing.T) {
 			if stale.State != domain.TurnStateQueued {
 				t.Fatalf("excerpt state = %s, want queued", stale.State)
 			}
-			send("next valid")
+			next := send("next valid")
 			send("last valid")
 			changed.changed.Store(true)
 			h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted,
 				ProviderTurnID: active.ProviderTurnID, TurnState: domain.TurnStateCompleted})
 			snapshot = h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 				states := turnStateByText(t, s)
-				return states["stale excerpt"] == domain.TurnStateFailed && states["next valid"] == domain.TurnStateRunning && states["last valid"] == domain.TurnStateQueued
+				sent, _ := turnByID(s, next.ID)
+				return states["stale excerpt"] == domain.TurnStateFailed && states["next valid"] == domain.TurnStateRunning &&
+					states["last valid"] == domain.TurnStateQueued && h.conv.sendCallCount() == 3 && sent.ProviderTurnID != ""
 			})
 			// Typed messages take one turn each, so the last one waits its turn.
 			if state := turnStateByText(t, snapshot)["last valid"]; state != domain.TurnStateQueued {
@@ -175,11 +177,12 @@ func TestQueuedExcerptValidationFailureContinuesDrain(t *testing.T) {
 					t.Fatalf("failure reason = %q", turn.ErrorMessage)
 				}
 			}
+			sent, _ := turnByID(snapshot, next.ID)
 			h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted,
-				ProviderTurnID: "provider-turn-3", TurnState: domain.TurnStateCompleted})
+				ProviderTurnID: sent.ProviderTurnID, TurnState: domain.TurnStateCompleted})
 			snapshot = h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 				states := turnStateByText(t, s)
-				return states["next valid"] == domain.TurnStateCompleted && states["last valid"] == domain.TurnStateRunning
+				return states["next valid"] == domain.TurnStateCompleted && states["last valid"] == domain.TurnStateRunning && h.conv.sendCallCount() == 4
 			})
 			if turnStateByText(t, snapshot)["stale excerpt"] != domain.TurnStateFailed {
 				t.Fatal("later drains retried the stale turn")

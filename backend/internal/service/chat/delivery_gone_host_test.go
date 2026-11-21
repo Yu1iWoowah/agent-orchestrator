@@ -592,6 +592,10 @@ func TestGoneHostAttemptNoLongerBlocksHibernationOrVersionRefresh(t *testing.T) 
 				}
 				return false
 			})
+			// Completion is durable before the projector finishes under the dispatch lock.
+			if err := h.svc.DrainQueued(ctx, testSession); err != nil {
+				t.Fatal(err)
+			}
 			conv.replaceProviderHost()
 			var stopped bool
 			var stopErr error
@@ -610,8 +614,8 @@ func TestGoneHostAttemptNoLongerBlocksHibernationOrVersionRefresh(t *testing.T) 
 				h.advance(refreshIdle)
 				stopped, stopErr = h.svc.HibernateChatForVersionRefresh(ctx, testSession, refreshIdle)
 			}
-			if stopErr != nil || !stopped {
-				t.Fatalf("%s blocked by a gone host's attempt: stopped=%v err=%v", path, stopped, stopErr)
+			if stopErr != nil || !stopped || conv.calls.Load() != 1 {
+				t.Fatalf("%s blocked by a gone host's attempt: stopped=%v err=%v provider calls=%d", path, stopped, stopErr, conv.calls.Load())
 			}
 			saved, err := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, turn.ID)
 			if err != nil || !saved.ExecutionSettled || saved.ErrorCode != "CHAT_DELIVERY_HOST_GONE_SETTLED" || saved.AttentionID != "" {
