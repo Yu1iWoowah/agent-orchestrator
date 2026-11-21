@@ -16,7 +16,8 @@
 // backend is unchanged). --dry-run prints the plan without changing anything.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -115,7 +116,7 @@ function goToolchain() {
 // Go supplies the effective package graph, including generated and ignored
 // files selected by //go:embed. Resolve local workspace modules and replaces
 // before asking Go to load that graph. An unknown input disables reuse.
-export function daemonSourceFiles(root, work, run = capture) {
+export function daemonSourceFiles(root, work, { dryRun = false, run = capture } = {}) {
 	const backend = path.join(root, "backend");
 	const canonicalRoot = realpathSync(root);
 	const files = new Set();
@@ -131,8 +132,8 @@ export function daemonSourceFiles(root, work, run = capture) {
 		if (!optional || existsSync(file)) checkRelative(canonicalRoot, realpathSync(file));
 		files.add(rel);
 	};
-	const goJSON = (args) => {
-		const result = run("go", args, { cwd: backend, env: { ...process.env, GOPROXY: "off" }, maxBuffer: 32 * 1024 * 1024 });
+	const goOutput = (args, env = {}) => {
+		const result = run("go", args, { cwd: backend, env: { ...process.env, GOPROXY: "off", ...env }, maxBuffer: 32 * 1024 * 1024 });
 		if (!result) throw new Error("Go build inputs could not be resolved");
 		return result;
 	};
@@ -146,13 +147,13 @@ export function daemonSourceFiles(root, work, run = capture) {
 			}
 		}
 	};
-	if (work && work !== "off") {
-		const workspace = path.resolve(root, work);
+	const workspace = work && work !== "off" ? path.resolve(root, work) : null;
+	if (workspace) {
 		add(workspace);
 		add(`${workspace}.sum`, true);
 		const base = path.dirname(workspace);
 		if (existsSync(path.join(base, "vendor"))) throw new Error("Go workspace has a vendor directory");
-		const config = JSON.parse(goJSON(["work", "edit", "-json", workspace]));
+		const config = JSON.parse(goOutput(["work", "edit", "-json", workspace]));
 		addReplaces(config, base);
 		for (const { DiskPath: dir } of config.Use ?? []) moduleDirs.add(path.resolve(base, dir));
 	}
@@ -160,13 +161,37 @@ export function daemonSourceFiles(root, work, run = capture) {
 		const mod = path.join(dir, "go.mod");
 		add(mod);
 		add(path.join(dir, "go.sum"), true);
-		addReplaces(JSON.parse(goJSON(["mod", "edit", "-json", mod])), dir);
+		addReplaces(JSON.parse(goOutput(["mod", "edit", "-json", mod])), dir);
 	}
 
 	const sourceFields = ["GoFiles", "EmbedFiles", "SFiles", "SysoFiles"];
 	const foreignFields = ["CgoFiles", "CFiles", "CXXFiles", "MFiles", "HFiles", "FFiles", "SwigFiles", "SwigCXXFiles"];
 	const fields = ["Dir", "Module", "Standard", ...sourceFields, ...foreignFields].join(",");
-	const graph = goJSON(["list", "-mod=readonly", "-deps", `-json=${fields}`, "./cmd/ao", "./cmd/ao-chat-host", "./cmd/ao-mcp"]);
+	const packages = ["-deps", `-json=${fields}`, "./cmd/ao", "./cmd/ao-chat-host", "./cmd/ao-mcp"];
+	let graph;
+	if (dryRun && workspace) {
+		// Workspace mode can write go.work.sum even with -mod=readonly. Go
+		// rejects writes to overlaid sums, allowing an incomplete graph to fall
+		// back to a build in the dry-run plan without modifying the checkout.
+		const tempRoot = realpathSync(tmpdir());
+		const relative = path.relative(canonicalRoot, tempRoot);
+		if (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`)) {
+			throw new Error("Go dry-run temp directory is inside this checkout");
+		}
+		const temp = mkdtempSync(path.join(tempRoot, "ao-go-dry-run-"));
+		try {
+			const sum = `${workspace}.sum`;
+			const copy = path.join(temp, "go.work.sum");
+			const overlay = path.join(temp, "overlay.json");
+			writeFileSync(copy, existsSync(sum) ? readFileSync(sum) : "");
+			writeFileSync(overlay, JSON.stringify({ Replace: { [sum]: copy } }));
+			graph = goOutput(["list", "-mod=readonly", `-overlay=${overlay}`, ...packages], { GOWORK: workspace });
+		} finally {
+			rmSync(temp, { recursive: true, force: true });
+		}
+	} else {
+		graph = goOutput(["list", "-mod=readonly", ...packages]);
+	}
 	for (const pkg of JSON.parse(`[${graph.replace(/\r?\n(?=\{)/g, ",\n")}]`)) {
 		if (pkg.Standard) continue;
 		if (!pkg.Module || !pkg.Dir) throw new Error("Go package provenance is unavailable");
@@ -214,7 +239,7 @@ function daemonHelpers(win) {
 
 // Every predev step, in the order the old chain ran them. `inputs` returns the
 // key material, or { uncacheable: reason } to always run the real build.
-export function steps({ platform = process.platform, arch = process.arch } = {}) {
+export function steps({ platform = process.platform, arch = process.arch, dryRun = false } = {}) {
 	const darwin = platform === "darwin";
 	const win = platform === "win32";
 	return [
@@ -236,7 +261,7 @@ export function steps({ platform = process.platform, arch = process.arch } = {})
 				const revision = runGit(repoRoot, ["rev-parse", "HEAD"])?.trim();
 				const status = runGit(repoRoot, ["status", "--porcelain", "--untracked-files=normal"]);
 				if (!revision || status == null) return { uncacheable: "checkout revision is unavailable" };
-				const files = daemonSourceFiles(repoRoot, go.env.GOWORK);
+				const files = daemonSourceFiles(repoRoot, go.env.GOWORK, { dryRun });
 				const appVersion = JSON.parse(readFileSync(path.join(frontend, "package.json"), "utf8")).version;
 				return {
 					files: [...files, frontendFile("scripts/build-daemon.mjs"), frontendFile("scripts/go-version.mjs")],
@@ -437,7 +462,7 @@ function ensureDependencies({ dryRun, env }) {
 export async function prepare({ dryRun = false, env = process.env, platform = process.platform, arch = process.arch } = {}) {
 	const started = Date.now();
 	if (!ensureDependencies({ dryRun, env })) return 1;
-	const all = steps({ platform, arch });
+	const all = steps({ platform, arch, dryRun });
 
 	if (env.AO_DEV_BUILD_CACHE === "0") {
 		log("AO_DEV_BUILD_CACHE=0: running every build step without the cache");

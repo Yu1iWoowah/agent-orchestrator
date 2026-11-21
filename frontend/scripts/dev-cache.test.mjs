@@ -1,8 +1,10 @@
 // @vitest-environment node
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, test } from "vitest";
 import {
 	assertIgnoredOutputs,
@@ -101,7 +103,7 @@ describe("keying", () => {
 				{ Module: { Replace: { Path: "../components/hcg" } }, Dir: local, GoFiles: ["reader.go"], EmbedFiles: ["embedded.rules"] },
 			].map((pkg) => JSON.stringify(pkg, null, 2)).join("\n");
 		};
-		const files = daemonSourceFiles(root, "selected.work", run);
+		const files = daemonSourceFiles(root, "selected.work", { run });
 		assert.ok(files.includes(path.join("components", "hcg", "go.mod")));
 		assert.ok(files.includes("selected.work.sum"));
 		const original = hashFiles(root, files);
@@ -122,7 +124,7 @@ describe("keying", () => {
 			if (args[0] === "work") return JSON.stringify({ Use: [{ DiskPath: "../outside" }] });
 			return "{}";
 		};
-		assert.throws(() => daemonSourceFiles(root, "go.work", run), /outside this checkout/);
+		assert.throws(() => daemonSourceFiles(root, "go.work", { run }), /outside this checkout/);
 	});
 
 	test("a vendored workspace cannot reuse a daemon keyed on module sources", () => {
@@ -130,8 +132,72 @@ describe("keying", () => {
 		mkdirSync(path.join(root, "workspace", "vendor"), { recursive: true });
 		writeFileSync(path.join(root, "workspace", "go.work"), "workspace");
 		const run = () => assert.fail("must reject the vendor directory before probing Go");
-		assert.throws(() => daemonSourceFiles(root, path.join("workspace", "go.work"), run), /vendor directory/);
+		assert.throws(() => daemonSourceFiles(root, path.join("workspace", "go.work"), { run }), /vendor directory/);
 	});
+
+	test.skipIf(process.platform === "win32")("dev:warm dry run preserves checkout bytes when Go would add workspace checksums", ({ skip }) => {
+		const scratch = realpathSync(tempDir());
+		const toolEnv = { ...process.env, GOWORK: "off", GOTOOLCHAIN: "local", GOFLAGS: "", GOENV: "off" };
+		for (const command of ["go", "zip"]) {
+			if (spawnSync(command, [command === "go" ? "version" : "-v"], { cwd: scratch, env: toolEnv }).error?.code === "ENOENT") skip();
+		}
+		const repo = path.join(scratch, "repo");
+		const zipRoot = path.join(scratch, "archive");
+		const dependency = "example.com/probe";
+		const version = "v1.0.0";
+		const archiveModule = path.join(zipRoot, `${dependency}@${version}`);
+		const proxy = path.join(scratch, "proxy");
+		const versions = path.join(proxy, dependency, "@v");
+		const write = (file, contents) => {
+			mkdirSync(path.dirname(file), { recursive: true });
+			writeFileSync(file, contents);
+		};
+		const run = (command, args, cwd, env) => {
+			const result = spawnSync(command, args, { cwd, env, encoding: "utf8", windowsHide: true });
+			if (result.error) throw result.error;
+			assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+			return result.stdout;
+		};
+		const mod = `module ${dependency}\n\ngo 1.22.0\n`;
+		write(path.join(archiveModule, "go.mod"), mod);
+		write(path.join(archiveModule, "probe.go"), "package probe\n");
+		write(path.join(versions, `${version}.mod`), mod);
+		write(path.join(versions, `${version}.info`), JSON.stringify({ Version: version, Time: "2024-01-01T00:00:00Z" }));
+		run("zip", ["-q", "-r", path.join(versions, `${version}.zip`), `${dependency}@${version}`], zipRoot);
+		const goEnv = {
+			...toolEnv,
+			GOMODCACHE: path.join(scratch, "modcache"), GOPROXY: pathToFileURL(proxy).href,
+			GOSUMDB: "off", GOPRIVATE: "", GONOPROXY: "none", GONOSUMDB: "*",
+		};
+		run("go", ["mod", "download", `${dependency}@${version}`], scratch, { ...goEnv, GOFLAGS: "-modcacherw" });
+		goEnv.GOPROXY = "off";
+		const work = path.join(repo, "go.work");
+		write(work, "go 1.22.0\n\nuse ./backend\n");
+		write(`${work}.sum`, "");
+		write(path.join(repo, "backend/go.mod"), `module example.com/backend\n\ngo 1.22.0\n\nrequire ${dependency} ${version}\n`);
+		for (const command of ["ao", "ao-chat-host", "ao-mcp"]) {
+			write(path.join(repo, `backend/cmd/${command}/main.go`), `package main\nimport _ "${dependency}"\nfunc main() {}\n`);
+		}
+		for (const file of ["package.json", "package-lock.json"]) write(path.join(repo, "frontend", file), "{}\n");
+		run("git", ["init", "-q"], repo);
+		run("git", ["add", "."], repo);
+		run("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"], repo);
+		const tracked = run("git", ["ls-files", "-z"], repo).split("\0").filter(Boolean);
+		const before = tracked.map((file) => readFileSync(path.join(repo, file)));
+		const env = { ...goEnv, GOWORK: work, AO_DEV_BUILD_CACHE: "1", AO_DEV_DAEMON_REUSE: "" };
+		const warm = fileURLToPath(new URL("./dev-warm.mjs", import.meta.url));
+		const warmArgs = [warm, "--worktree", repo, "--dry-run"];
+		const incomplete = run(process.execPath, warmArgs, repo, env);
+		assert.match(incomplete, /daemon\s+build\s+uncached: could not hash inputs/);
+		assert.deepEqual(tracked.map((file) => readFileSync(path.join(repo, file))), before);
+		assert.equal(run("git", ["status", "--porcelain"], repo), "");
+		run("go", ["list", "-mod=readonly", "-deps", "./cmd/ao"], path.join(repo, "backend"), env);
+		const completeSum = readFileSync(`${work}.sum`, "utf8");
+		assert.match(completeSum, /example\.com\/probe v1\.0\.0 h1:/);
+		const complete = run(process.execPath, warmArgs, repo, env);
+		assert.match(complete, /daemon\s+build\s+no cached output for inputs [a-f0-9]{12}/);
+		assert.equal(readFileSync(`${work}.sum`, "utf8"), completeSum);
+	}, 15_000);
 });
 
 describe("import closure", () => {
