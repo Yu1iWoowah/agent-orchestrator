@@ -1,4 +1,5 @@
 import { ProjectSettingsConflict } from "../lib/project-settings-patch";
+import type { CloudCpOrchestratorSandboxProvider } from "../lib/cloud-cp";
 import { AgentAccountPicker } from "./AgentAccountPicker";
 import { agentAccountProviderFor } from "../hooks/useAgentAccounts";
 import { useMutation } from "@tanstack/react-query";
@@ -25,6 +26,7 @@ import { Button } from "./ui/button";
 
 export type ProjectSettingsDraft = {
 	coder?: { workspaceNamePrefix: string; parameters: Record<string, string> };
+	orchestratorSandboxProvider?: CloudCpOrchestratorSandboxProvider;
 	accountSettings?: {
 		projectId: string;
 		worker: string;

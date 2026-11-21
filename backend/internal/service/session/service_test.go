@@ -6127,7 +6127,7 @@ func TestToSessionWithFactsCanonicalAliasRunSupersedesOlderAliasRun(t *testing.T
 		},
 		{
 			SessionID: rec.ID, Harness: "claude-code", PRURL: newURL,
-			Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved,
+			Status: domain.ReviewRunCompleted, Verdict: domain.VerdictApproved,
 			ID: "run-new", CreatedAt: rec.UpdatedAt.Add(time.Minute),
 		},
 	}
@@ -6749,10 +6749,13 @@ func TestDeleteExpiredDeletesSessionsArchivedLongEnough(t *testing.T) {
 		{ID: "mer-shared", ArchivedAt: now.AddDate(0, 0, -40)},
 		{ID: "mer-recent", ArchivedAt: now.AddDate(0, 0, -29)},
 	}}
+	for _, archived := range store.archived {
+		store.sessions[archived.ID] = domain.SessionRecord{ID: archived.ID, IsTerminated: true}
+	}
 	mgr := &deletingCommander{fakeCommander: &fakeCommander{}, refuse: map[domain.SessionID]error{
 		"mer-shared": fmt.Errorf("delete mer-shared: %w", domain.ErrSessionHistoryShared),
 	}}
-	svc := NewWithDeps(Deps{Manager: mgr, Store: store})
+	svc := NewWithDeps(Deps{Manager: mgr, Store: store, DataDir: t.TempDir()})
 	svc.clock = func() time.Time { return now }
 
 	if err := svc.DeleteExpired(ctx, 0); err != nil || len(mgr.deleted) != 0 {

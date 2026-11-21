@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, Loader2, Share } from "@/components/app-icons";
 import {
 	type CloudShareAccess,
@@ -9,8 +9,10 @@ import {
 	type CloudShareInspection,
 	type CloudShareLink,
 	type CloudShareLinks,
+	type CloudSharePageFiles,
 	type CloudSharePublishResult,
 	type CloudShareSession,
+	type HostShareLink,
 	artifactShareUrl,
 	isPrivateShare,
 	sameShareFingerprint,
@@ -54,6 +56,8 @@ type Phase =
 		error?: string;
 		/** The link was just made private: say what that does to people without an invite. */
 		narrowed?: boolean;
+		/** What publishing a page did with the files it uses: say what it left out. */
+		pageFiles?: CloudSharePageFiles;
 		/**
 		 * The file changed since it was published to this link: Republish puts
 		 * the newer version on it.
@@ -99,8 +103,9 @@ function usePublishing(key: string): boolean {
 	return useSyncExternalStore(subscribePending, () => pendingShares.has(key));
 }
 
-function pendingKey(baseUrl: string, file: Pick<CloudShareFile, "sessionId" | "path">): string {
-	return JSON.stringify([baseUrl, file.sessionId, file.path]);
+function pendingKey(baseUrl: string, file: Pick<CloudShareFile, "sessionId" | "path" | "hostId">): string {
+	// A remote host's session ID can equal one on this computer.
+	return JSON.stringify(file.hostId ? [baseUrl, file.sessionId, file.path, file.hostId] : [baseUrl, file.sessionId, file.path]);
 }
 
 /** The panel names a file without its extension: `report.html` is `report`. A dotfile keeps its name. */
@@ -303,11 +308,41 @@ export function useReconciledShareLinks(): ShareAccessByUrl {
 		if (reconciledReads.has(read)) return;
 		reconciledReads.add(read);
 		read
-			.then(() => queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost() }))
+			.then(() => Promise.all([
+				queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost() }),
+				queryClient.invalidateQueries({ queryKey: HOST_SHARE_LINKS_KEY }),
+			]))
 			// Offline or signed out: the records stay as they are until the next list.
 			.catch(() => undefined);
 	}, [available, signedIn, scope, queryClient, revision]);
 	return available && signedIn && cached ? shareAccessOf(cached.links) : NO_SHARE_ACCESS;
+}
+
+const HOST_SHARE_LINKS_KEY = ["host-share-links"] as const;
+const NO_HOST_SHARE_LINKS: readonly HostShareLink[] = [];
+
+/**
+ * The links this computer published remote hosts' files to, for the files'
+ * Published marks: a remote daemon has no copy of the records, so its list
+ * carries no link. Read again whenever a panel changes a link.
+ */
+export function useHostShareLinks(confirmedAccess: ShareAccessByUrl): readonly HostShareLink[] {
+	const available = useShareAvailable();
+	const { baseUrl, signedIn, scope } = useShareAccess();
+	const revision = useSyncExternalStore(subscribeShareLinks, () => shareLinksRevision);
+	const query = useQuery({
+		queryKey: [...HOST_SHARE_LINKS_KEY, baseUrl, scope.account, revision],
+		queryFn: () => aoBridge.cloudShare.hostLinks(baseUrl),
+		enabled: Boolean(available) && signedIn,
+		staleTime: 60_000,
+	});
+	// Device records can survive sign-out. Wait for the current account's link list.
+	return useMemo(() => available && signedIn && query.data
+		? query.data.flatMap((link) => {
+			const access = confirmedAccess.get(link.url);
+			return access ? [{ ...link, access }] : [];
+		})
+		: NO_HOST_SHARE_LINKS, [available, signedIn, query.data, confirmedAccess]);
 }
 
 /** The control plane URL and whether the person is signed in to share. */
@@ -332,7 +367,7 @@ export function useShareAccess(): { baseUrl: string; signedIn: boolean; scope: S
  * and not once they are shared. A Scratchpad file belongs to the Scratchpad
  * workspace, as in the session view.
  */
-export function useArtifactShareFile(artifact: Pick<ArtifactRow, "id" | "cloud" | "sessionId" | "path" | "projectId" | "sha256"> | null): Omit<CloudShareFile, "baseUrl" | "shareId"> | undefined {
+export function useArtifactShareFile(artifact: Pick<ArtifactRow, "id" | "cloud" | "hostId" | "sessionId" | "path" | "projectId" | "sha256"> | null): Omit<CloudShareFile, "baseUrl" | "shareId"> | undefined {
 	const cloudUserId = useCloudMeUserId(Boolean(artifact?.cloud));
 	if (!artifact) return undefined;
 	// The artifact's ID survives a rename, so the renamed file finds its link.
@@ -344,7 +379,10 @@ export function useArtifactShareFile(artifact: Pick<ArtifactRow, "id" | "cloud" 
 		const version = artifact.sha256 ? { fingerprint: artifact.sha256 } : {};
 		return { source: "cloud", orgId: artifact.cloud.orgId, sessionId: artifact.sessionId, path: artifact.path, projectId: "", ...artifactId, ...version };
 	}
-	return { sessionId: artifact.sessionId, path: artifact.path, projectId: artifact.projectId ?? STANDALONE_WORKSPACE_ID, ...artifactId };
+	const projectId = artifact.projectId ?? STANDALONE_WORKSPACE_ID;
+	// A remote host's file is downloaded from the host through its proxy, then uploaded from here.
+	if (artifact.hostId) return { source: "host", hostId: artifact.hostId, sessionId: artifact.sessionId, path: artifact.path, projectId, ...artifactId };
+	return { sessionId: artifact.sessionId, path: artifact.path, projectId, ...artifactId };
 }
 
 const POPOVER_CLASS = "w-[min(22rem,90vw)] p-4";
@@ -423,7 +461,7 @@ export function ShareArtifactMenuPopover({ file, name, open, onOpenChange, inten
 
 /** Whether the link serves an older version of the file, or its old name: Republish would update it. */
 function linkOutdated(share: Pick<CloudShareLink, "name">, inspection: CloudShareInspection): boolean {
-	return share.name !== inspection.name ||
+	return share.name !== inspection.name || Boolean(inspection.pageFilesChanged) ||
 		Boolean(inspection.publishedFingerprint && !sameShareFingerprint(inspection.publishedFingerprint, inspection.fingerprint));
 }
 
@@ -616,7 +654,8 @@ function SharePanel({
 	const shareFile = { ...file, baseUrl };
 	const key = pendingKey(baseUrl, file);
 	// A cloud session's file is already in the bucket: the click publishes it.
-	// A file on this computer is uploaded by the popover's own Publish.
+	// A file on this computer, or one downloaded from a remote host, is
+	// uploaded by the popover's own Publish.
 	const onThisComputer = file.source !== "cloud";
 
 	// Every read or change of who the link is shared with takes the next
@@ -653,7 +692,7 @@ function SharePanel({
 		switch (result.status) {
 			case "published":
 				setStaged([]);
-				showPublished(result.share);
+				showPublished(result.share, result.pageFiles ? { pageFiles: result.pageFiles } : {});
 				onChanged?.();
 				refreshArtifacts();
 				return;
@@ -896,6 +935,13 @@ function SharePanel({
 	const status = (text: string, role?: "alert" | "status") => (
 		<p role={role} className={cn("mt-1.5 text-caption", role === "alert" ? "text-error" : "text-muted-foreground")}>{text}</p>
 	);
+	// What a published page left out of the files it uses, if anything.
+	const pageFilesStatus = (files: CloudSharePageFiles | undefined) => {
+		if (files?.unsupported) return status(t("artifacts.share.pageFiles.unsupported"), "status");
+		if (!files?.skipped) return null;
+		const left = t("artifacts.share.pageFiles.skipped", { count: files.skipped });
+		return status(files.videos > 0 ? `${left} ${t("artifacts.share.pageFiles.videos")}` : left, "status");
+	};
 	const note = (text: string) => (
 		<p role="status" className="rounded-md bg-status-in-review/10 px-2.5 py-2 text-caption leading-4 text-status-in-review" data-share-note="">{text}</p>
 	);
@@ -1053,6 +1099,7 @@ function SharePanel({
 				<>
 					{titled(t("artifacts.share.title.published"))}
 					{phase.changed ? status(t("artifacts.share.changed"), "status") : null}
+					{pageFilesStatus(phase.pageFiles)}
 					<div className="mt-3.5 flex flex-col gap-3.5">
 						{privateLinks ? (
 							<>

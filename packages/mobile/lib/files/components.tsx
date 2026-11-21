@@ -25,7 +25,7 @@ import { textSelectionColors } from "../textSelection";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { font, fontScaleCap, iconSize, radius, space, stateOpacity, touchTarget, type } from "../tokens";
 import type { WorkspaceFileStatus } from "./api";
-import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, CODE_MAX_SCALE, codeScale, gutterWidth, MARKER_WIDTH } from "./codeMetrics";
+import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, CODE_MAX_SCALE, codeLineHeight, codeScale, gutterWidth, MARKER_WIDTH } from "./codeMetrics";
 import { fileIconSvg, folderIconSvg } from "./fileTypeIcon";
 import { plural, type LineRow } from "./model";
 import type { ReviewComment } from "./reviewStore";
@@ -99,7 +99,7 @@ const SELECTION_BAR_INSET = 3;
 const SELECTION_BAR_WIDTH = 3;
 const SELECTION_KNOB = SELECTION_BAR_INSET * 2 + SELECTION_BAR_WIDTH;
 
-export { CODE_FONT_SIZE, CODE_LINE_HEIGHT, CODE_MAX_SCALE, codeContentWidth, codeScale, gutterWidth, MARKER_WIDTH } from "./codeMetrics";
+export { CODE_FONT_SIZE, CODE_LINE_HEIGHT, CODE_MAX_SCALE, codeContentWidth, codeLineHeight, codeScale, gutterWidth, MARKER_WIDTH } from "./codeMetrics";
 
 export function useCodeScale(): number {
 	return codeScale(useWindowDimensions().fontScale);
@@ -129,6 +129,7 @@ export const DiffLine = memo(function DiffLine({
 	digits,
 	selected,
 	commented,
+	cited = false,
 	selectionActive,
 	edge,
 	onSelect,
@@ -143,6 +144,8 @@ export const DiffLine = memo(function DiffLine({
 	digits: number;
 	selected: boolean;
 	commented: boolean;
+	/** The line a chat link pointed at (`file.ts:12`), marked until something is selected. */
+	cited?: boolean;
 	selectionActive: boolean;
 	onSelect: (index: number) => void;
 	onExtend: (index: number) => void;
@@ -150,6 +153,8 @@ export const DiffLine = memo(function DiffLine({
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const scale = useCodeScale();
+	const lineHeight = codeLineHeight(scale);
+	const fixedHeight = wrap ? undefined : { height: lineHeight, minHeight: lineHeight };
 	const tokens = useMemo(() => row.segments ? undefined : highlightCode(row.text, language), [language, row.segments, row.text]);
 	const number = row.kind === "del" ? row.oldNo : row.newNo;
 	const marker = row.kind === "add" ? "+" : row.kind === "del" ? "−" : " ";
@@ -162,15 +167,18 @@ export const DiffLine = memo(function DiffLine({
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={`${lineWord(row)} ${number ?? ""}${commented ? ", has a comment" : ""}: ${row.text.trim() || "blank line"}`}
+			accessibilityLabel={`${lineWord(row)} ${number ?? ""}${commented ? ", has a comment" : ""}${cited ? ", linked line" : ""}: ${row.text.trim() || "blank line"}`}
 			accessibilityHint={selectionActive ? "Selects this line. Use the extend action to grow the selection." : "Selects this line to comment or ask about it. Hold and drag to select more lines."}
 			accessibilityState={{ selected }}
 			accessibilityActions={[{ name: "activate" }, { name: "extend", label: "Extend selection to this line" }]}
 			onAccessibilityAction={onAction}
 			onPress={() => { haptics.select(); onSelect(index); }}
-			style={[styles.line, tint ? { backgroundColor: tint } : null, selected && styles.lineSelected]}
+			// Unwrapped, a row is exactly one line high: the file screen tells its list
+			// so (getItemLayout), and Android, which rounds a text's height to whole
+			// pixels, would otherwise drift from it row by row.
+			style={[styles.line, fixedHeight, tint ? { backgroundColor: tint } : null, cited && styles.lineCited, selected && styles.lineSelected]}
 		>
-			<View style={[styles.gutter, { width: gutterWidth(digits, scale) }]}>
+			<View style={[styles.gutter, fixedHeight, { width: gutterWidth(digits, scale) }]}>
 				<Text maxFontSizeMultiplier={CODE_MAX_SCALE} style={styles.gutterText}>{number ?? ""}</Text>
 			</View>
 			<Text maxFontSizeMultiplier={CODE_MAX_SCALE} style={[styles.marker, { width: MARKER_WIDTH * scale, color: row.kind === "add" ? t.green : row.kind === "del" ? t.red : t.textFaint }]}>{marker}</Text>
@@ -396,6 +404,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 
 	line: { flexDirection: "row", alignItems: "flex-start", minHeight: CODE_LINE_HEIGHT, paddingRight: space.lg },
 	lineSelected: { backgroundColor: t.accentTint },
+	lineCited: { backgroundColor: t.tintAmber },
 	selectionBar: { position: "absolute", left: SELECTION_BAR_INSET, top: 0, bottom: 0, width: SELECTION_BAR_WIDTH, backgroundColor: t.accent },
 	gutter: { flexDirection: "row", justifyContent: "flex-end", alignItems: "center", paddingRight: space.xs, minHeight: CODE_LINE_HEIGHT },
 	gutterText: { fontFamily: t.fontMono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT, color: t.textFaint },

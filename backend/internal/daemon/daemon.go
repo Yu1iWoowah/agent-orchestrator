@@ -33,6 +33,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agentaccount"
 	chatdriveracp "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/dockeragentacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	chatdriverregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/cuadriver"
@@ -366,7 +367,23 @@ func Run(buildVersion string) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer func() { _ = store.Close() }()
+	var usageHookQueue *usagesvc.HookQueue
+	defer func() {
+		if usageHookQueue != nil {
+			select {
+			case <-usageHookQueue.Done():
+			default:
+				// An unresponsive hook must not extend the shutdown budget.
+				// Close the store only if and when that worker releases it.
+				go func() {
+					<-usageHookQueue.Done()
+					_ = store.Close()
+				}()
+				return
+			}
+		}
+		_ = store.Close()
+	}()
 	operatorBroker := operatornative.New(store.NativeOperatorIssuer(), operatorRuntimeToken, operatorOwner)
 	browserBroker.SetNativeHandler(operatorBroker.Handle)
 	settingsGrantAuthority, err := agentsettings.NewStoredGrantAuthority(context.Background(), store, time.Now)
@@ -694,6 +711,9 @@ func Run(buildVersion string) (retErr error) {
 					Env:     request.Env,
 				}, request.WorkingDir, log)
 			},
+			"docker-agent": func(listCtx context.Context, request ports.AgentModelDiscoveryRequest) ([]ports.ChatConfigOption, error) {
+				return dockeragentacp.DiscoverConfigOptions(listCtx, request.Binary, cfg.DataDir, request.Env, log)
+			},
 			"devin": func(listCtx context.Context, request ports.AgentModelDiscoveryRequest) ([]ports.ChatConfigOption, error) {
 				return chatdriveracp.DiscoverConfigOptions(listCtx, chatdriveracp.Launch{
 					Command: request.Binary,
@@ -786,6 +806,12 @@ func Run(buildVersion string) (retErr error) {
 		}
 		return fmt.Errorf("wire session service: %w", err)
 	}
+	// The runtime reaper also observes reviewers serving an in-progress review
+	// run; the review engine reduces each pass into run transitions. Its first
+	// pass (ReconcileRuntime, after Chat reviewer recovery) settles runs a
+	// previous daemon left in progress.
+	lcStack.runtimeReaper.BindReviewers(reviewSvc.ReviewerObserver())
+
 	if usage != nil {
 		sessionSvc.SetUsageArchiveFlush(func(context.Context) { usage.requestArchiveFlush() })
 	}
@@ -823,6 +849,9 @@ func Run(buildVersion string) (retErr error) {
 	sessMgr = wiredSessMgr
 	if switcher, ok := wiredSessMgr.(chatsvc.TerminalProviderSwitcher); ok {
 		chatSvc.SetTerminalProviderSwitcher(switcher)
+	}
+	if launch, ok := wiredSessMgr.(chatsvc.ProviderSwitchLaunch); ok {
+		chatSvc.SetProviderSwitchLaunch(launch)
 	}
 	chatSvc.SetUsageLimitAccounts(agentAccountSvc)
 	agentSettingsSvc := agentsettings.New(store, time.Now)
@@ -939,6 +968,11 @@ func Run(buildVersion string) (retErr error) {
 			return wake.WakeHibernatedChat(wakeCtx, id)
 		})
 	}
+	if check, ok := sessMgr.(interface {
+		ImportedChatWrittenElsewhere(context.Context, domain.SessionRecord, time.Time) (bool, bool)
+	}); ok {
+		chatSvc.SetOtherWriterCheck(check.ImportedChatWrittenElsewhere)
+	}
 	if tunable, ok := sessMgr.(interface {
 		SetModelCatalog(interface {
 			Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error)
@@ -985,8 +1019,9 @@ func Run(buildVersion string) (retErr error) {
 	questionSvc := questionsvc.New(questionsvc.Deps{Capabilities: browserAuthority, Store: store, Notifications: notificationWriter, Delivery: questionSemanticDelivery{sessions: questionSessions, now: time.Now}})
 	questionDeliveryDone := questionSvc.Start(ctx, func(err error) { log.Error("question answer coordinator", "err", err) })
 	defer func() { stop(); <-questionDeliveryDone }()
-	reportDeliveryDone := reportCoordinator.Start(ctx)
+	reportDeliveryDone, unsubscribeReportActivity := startReportCoordinator(ctx, cdcPipe.Broadcaster, reportCoordinator)
 	defer func() {
+		unsubscribeReportActivity()
 		stop()
 		<-reportDeliveryDone
 	}()
@@ -1154,9 +1189,10 @@ func Run(buildVersion string) (retErr error) {
 	// SetShellTerminalCloser).
 	sessMgr.SetShellTerminalCloser(shellTermSvc)
 	var (
-		usageCollector *usagesvc.Collector
-		usagePipeline  *usagepipeline.Pipeline
-		usagePricing   *usagePricingRuntime
+		usageCollector  *usagesvc.Collector
+		closeUsageHooks func(context.Context) error
+		usagePipeline   *usagepipeline.Pipeline
+		usagePricing    *usagePricingRuntime
 	)
 	if pricingRuntime, pricingErr := newUsagePricingRuntime(usagePricingRuntimeConfig{
 		DataDir: cfg.DataDir,
@@ -1233,7 +1269,26 @@ func Run(buildVersion string) (retErr error) {
 				}
 			}
 		}()
-		lcStack.LCM.SetUsageFinalizer(usageCollector)
+		// Hooks enqueue usage so a transcript scan cannot block the agent.
+		// Termination drains the same queue before finalizing usage.
+		usageHookQueue = usagesvc.NewHookQueue(usageCollector, log)
+		go func() {
+			defer sentryobs.RecoverBackground()
+			usageHookQueue.Run(ctx)
+		}()
+		closeUsageHooks = usageHookQueue.CloseAndWait
+		// Join before the store closes on paths without a desktop quit.
+		defer func() {
+			if closeUsageHooks == nil {
+				return
+			}
+			drainCtx, cancelDrain := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+			defer cancelDrain()
+			if err := closeUsageHooks(drainCtx); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
+		}()
+		lcStack.LCM.SetUsageFinalizer(usageHookQueue)
 		if wired, ok := sessMgr.(interface {
 			SetBackgroundTaskUsage(sessionmanager.BackgroundTaskUsage)
 		}); ok {
@@ -1299,6 +1354,7 @@ func Run(buildVersion string) (retErr error) {
 	lcStack.automationDone = automationDone
 	autoReview := autoreview.New(store, reviewSvc, autoreview.Config{Logger: log})
 	lcStack.autoReviewDone = autoReview.Start(ctx)
+	lcStack.reviewDoneDone = lcStack.LCM.StartReviewDoneSweep(ctx, 0)
 	// Push-device registry: persisted phones that receive OS push notifications.
 	// A load failure must not block boot — degrade to no push rather than refusing
 	// to start the daemon. pushRegistry (interface) is assigned only when load
@@ -1438,8 +1494,13 @@ func Run(buildVersion string) (retErr error) {
 		return fmt.Errorf("claude-code adapter lacks native transcript reader")
 	}
 	chatSvc.SetReplacementMutationGate(replacementRuntime)
+	chatSvc.SetSwitchModelCatalog(agentSvc)
 	sharedDocuments := projectdocssvc.New(projectdocssvc.Deps{Store: store, DataDir: cfg.DataDir, Capabilities: browserAuthority})
 	replacementSvc := replacementsvc.New(replacementsvc.Deps{Store: store, Runtime: replacementRuntime, Documents: sharedDocuments, NativeTranscripts: nativeTranscripts, WithProjectGate: replacementRuntime.WithNativeReplacementProjectGate})
+	var usageHooks controllers.UsageHookRecorder = usageCollector
+	if usageHookQueue != nil {
+		usageHooks = usageHookQueue
+	}
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		ShutdownPreflight:        chatSvc.PreflightShutdown,
 		ShutdownPreservedSides:   chatSvc.ShutdownPreservedSides,
@@ -1492,7 +1553,7 @@ func Run(buildVersion string) (retErr error) {
 		Activity:           hookActivity,
 		PRRefresh:          reviewRefresher,
 		NativeSessions:     nativeSessions,
-		UsageHooks:         usageCollector,
+		UsageHooks:         usageHooks,
 		UsageSummary:       freshUsageSummary{usagesvc.NewSummaryReader(store), usagePipeline},
 		UsageReport:        freshUsageReport{usageReportReader(store, usagePricing), usagePipeline},
 		UsageLimitHistory:  usagesvc.NewLimitHistoryReader(store, agentAccountSvc),
@@ -1886,27 +1947,19 @@ func Run(buildVersion string) (retErr error) {
 	<-previewDone
 	// Daemon replacement detaches providers. Desktop exit stops processes
 	// while keeping the sessions and worktrees available for resume.
-	chatStopTimeout := cfg.ShutdownTimeout
+	drainUsage := closeUsageHooks
+	closeUsageHooks = nil
 	if srv.StopAgentsRequested() {
-		chatStopTimeout = max(chatStopTimeout, 30*time.Second)
-	}
-	chatStopCtx, chatCancel := context.WithTimeout(context.Background(), chatStopTimeout)
-	if srv.StopAgentsRequested() {
-		if err := sessMgr.StopAgentsForQuit(chatStopCtx); err != nil {
-			log.Error("desktop quit agent shutdown", "err", err)
-			runErr = errors.Join(runErr, err)
-		}
-		if err := chatSvc.TerminateAll(chatStopCtx); err != nil {
-			log.Error("desktop quit chat shutdown", "err", err)
+		if err := stopControllersAfterUsageDrain(max(cfg.ShutdownTimeout, 30*time.Second), cfg.ShutdownTimeout, drainUsage, sessMgr.StopAgentsForQuit, chatSvc.TerminateAll); err != nil {
+			log.Error("desktop quit controller shutdown", "err", err)
 			runErr = errors.Join(runErr, err)
 		}
 	} else {
-		if err := chatSvc.StopAll(chatStopCtx); err != nil {
-			log.Error("chat shutdown not settled; original providers retained", "error", err)
+		if err := stopControllersAfterUsageDrain(cfg.ShutdownTimeout, cfg.ShutdownTimeout, drainUsage, chatSvc.StopAll); err != nil {
+			log.Error("daemon replacement controller shutdown", "error", err)
 			runErr = errors.Join(runErr, err)
 		}
 	}
-	chatCancel()
 	if usageDone != nil {
 		<-usageDone
 	}
@@ -1940,6 +1993,35 @@ func Run(buildVersion string) (retErr error) {
 	return runErr
 }
 
+func stopControllersAfterUsageDrain(timeout, drainLimit time.Duration, drainUsage func(context.Context) error, stops ...func(context.Context) error) error {
+	started := time.Now()
+	deadline := started.Add(timeout)
+	runStep := func(stepDeadline time.Time, step func(context.Context) error) error {
+		if deadline.Before(stepDeadline) {
+			stepDeadline = deadline
+		}
+		ctx, cancel := context.WithDeadline(context.Background(), stepDeadline)
+		defer cancel()
+		return step(ctx)
+	}
+	// ExitAgent commits ActivityExited. The collector rejects ordinary hooks
+	// for exited sessions. Drain first and reserve half the budget for stops.
+	var shutdownErr error
+	if drainUsage != nil {
+		if err := runStep(started.Add(min(drainLimit, timeout/2)), drainUsage); err != nil {
+			shutdownErr = fmt.Errorf("drain usage hooks before stopping controllers: %w", err)
+		}
+	}
+	for index, stop := range stops {
+		// Divide the actual time left among pending stops. Cleanup that runs
+		// past its own deadline consumes time from the remaining shares.
+		now := time.Now()
+		share := deadline.Sub(now) / time.Duration(len(stops)-index)
+		shutdownErr = errors.Join(shutdownErr, runStep(now.Add(share), stop))
+	}
+	return shutdownErr
+}
+
 func telemetryAppVersion(configured, buildVersion string) string {
 	if configured != "" {
 		return configured
@@ -1971,6 +2053,9 @@ func (d reportSemanticDelivery) Submit(ctx context.Context, id domain.SessionID,
 	err := d.sessions.SendSemantic(ctx, id, message, idempotencyKey)
 	if errors.Is(err, sessionmanager.ErrComposerBusy) {
 		return fmt.Errorf("%w: %w", reportsvc.ErrOrchestratorBusy, err)
+	}
+	if errors.Is(err, sessionmanager.ErrPromptSubmissionUnobserved) || (err != nil && strings.Contains(err.Error(), "prompt submission was not observed")) {
+		return fmt.Errorf("%w: %w", reportsvc.ErrUnacknowledgedDelivery, err)
 	}
 	return err
 }

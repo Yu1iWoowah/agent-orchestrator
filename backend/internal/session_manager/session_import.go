@@ -1,6 +1,7 @@
 package sessionmanager
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"context"
@@ -401,6 +402,71 @@ func adoptedOwnedElsewhere(ctx context.Context, rec domain.SessionRecord) bool {
 		return ompSessionLocked(ctx, source.ConfigDir, nativeID)
 	}
 	return false
+}
+
+// ImportedChatWrittenElsewhere reports whether another Claude Code process has
+// an imported chat open, and otherwise whether one wrote turns to its
+// transcript after since.
+func (m *Manager) ImportedChatWrittenElsewhere(ctx context.Context, rec domain.SessionRecord, since time.Time) (open, wrote bool) {
+	if rec.Metadata.ImportSource == nil || rec.Harness != domain.HarnessClaudeCode {
+		return false, false
+	}
+	// ImportSource remains as provenance after an edit forks the conversation
+	// or a provider switch replaces it. Those providers no longer share the
+	// imported transcript, whose path is intentionally cleared at that boundary.
+	if current := rec.Metadata.ProviderConversationID; current != "" && current != importedNativeRef(rec.Metadata.ImportSource).NativeSessionID {
+		return false, false
+	}
+	if adoptedOwnedElsewhere(ctx, rec) {
+		return true, false
+	}
+	return false, !since.IsZero() && claudeTurnsWrittenElsewhere(ctx, rec.Metadata.NativeTranscriptPath, rec.Metadata.WorkspacePath, since)
+}
+
+func claudeTurnsWrittenElsewhere(ctx context.Context, path, workspace string, since time.Time) bool {
+	// Unknown transcript state cannot prove the live provider is current.
+	if path == "" || workspace == "" {
+		return true
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return true
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return true
+	}
+	if !info.ModTime().After(since) {
+		return false
+	}
+	// A tool result or image can exceed a fixed tail window, and our own
+	// output can push an external turn out of it. Read complete records from
+	// the changed file, keeping only one record in memory at a time.
+	reader := bufio.NewReader(file)
+	for {
+		if ctx.Err() != nil {
+			return true
+		}
+		line, readErr := reader.ReadBytes('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return true
+		}
+		if len(line) == 0 {
+			return false
+		}
+		var record struct {
+			Type      string    `json:"type"`
+			CWD       string    `json:"cwd"`
+			Timestamp time.Time `json:"timestamp"`
+		}
+		if json.Unmarshal(line, &record) != nil || record.Type != "user" && record.Type != "assistant" {
+			continue
+		}
+		if record.CWD != "" && record.Timestamp.After(since) && !pathWithin(workspace, record.CWD) {
+			return true
+		}
+	}
 }
 
 // claudeSessionLive reads Claude Code's live-session registry. A launch inside

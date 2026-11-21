@@ -231,7 +231,7 @@ func (s *Store) GetAttentionQuestion(ctx context.Context, session domain.Session
 		return domain.AttentionQuestionRecord{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := gen.New(tx)
+	q := s.txQueries(tx)
 	row, err := questionRow(ctx, q, session, id)
 	if err != nil {
 		return domain.AttentionQuestionRecord{}, err
@@ -296,7 +296,7 @@ func (s *Store) ListAttentionQuestions(ctx context.Context, session domain.Sessi
 		return result, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := gen.New(tx)
+	q := s.txQueries(tx)
 	counts, err := q.CountAttentionQuestions(ctx, string(session))
 	if err != nil {
 		return result, err

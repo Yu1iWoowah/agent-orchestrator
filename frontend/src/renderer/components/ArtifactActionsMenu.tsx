@@ -1,3 +1,4 @@
+import { keptArtifactsQueryKey } from "../hooks/useKeptArtifacts";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -145,9 +146,12 @@ export function ArtifactActionsMenu({
 			: deleteSessionArtifactFile({ path: artifact.path, sessionId: session.id, hostId }),
 		onSuccess: async () => {
 			setConfirmingDelete(false);
-			if (!hostId) useArtifactsViewStore.getState().unpinArtifact(pinId ?? artifactKey({ sessionId: session.id, path: artifact.path }));
+			useArtifactsViewStore.getState().unpinArtifact(pinId ?? artifactKey({ sessionId: session.id, path: artifact.path, hostId }));
 			await onDeleted?.();
-			await queryClient.invalidateQueries({ queryKey: session.cloud ? cloudSessionsQueryKey : workspaceQueryKeyForHost(hostId) });
+			await Promise.all([
+				queryClient.invalidateQueries({ queryKey: session.cloud ? cloudSessionsQueryKey : workspaceQueryKeyForHost(hostId) }),
+				...(local ? [queryClient.invalidateQueries({ queryKey: keptArtifactsQueryKey })] : []),
+			]);
 		},
 	});
 	const markdown = /\.(md|markdown)$/i.test(artifact.path);

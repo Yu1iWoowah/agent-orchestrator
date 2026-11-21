@@ -2483,6 +2483,59 @@ paths:
       summary: Refresh the cached local agent adapter catalog
       tags:
       - agents
+  /api/v1/attachment-uploads:
+    post:
+      operationId: uploadAttachment
+      parameters:
+      - description: Existing session that may stage or send this upload. Excludes
+          projectId.
+        in: query
+        name: sessionId
+        schema:
+          description: Existing session that may stage or send this upload. Excludes
+            projectId.
+          type: string
+      - description: Project in which to create or delegate a session carrying this
+          upload. Omit both IDs for a new standalone task.
+        in: query
+        name: projectId
+        schema:
+          description: Project in which to create or delegate a session carrying this
+            upload. Omit both IDs for a new standalone task.
+          type: string
+      requestBody:
+        content:
+          application/octet-stream: {}
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttachmentUploadResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Stream a file to disk for an attachment in the specified destination
+        scope
+      tags:
+      - sessions
   /api/v1/automations:
     get:
       operationId: listAutomations
@@ -5412,6 +5465,31 @@ paths:
       summary: Validate a selected folder for project import onboarding
       tags:
       - import
+  /api/v1/kept-artifacts:
+    get:
+      operationId: listKeptArtifacts
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersListKeptArtifactsResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List artifacts kept when their sessions were deleted
+      tags:
+      - sessions
   /api/v1/link-preview:
     get:
       operationId: getLinkPreview
@@ -10119,6 +10197,16 @@ paths:
             the way session cleanup does it; a dirty or locked worktree is never forced
             and refuses the delete.
           type: boolean
+      - description: When true, the session's artifact files are kept, view only,
+          and listed by GET /api/v1/kept-artifacts until they are deleted one by one.
+          Otherwise they are deleted with the session.
+        in: query
+        name: keepArtifacts
+        schema:
+          description: When true, the session's artifact files are kept, view only,
+            and listed by GET /api/v1/kept-artifacts until they are deleted one by
+            one. Otherwise they are deleted with the session.
+          type: boolean
       responses:
         "200":
           content:
@@ -10335,6 +10423,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
       summary: Report an agent activity-state signal for a session
       tags:
       - sessions
@@ -16581,7 +16675,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Service Unavailable
-      summary: Switch an idle Chat session to another provider
+      summary: Switch a session to another provider or update the active provider
+        settings
       tags:
       - conversations
   /api/v1/sessions/{sessionId}/questions:
@@ -23188,8 +23283,19 @@ components:
           type: string
         mimeType:
           type: string
+        uploadId:
+          type: string
+      type: object
+    AttachmentUploadResponse:
+      properties:
+        bytes:
+          format: int64
+          type: integer
+        uploadId:
+          type: string
       required:
-      - data
+      - uploadId
+      - bytes
       type: object
     AttentionAnswerReceipt:
       properties:
@@ -25650,12 +25756,43 @@ components:
       - active
       - hasBattery
       type: object
+    ControllersKeptArtifactsView:
+      properties:
+        artifactFiles:
+          items:
+            $ref: '#/components/schemas/SessionArtifact'
+          type: array
+        at:
+          description: When the session was deleted.
+          format: date-time
+          type: string
+        projectId:
+          type: string
+        sessionId:
+          type: string
+        title:
+          type: string
+      required:
+      - sessionId
+      - title
+      - at
+      - artifactFiles
+      type: object
     ControllersKillSessionRequest:
       properties:
         callerSessionId:
           type: string
         deleteArtifacts:
           type: boolean
+      type: object
+    ControllersListKeptArtifactsResponse:
+      properties:
+        sets:
+          items:
+            $ref: '#/components/schemas/ControllersKeptArtifactsView'
+          type: array
+      required:
+      - sets
       type: object
     ControllersPairDeviceRequest:
       properties:
@@ -27577,6 +27714,7 @@ components:
           - deepseek-harness
           - openhands
           - command-code
+          - docker-agent
           - memcode
           - hermes
           - fake
@@ -29850,6 +29988,7 @@ components:
           - deepseek-harness
           - openhands
           - command-code
+          - docker-agent
           - memcode
           - hermes
           - cloudflared
@@ -31872,6 +32011,8 @@ components:
           type: string
         fastMode:
           type: boolean
+        force:
+          type: boolean
         idempotencyKey:
           type: string
         message:
@@ -31895,10 +32036,22 @@ components:
       type: object
     ProviderSwitchResponse:
       properties:
+        cancelledQueuedMessages:
+          type: integer
+        failedPendingApprovals:
+          type: boolean
         message:
           $ref: '#/components/schemas/SendConversationMessageResponse'
+        settingsUpdated:
+          type: boolean
         status:
           type: string
+        stoppedTurn:
+          type: boolean
+        warnings:
+          items:
+            type: string
+          type: array
       required:
       - status
       type: object
@@ -33775,10 +33928,42 @@ components:
           type: string
         body:
           type: string
+        cancelRequestedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        cancelledBy:
+          enum:
+          - user
+          - worker_lifecycle
+          type: string
         createdAt:
           format: date-time
           type: string
         deliveredAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        endedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        failureReason:
+          enum:
+          - preflight_failed
+          - launch_failed
+          - never_started
+          - exited_during_launch
+          - turn_ended_without_submit
+          - process_exited
+          - timed_out
+          - daemon_restarted
+          - cancel_unconfirmed
+          type: string
+        firstActivityAt:
           format: date-time
           type:
           - "null"
@@ -33789,13 +33974,32 @@ components:
           type: string
         id:
           type: string
+        launchingAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         prUrl:
           type: string
         reviewId:
           type: string
         sessionId:
           type: string
+        startedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         status:
+          enum:
+          - queued
+          - launching
+          - running
+          - cancelling
+          - completed
+          - failed
+          - cancelled
+          - superseded
           type: string
         targetSha:
           type: string
@@ -33806,6 +34010,22 @@ components:
           - auto
           type: string
         verdict:
+          type: string
+        workerNotice:
+          enum:
+          - ""
+          - pending
+          - sent
+          - failed
+          type: string
+        workerNoticeAttemptedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        workerNoticeAttempts:
+          type: integer
+        workerNoticeError:
           type: string
       required:
       - id
@@ -36370,6 +36590,7 @@ components:
           - deepseek-harness
           - openhands
           - command-code
+          - docker-agent
           - memcode
           - hermes
           type: string
@@ -36986,6 +37207,10 @@ components:
           description: Return 409 instead of reusing when every open PR head is already
             being reviewed or already has a review.
           type: boolean
+        requesterSessionId:
+          description: Agent session that requested the pass and should receive its
+            final outcome.
+          type: string
         rerun:
           description: Start a fresh pass for already-reviewed current heads; a different
             reviewer may run alongside one that is still running. A person's rerun

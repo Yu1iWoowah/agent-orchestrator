@@ -31,7 +31,7 @@ func TestInspectorAdmissionUsesNewerReviewerPin(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := store.UpdateReviewRunResult(ctx, first.Run.ID, domain.ReviewRunComplete, domain.VerdictApproved, "", "", false); err != nil {
+					if _, err := store.TransitionReviewRun(ctx, first.Run.ID, []domain.ReviewRunStatus{domain.ReviewRunRunning}, domain.ReviewRunCompleted, domain.ReviewRunPatch{Verdict: domain.VerdictApproved}); err != nil {
 						t.Fatal(err)
 					}
 					if entry == "switch" {
@@ -74,7 +74,7 @@ func TestInspectorAdmissionUsesNewerReviewerPin(t *testing.T) {
 					if err != nil || after.Revision != before.Revision || *after.Settings != *before.Settings || after.Owner.AccountID != "account-A" {
 						t.Fatalf("admission rewrote pin/account: before=%+v after=%+v err=%v", before, after, err)
 					}
-					if _, err := store.UpdateReviewRunResult(ctx, second.Run.ID, domain.ReviewRunComplete, domain.VerdictApproved, "", "", false); err != nil {
+					if _, err := store.TransitionReviewRun(ctx, second.Run.ID, []domain.ReviewRunStatus{domain.ReviewRunRunning}, domain.ReviewRunCompleted, domain.ReviewRunPatch{Verdict: domain.VerdictApproved}); err != nil {
 						t.Fatal(err)
 					}
 					engine.models = fresh
@@ -130,7 +130,7 @@ func TestRejectedRestoreCanRecoverWithUnchangedTrigger(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, run := range runs {
-		if run.ID == first.Run.ID && run.Status != domain.ReviewRunCancelled {
+		if run.ID == first.Run.ID && (run.Status != domain.ReviewRunFailed || run.FailureReason != domain.ReviewFailureProcessExited || run.Body != "") {
 			t.Fatalf("old pass was not reconciled: %+v", run)
 		}
 	}
@@ -156,7 +156,7 @@ func TestPinnedReviewerSwitchSavesWorkerConfig(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := store.UpdateReviewRunResult(ctx, first.Run.ID, domain.ReviewRunComplete, domain.VerdictApproved, "", "", false); err != nil {
+				if _, err := store.TransitionReviewRun(ctx, first.Run.ID, []domain.ReviewRunStatus{domain.ReviewRunRunning}, domain.ReviewRunCompleted, domain.ReviewRunPatch{Verdict: domain.VerdictApproved}); err != nil {
 					t.Fatal(err)
 				}
 				before, err := store.ReviewerAgentSettings(ctx, first.Run.ReviewID)
@@ -213,7 +213,7 @@ func TestClearInheritedReviewerShadowAfterAdmission(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.UpdateReviewRunResult(ctx, first.Run.ID, domain.ReviewRunComplete, domain.VerdictApproved, "", "", false); err != nil {
+			if _, err := store.TransitionReviewRun(ctx, first.Run.ID, []domain.ReviewRunStatus{domain.ReviewRunRunning}, domain.ReviewRunCompleted, domain.ReviewRunPatch{Verdict: domain.VerdictApproved}); err != nil {
 				t.Fatal(err)
 			}
 			before, err := store.ReviewerAgentSettings(ctx, first.Run.ReviewID)

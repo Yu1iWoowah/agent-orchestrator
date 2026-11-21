@@ -8,9 +8,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"sync"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/mcpserver"
 )
 
 var delegationMCPTools = []any{map[string]any{
@@ -30,7 +31,7 @@ func (c *commandContext) serveDelegationMCP(ctx context.Context, in io.Reader, o
 	var outputMu, mu sync.Mutex
 	active := map[string]context.CancelFunc{}
 	var wg sync.WaitGroup
-	send := func(resp *mcpResponse) { outputMu.Lock(); defer outputMu.Unlock(); _ = encoder.Encode(resp) }
+	send := func(resp *mcpserver.Response) { outputMu.Lock(); defer outputMu.Unlock(); _ = encoder.Encode(resp) }
 	defer func() {
 		mu.Lock()
 		for _, cancel := range active {
@@ -46,9 +47,9 @@ func (c *commandContext) serveDelegationMCP(ctx context.Context, in io.Reader, o
 	}()
 	for scanner.Scan() {
 		line := append([]byte(nil), scanner.Bytes()...)
-		var req mcpRequest
+		var req mcpserver.Request
 		if json.Unmarshal(line, &req) != nil {
-			send(&mcpResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &mcpError{Code: -32700, Message: "invalid HCG JSON-RPC"}})
+			send(&mcpserver.Response{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &mcpserver.RPCError{Code: -32700, Message: "invalid HCG JSON-RPC"}})
 			continue
 		}
 		if req.Method == "notifications/cancelled" {
@@ -67,17 +68,14 @@ func (c *commandContext) serveDelegationMCP(ctx context.Context, in io.Reader, o
 		if req.ID == nil {
 			continue
 		}
-		resp := &mcpResponse{JSONRPC: "2.0", ID: req.ID}
+		resp := &mcpserver.Response{JSONRPC: "2.0", ID: req.ID}
 		switch req.Method {
 		case "initialize":
 			var params struct {
 				ProtocolVersion string `json:"protocolVersion"`
 			}
 			_ = json.Unmarshal(req.Params, &params)
-			version := mcpDefaultProtocolVersion
-			if slices.Contains(mcpProtocolVersions, params.ProtocolVersion) {
-				version = params.ProtocolVersion
-			}
+			version := mcpserver.ProtocolVersion(params.ProtocolVersion)
 			resp.Result = map[string]any{"protocolVersion": version, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "hcg", "version": Version}}
 			send(resp)
 		case "ping":
@@ -95,7 +93,7 @@ func (c *commandContext) serveDelegationMCP(ctx context.Context, in io.Reader, o
 			d := json.NewDecoder(bytes.NewReader(req.Params))
 			d.DisallowUnknownFields()
 			if d.Decode(&call) != nil || d.Decode(new(any)) != io.EOF || call.Name != "hcg_delegate_read" || !validDelegationMCPMetadata(call.Meta) {
-				resp.Error = &mcpError{Code: -32602, Message: "invalid HCG tool request"}
+				resp.Error = &mcpserver.RPCError{Code: -32602, Message: "invalid HCG tool request"}
 				send(resp)
 				continue
 			}
@@ -103,13 +101,13 @@ func (c *commandContext) serveDelegationMCP(ctx context.Context, in io.Reader, o
 			d = json.NewDecoder(bytes.NewReader(call.Arguments))
 			d.DisallowUnknownFields()
 			if d.Decode(&args) != nil || d.Decode(new(any)) != io.EOF || args.Question == "" || len(args.Paths) == 0 {
-				resp.Error = &mcpError{Code: -32602, Message: "invalid HCG tool arguments"}
+				resp.Error = &mcpserver.RPCError{Code: -32602, Message: "invalid HCG tool arguments"}
 				send(resp)
 				continue
 			}
 			id, err := renderSessionID()
 			if err != nil {
-				resp.Error = &mcpError{Code: -32602, Message: "AO session context unavailable"}
+				resp.Error = &mcpserver.RPCError{Code: -32602, Message: "AO session context unavailable"}
 				send(resp)
 				continue
 			}
@@ -117,7 +115,7 @@ func (c *commandContext) serveDelegationMCP(ctx context.Context, in io.Reader, o
 			mu.Lock()
 			if active[key] != nil {
 				mu.Unlock()
-				resp.Error = &mcpError{Code: -32600, Message: "duplicate active request ID"}
+				resp.Error = &mcpserver.RPCError{Code: -32600, Message: "duplicate active request ID"}
 				send(resp)
 				continue
 			}
@@ -125,7 +123,7 @@ func (c *commandContext) serveDelegationMCP(ctx context.Context, in io.Reader, o
 			active[key] = cancel
 			mu.Unlock()
 			wg.Add(1)
-			go func(resp *mcpResponse, args delegationReadRequest, id, key string, callCtx context.Context, cancel context.CancelFunc) {
+			go func(resp *mcpserver.Response, args delegationReadRequest, id, key string, callCtx context.Context, cancel context.CancelFunc) {
 				defer wg.Done()
 				defer cancel()
 				defer func() { mu.Lock(); delete(active, key); mu.Unlock() }()
@@ -139,7 +137,7 @@ func (c *commandContext) serveDelegationMCP(ctx context.Context, in io.Reader, o
 				send(resp)
 			}(resp, args, id, key, callCtx, cancel)
 		default:
-			resp.Error = &mcpError{Code: -32601, Message: "unknown HCG method"}
+			resp.Error = &mcpserver.RPCError{Code: -32601, Message: "unknown HCG method"}
 			send(resp)
 		}
 	}

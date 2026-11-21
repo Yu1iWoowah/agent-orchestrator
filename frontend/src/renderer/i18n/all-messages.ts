@@ -1,5 +1,5 @@
 // Every locale catalog, eagerly. For tests and build tooling only: importing
-// this from runtime code puts all catalogs (~1.5 MB) back on the startup path.
+// this from runtime code puts every catalog back on the startup path.
 import zhCN from "./zh-CN.json";
 import zhTW from "./zh-TW.json";
 import ja from "./ja.json";
@@ -9,6 +9,7 @@ import fr from "./fr.json";
 import de from "./de.json";
 import ptBR from "./pt-BR.json";
 import ru from "./ru.json";
+import tr from "./tr.json";
 import type { i18n } from "i18next";
 import type { AppLocale } from "./locales";
 import { DEFAULT_LOCALE } from "./locales";
@@ -25,6 +26,7 @@ export const frMessages = fr;
 export const deMessages = de;
 export const ptBRMessages = ptBR;
 export const ruMessages = ru;
+export const trMessages = tr;
 
 export const appCatalogs: TranslationCatalogs = {
 	en: enMessages,
@@ -37,6 +39,7 @@ export const appCatalogs: TranslationCatalogs = {
 	de: deMessages,
 	"pt-BR": ptBRMessages,
 	ru: ruMessages,
+	tr: trMessages,
 };
 
 export function catalogFor(locale: AppLocale): MessageCatalog {

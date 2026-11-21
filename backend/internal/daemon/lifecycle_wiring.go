@@ -65,6 +65,7 @@ type lifecycleStack struct {
 	turnFailureDone  <-chan struct{}
 	artifactsDone    <-chan struct{}
 	autoReviewDone   <-chan struct{}
+	reviewDoneDone   <-chan struct{}
 	scmDone          <-chan struct{}
 	trackerDone      <-chan struct{}
 	herdr            *herdr.Server
@@ -204,6 +205,9 @@ func (l *lifecycleStack) Stop() {
 	if l.autoReviewDone != nil {
 		<-l.autoReviewDone
 	}
+	if l.reviewDoneDone != nil {
+		<-l.reviewDoneDone
+	}
 	if l.scmDone != nil {
 		<-l.scmDone
 	}
@@ -250,6 +254,7 @@ type sessionLifecycle interface {
 	StopAgentsForQuit(ctx context.Context) error
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error
+	SendWithClientMessageID(ctx context.Context, id domain.SessionID, message, clientMessageID string) error
 	// SetShellTerminalCloser late-binds Kill/Cleanup to close a session's
 	// scoped shell terminals before its worktree is torn down. shellterm.Service
 	// is built after Session Manager during boot (see startShellTerminals), so
@@ -288,6 +293,9 @@ type sessionLifecycleMessenger struct {
 }
 
 func (m sessionLifecycleMessenger) Send(ctx context.Context, id domain.SessionID, message string) error {
+	if clientMessageID := ports.ClientMessageIDFromContext(ctx); clientMessageID != "" {
+		return m.SendWithClientMessageID(ctx, id, message, clientMessageID)
+	}
 	return m.sessionLifecycle.Send(ctx, id, message, nil)
 }
 
@@ -426,11 +434,16 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 			reviewcore.WithReviewerChat(reviewerChat)),
 
 		ChatRecoveryDone: reviewerRecoveryDone,
+		// The reaper's first pass settles runs a previous daemon left active.
+		AwaitBootPass: true,
 	})
 	reviewOpts := []reviewsvc.Option{
 		reviewsvc.WithTelemetry(telemetry),
 		reviewsvc.WithNotificationSink(notifications),
 		reviewsvc.WithCodexAccountOperationGate(codexOperationGate),
+	}
+	if lcm != nil {
+		reviewOpts = append(reviewOpts, reviewsvc.WithReviewDoneNotifier(lcm))
 	}
 	if scmProvider != nil {
 		reviewOpts = append(reviewOpts,
@@ -778,6 +791,15 @@ func (c chatLauncher) PreflightChat(
 	return c.svc.PreflightChat(ctx, harness, permissions)
 }
 
+func (c chatLauncher) PreflightChatWithEnv(
+	ctx context.Context,
+	harness domain.AgentHarness,
+	permissions ports.PermissionMode,
+	env map[string]string,
+) error {
+	return c.svc.PreflightChatWithEnv(ctx, harness, permissions, env)
+}
+
 func (c chatLauncher) SupportsReviewChat(harness domain.AgentHarness) bool {
 	return c.svc.SupportsChat(harness)
 }
@@ -786,31 +808,31 @@ func (c chatLauncher) PreflightReviewChat(ctx context.Context, harness domain.Ag
 	return c.svc.PreflightChat(ctx, harness, ports.PermissionModeAuto)
 }
 
-func (c chatLauncher) StartReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart) (string, error) {
+func (c chatLauncher) StartReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart) (ports.ChatControllerStarted, error) {
 	return c.startReviewChat(ctx, cfg, true)
 }
 
-func (c chatLauncher) RestoreReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart) (string, error) {
+func (c chatLauncher) RestoreReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart) (ports.ChatControllerStarted, error) {
 	return c.startReviewChat(ctx, cfg, false)
 }
 
-func (c chatLauncher) startReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart, sendPrompt bool) (string, error) {
+func (c chatLauncher) startReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart, sendPrompt bool) (ports.ChatControllerStarted, error) {
 	if err := c.waitForPersistentHostReconcile(ctx); err != nil {
-		return "", err
+		return ports.ChatControllerStarted{}, err
 	}
 	owner := domain.ReviewConversationOwner(cfg.ReviewID)
 	started, err := c.svc.StartChat(ctx, chatsvc.StartConfig{Owner: owner, SessionID: cfg.WorkerID, ProjectID: cfg.ProjectID, Kind: domain.KindWorker, Harness: cfg.Harness, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env, Model: cfg.Model, Effort: cfg.Effort, FastMode: cfg.FastMode, ReviewerSettings: cfg.PinnedSettings, Permissions: ports.PermissionModeAuto, SystemPrompt: cfg.SystemPrompt, ProviderConversationID: cfg.ProviderConversationID})
 	if err != nil {
-		return "", err
+		return ports.ChatControllerStarted{}, err
 	}
 	if !sendPrompt || strings.TrimSpace(cfg.Prompt) == "" {
-		return started.ProviderConversationID, nil
+		return started, nil
 	}
 	if _, err := c.svc.SendForOwner(ctx, owner, ports.ChatUserMessage{Text: cfg.Prompt, Origin: domain.MessageOriginDaemon, ClientMessageID: reviewcore.BatchMessageID(cfg.BatchID)}); err != nil {
 		_ = c.svc.StopForOwner(context.Background(), owner)
-		return "", err
+		return ports.ChatControllerStarted{}, err
 	}
-	return started.ProviderConversationID, nil
+	return started, nil
 }
 
 func (c chatLauncher) SendReviewChat(ctx context.Context, reviewID, message, batchID string) error {
@@ -828,6 +850,14 @@ func (c chatLauncher) InterruptReviewChat(ctx context.Context, reviewID string) 
 		return nil
 	}
 	return err
+}
+
+func (c chatLauncher) ReviewChatStopScope(ctx context.Context, reviewID, generation string) (*domain.CompactionProcessScope, error) {
+	return c.svc.ReviewStopScope(ctx, reviewID, generation)
+}
+
+func (c chatLauncher) StopReviewChatGeneration(ctx context.Context, reviewID, generation string) error {
+	return c.svc.StopReviewGeneration(ctx, reviewID, generation)
 }
 
 func (c chatLauncher) StopReviewChat(ctx context.Context, reviewID string) error {

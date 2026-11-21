@@ -950,17 +950,21 @@ describe("HarnessSettingsSection", () => {
 		await waitFor(() => expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("Source: ~/.missing/auth.json")));
 	});
 
-	it("retains a failed auth request's correlation facts without copying the server message", async () => {
+	it("clears the connected indicators after a failed auth check and restores them on retry", async () => {
 		mockInstalledOperations("npm");
 		renderSection();
 		const page = await findAgentRow("codex");
+		const connectedIndicator = () => within(page).getByText("Connected").querySelector(".bg-success");
+		expect(connectedIndicator()).toBeInTheDocument();
 		await userEvent.click(within(page).getByRole("tab", { name: "Health" }));
+		expect(connectedIndicator()).toBeInTheDocument();
 		const post = vi.mocked(apiClient.POST).getMockImplementation()!;
 		vi.mocked(apiClient.POST).mockImplementation(async (path, options) => path === "/api/v1/agents/{agent}/probe"
 			? { error: { code: "AGENT_CHECK_FAILED", requestId: "request-123", message: "secret-token" }, response: { status: 503 } } as never
 			: (post as (path: string, options: unknown) => Promise<never>)(path, options));
 		await userEvent.click(within(page).getByRole("button", { name: "Check again" }));
 		expect(await within(page).findByRole("alert")).toHaveTextContent("Could not complete the check.");
+		expect(connectedIndicator()).toBeNull();
 		expect(within(page).queryByText(/AGENT_CHECK_FAILED/)).toBeNull();
 		await userEvent.click(within(page).getByRole("button", { name: "Copy diagnostics" }));
 		await waitFor(() => expect(window.ao!.clipboard.writeText).toHaveBeenCalled());
@@ -969,6 +973,15 @@ describe("HarnessSettingsSection", () => {
 		expect(report).toContain("request request-123");
 		expect(report).not.toContain("secret-token");
 		expect(report).toContain("Authentication: authorized");
+		await userEvent.click(within(page).getByRole("tab", { name: "Account" }));
+		expect(connectedIndicator()).toBeNull();
+		await userEvent.click(within(page).getByRole("tab", { name: "Health" }));
+		vi.mocked(apiClient.POST).mockImplementation(post);
+		await userEvent.click(within(page).getByRole("button", { name: "Check again" }));
+		await waitFor(() => expect(connectedIndicator()).toBeInTheDocument());
+		expect(within(page).queryByText("Could not complete the check. Try again or copy diagnostics.")).toBeNull();
+		await userEvent.click(within(page).getByRole("tab", { name: "Account" }));
+		expect(connectedIndicator()).toBeInTheDocument();
 	});
 
 	it.each(["unauthorized", "configured"])("confirms logout and rechecks readiness without assuming success: %s", async (authStatus) => {
@@ -2050,6 +2063,28 @@ describe("HarnessSettingsSection", () => {
 		await userEvent.click(within(row).getByRole("tab", { name: "Health" }));
 		expect(within(row).getByText("Connection not checked")).toBeInTheDocument();
 		expect(within(row).queryByText("Credentials not verified")).toBeNull();
+	});
+
+	it.each(["unknown", "configured", "unauthorized"] as const)("keeps Docker configuration guidance reachable with %s authentication", async (authentication) => {
+		const dockerCatalog = { agents: [agentReadiness("docker-agent", "Docker Agent", { authentication })] };
+		const documentationUrl = "https://example.test/docker-agent/setup";
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: dockerCatalog } as never;
+			if (path === "/api/v1/agents/auth-plans") return { data: { plans: [{ agentId: "docker-agent", action: "setup", launchMode: "documentation", available: true, documentationUrl }] } } as never;
+			if (path === "/api/v1/agents/installers") return { data: { agents: [] } } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
+			return { data: undefined } as never;
+		});
+		vi.mocked(apiClient.POST).mockResolvedValue({ data: dockerCatalog } as never);
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+
+		renderSection();
+		const row = await findAgentRow("docker-agent");
+		expect(await within(row).findByText(authentication === "configured" ? "Configured" : authentication === "unauthorized" ? "Not set up" : "Setup status unavailable")).toBeInTheDocument();
+		await userEvent.click(within(row).getByRole("button", { name: "View documentation" }));
+		expect(openExternal).toHaveBeenCalledWith(documentationUrl);
+		expect(apiClient.POST).not.toHaveBeenCalledWith("/api/v1/agents/{agent}/auth", expect.anything());
+		expect(within(row).queryByText("Connected")).toBeNull();
 	});
 
 	it("shows cached readiness while silently refreshing when the page opens", async () => {

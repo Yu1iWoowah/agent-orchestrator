@@ -104,7 +104,7 @@ func TestLauncherSpawnWithMissingOrLiveTmuxPane(t *testing.T) {
 		completed := domain.ReviewRun{
 			ID: "run-complete", ReviewID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode,
 			PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha0",
-			Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved,
+			Status: domain.ReviewRunCompleted, Verdict: domain.VerdictApproved,
 		}
 		store := &fakeStore{
 			review: &domain.Review{

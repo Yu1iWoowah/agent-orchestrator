@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { cloudPRSummary, cloudSessionReviews } from "./pullRequests";
 import type { CloudPullRequestSummary, CloudReviewRun } from "./types";
+import { reviewRunSendable } from "../reviewView";
 
 const PR_URL = "https://github.com/acme/web/pull/7";
 
@@ -43,6 +44,8 @@ it("reads cloud reviews as the daemon's, with a conversation for a reviewer and 
 	expect(reviews.reviewerHandleId).toBe("");
 	expect(reviews.reviews[0]).toMatchObject({ prUrl: PR_URL, prNumber: 7, latestRun: { prUrl: PR_URL, githubReviewId: "gh-9", deliveredAt: null } });
 	expect(reviews.runs[0]?.verdict).toBe("changes_requested");
+	expect(reviews.runs[0]?.status).toBe("complete");
+	expect(reviewRunSendable(reviews.runs[0]!)).toBe(true);
 	expect(reviews.reviewerSurface).toEqual({ mode: "chat", reviewId: "run-1", harness: "codex" });
 	expect(reviews.availableReviewerHarnesses).toEqual(["codex", "claude-code"]);
 	expect(reviews.reviewerActivityState).toBe("idle");

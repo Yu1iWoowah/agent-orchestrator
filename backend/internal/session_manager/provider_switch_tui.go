@@ -1,6 +1,7 @@
 package sessionmanager
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,12 @@ import (
 // session and terminal. The target starts a fresh native thread seeded with the
 // handoff note: native histories cannot be merged across harnesses.
 func (m *Manager) SwitchTUIProvider(ctx context.Context, id domain.SessionID, request domain.ProviderSwitchRequest) error {
+	return m.SwitchTUIProviderWithPreflight(ctx, id, request, nil)
+}
+
+// SwitchTUIProviderWithPreflight runs the model picker check against the exact
+// target account reserved for the launch.
+func (m *Manager) SwitchTUIProviderWithPreflight(ctx context.Context, id domain.SessionID, request domain.ProviderSwitchRequest, checkPicks func(context.Context, *domain.ProviderSwitchRequest) error) error {
 	ctx, releaseReplacement, err := m.beginReplacementSessionAction(ctx, id)
 	if err != nil {
 		return err
@@ -44,8 +51,12 @@ func (m *Manager) SwitchTUIProvider(ctx context.Context, id domain.SessionID, re
 	if rec.IsTerminated {
 		return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalRecoveryRequired, Detail: "terminated sessions must be restored before switching"}
 	}
-	if rec.Harness == target {
-		return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalUnsupported, Detail: "target provider is already active"}
+	sameAgent := rec.Harness == target
+	if sameAgent && !tuiSettingsChange(rec.Metadata, request) {
+		return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalAlreadyActive, Detail: "target provider is already active", Cause: domain.ErrProviderAlreadyActive}
+	}
+	if sameAgent && rec.Metadata.AgentSessionID == "" {
+		return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalUnsupported, Detail: fmt.Sprintf("%s has no conversation to resume on new settings yet; try again once it has replied", target)}
 	}
 	if rec.NeedsImportResume() {
 		return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalRecoveryRequired, Detail: "open the imported chat before switching providers"}
@@ -59,11 +70,11 @@ func (m *Manager) SwitchTUIProvider(ctx context.Context, id domain.SessionID, re
 	if !ok || targetAgent == nil {
 		return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalUnsupported, Detail: fmt.Sprintf("%s is not available for Terminal UI", target)}
 	}
-	if rec.Activity.State == domain.ActivityActive {
+	if !request.Force && rec.Activity.State == domain.ActivityActive {
 		return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalBusy, Detail: "the provider is still working"}
 	}
-	if rec.Activity.State == domain.ActivityWaitingInput || rec.Activity.State == domain.ActivityBlocked {
-		return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalPendingInteraction, Detail: "answer the pending provider interaction before switching"}
+	if !request.Force && (rec.Activity.State == domain.ActivityWaitingInput || rec.Activity.State == domain.ActivityBlocked) {
+		return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalPendingInteraction, Detail: "the agent is waiting on an approval or question"}
 	}
 
 	// Everything the relaunch needs is read before the source is stopped, so a
@@ -73,8 +84,27 @@ func (m *Manager) SwitchTUIProvider(ctx context.Context, id domain.SessionID, re
 		return err
 	}
 	ws := workspaceInfo(rec)
-	if err := preflightTUISwitchTarget(ctx, target, targetAgent, m.dataDir); err != nil {
+	targetCtx, _, newBinding, releaseTarget, err := m.PrepareProviderSwitchLaunch(ctx, rec, target)
+	if err != nil {
 		return err
+	}
+	defer releaseTarget()
+	if checkPicks != nil {
+		if err := checkPicks(targetCtx, &request); err != nil {
+			return err
+		}
+		if sameAgent && !tuiSettingsChange(rec.Metadata, request) {
+			return &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalAlreadyActive, Detail: "target provider is already active", Cause: domain.ErrProviderAlreadyActive}
+		}
+	}
+	if err := preflightTUISwitchTarget(targetCtx, target, targetAgent, m.dataDir); err != nil {
+		return err
+	}
+	switchStore, _ := m.store.(interface {
+		UpdateTUIProviderSwitch(context.Context, domain.SessionRecord, domain.AgentLaunchOptions, domain.ResolvedAgentAccount, time.Time, bool) error
+	})
+	if newBinding != nil && switchStore == nil {
+		return ports.ErrAgentAccountStorageUnavailable
 	}
 
 	lastInputAt, releaseInput := m.beginTerminalInputDrain(rec)
@@ -82,7 +112,13 @@ func (m *Manager) SwitchTUIProvider(ctx context.Context, id domain.SessionID, re
 		releaseInput = func() {}
 	}
 	defer releaseInput()
-	if err := m.prepareSourceHandoff(ctx, rec, domain.SessionInterfaceTransitionDrain, lastInputAt); err != nil {
+	policy := domain.SessionInterfaceTransitionDrain
+	if request.Force {
+		policy = domain.SessionInterfaceTransitionInterrupt
+	}
+	if err := m.prepareSourceHandoff(ctx, rec, policy, lastInputAt); err != nil && request.Force {
+		m.logger.Warn("interrupt before forced provider switch failed", "session", id, "error", err)
+	} else if err != nil {
 		kind := domain.ProviderSwitchRefusalBusy
 		if errors.Is(err, errDrainDecisionPending) {
 			kind = domain.ProviderSwitchRefusalPendingInteraction
@@ -124,6 +160,17 @@ func (m *Manager) SwitchTUIProvider(ctx context.Context, id domain.SessionID, re
 		FastMode: request.FastMode, FastModeOff: !request.FastMode && target == domain.HarnessCodex,
 		Ultracode: request.Ultracode, AutoCompactWindow: request.AutoCompactWindow,
 	}
+	var bindingAt time.Time
+	bindingPublished := false
+	writeSource := func(ctx context.Context, rec domain.SessionRecord) error {
+		if bindingPublished {
+			return switchStore.UpdateTUIProviderSwitch(ctx, rec, sourceLaunch, *newBinding, bindingAt, true)
+		}
+		if launchStore != nil {
+			return launchStore.UpdateSessionWithLaunchOptions(ctx, rec, sourceLaunch)
+		}
+		return m.store.UpdateSession(ctx, rec)
+	}
 	restoreSource := func(cause error, what string) error {
 		// A target that used up the switch's time still leaves the restore its own.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*interfaceTransitionStepLimit)
@@ -134,19 +181,15 @@ func (m *Manager) SwitchTUIProvider(ctx context.Context, id domain.SessionID, re
 		// Ownership and the source's launch choices go back in one write, as they
 		// moved: a stop between two writes would leave the target owning the
 		// session with neither its handoff nor the source's native identity.
-		var restoreErr error
-		if launchStore != nil {
-			restoreErr = launchStore.UpdateSessionWithLaunchOptions(ctx, source, sourceLaunch)
-		} else {
-			restoreErr = m.store.UpdateSession(ctx, source)
-		}
+		restoreErr := writeSource(ctx, source)
 		if restoreErr == nil {
+			ctx = ports.WithProviderSwitchAccountPreservation(ctx)
 			_, restoreErr = m.relaunchSessionWithPolicy(ctx, "restore source provider", source, project, ws, nil, false, false, domain.SessionInterfaceTransitionHistoryStrict)
 		}
 		if restoreErr != nil {
 			// No agent runs now, so the session must not read as idle.
 			source.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: m.clock()}
-			_ = m.store.UpdateSession(ctx, source)
+			_ = writeSource(ctx, source)
 			return &domain.ProviderSwitchError{
 				Kind:   domain.ProviderSwitchRefusalRecoveryRequired,
 				Detail: fmt.Sprintf("%s and source restoration also failed: %v; %v", what, cause, restoreErr),
@@ -157,32 +200,54 @@ func (m *Manager) SwitchTUIProvider(ctx context.Context, id domain.SessionID, re
 	}
 
 	targetRecord := source
-	targetRecord.Harness = target
 	md := &targetRecord.Metadata
-	md.AgentSessionID, md.NativeTranscriptPath, md.NativeIdentityObservedAt = "", "", time.Time{}
-	md.Model, md.Effort, md.LatestUserPrompt, md.LatestAssistantUpdate = request.Model, request.Effort, "", ""
-	md.ConversationCheckpointState, md.ConversationCheckpointGeneration = domain.ConversationCheckpointEmpty, ""
-	md.ConversationCheckpointNativeID, md.ConversationCheckpointTurnID, md.ConversationCheckpointUnsettled = "", "", false
+	if sameAgent {
+		md.Model, md.Effort = cmp.Or(request.Model, md.Model), cmp.Or(request.Effort, md.Effort)
+		targetLaunch = sourceLaunch
+	} else {
+		targetRecord.Harness = target
+		md.AgentSessionID, md.NativeTranscriptPath, md.NativeIdentityObservedAt = "", "", time.Time{}
+		md.Model, md.Effort, md.LatestUserPrompt, md.LatestAssistantUpdate = request.Model, request.Effort, "", ""
+		md.ConversationCheckpointState, md.ConversationCheckpointGeneration = domain.ConversationCheckpointEmpty, ""
+		md.ConversationCheckpointNativeID, md.ConversationCheckpointTurnID, md.ConversationCheckpointUnsettled = "", "", false
+		// The note stays saved with the target's choices until it has started, so a
+		// relaunch before then (the daemon stopped) hands over again instead of
+		// replaying the task. Both move with ownership in one write.
+		targetLaunch.HandoffNote = request.HandoffNote
+	}
+	if request.PermissionMode != "" {
+		md.Permissions = request.PermissionMode
+	}
 	targetRecord.UpdatedAt = m.clock()
-	// The note stays saved with the target's choices until it has started, so a
-	// relaunch before then (the daemon stopped) hands over again instead of
-	// replaying the task. Both move with ownership in one write.
-	targetLaunch.HandoffNote = request.HandoffNote
 	publish := func() error { return m.store.UpdateSession(ctx, targetRecord) }
-	if launchStore != nil {
+	if newBinding != nil {
+		bindingAt = targetRecord.UpdatedAt
+		publish = func() error {
+			err := switchStore.UpdateTUIProviderSwitch(ctx, targetRecord, targetLaunch, *newBinding, bindingAt, false)
+			bindingPublished = err == nil
+			return err
+		}
+	} else if launchStore != nil {
 		publish = func() error { return launchStore.UpdateSessionWithLaunchOptions(ctx, targetRecord, targetLaunch) }
 	}
 	if err := publish(); err != nil {
 		return restoreSource(err, "could not publish target provider ownership")
 	}
 
+	ctx = ports.WithProviderSwitchAccountPreservation(ctx)
 	if preparer, ok := targetAgent.(interface {
 		PrepareSwitchTarget(context.Context, string)
 	}); ok {
 		preparer.PrepareSwitchTarget(ctx, ws.Path)
 	}
-	started, err := m.relaunchSessionWithPolicyAndGeneration(ctx, "switch TUI provider", targetRecord, project, ws, nil,
-		true, false, "", domain.SessionInterfaceTransitionHistoryStrict, &request.HandoffNote)
+	var started RestoreResult
+	if sameAgent {
+		started, err = m.relaunchSessionWithPolicy(ctx, "restart TUI provider on new settings", targetRecord, project, ws, nil,
+			false, true, domain.SessionInterfaceTransitionHistoryStrict)
+	} else {
+		started, err = m.relaunchSessionWithPolicyAndGeneration(ctx, "switch TUI provider", targetRecord, project, ws, nil,
+			true, false, "", domain.SessionInterfaceTransitionHistoryStrict, &request.HandoffNote)
+	}
 	if err != nil {
 		return restoreSource(err, "target provider failed to start")
 	}
@@ -192,9 +257,20 @@ func (m *Manager) SwitchTUIProvider(ctx context.Context, id domain.SessionID, re
 		m.destroySpawnRuntimeAfterFailure(ctx, runtimeHandle(started.Session.Metadata))
 		return restoreSource(err, "target provider did not stay running")
 	}
-	m.adoptTUISwitchSettings(ctx, id, request)
+	adopt := request
+	adopt.Model, adopt.Effort = md.Model, md.Effort
+	if sameAgent {
+		adopt.AutoCompactWindow = sourceLaunch.AutoCompactWindow
+	}
+	m.adoptTUISwitchSettings(ctx, id, adopt)
 	m.clearHandoffNote(ctx, id)
 	return nil
+}
+
+func tuiSettingsChange(md domain.SessionMetadata, request domain.ProviderSwitchRequest) bool {
+	return (request.Model != "" && !strings.EqualFold(request.Model, md.Model)) ||
+		(request.Effort != "" && !strings.EqualFold(request.Effort, md.Effort)) ||
+		(request.PermissionMode != "" && ports.NormalizePermissionMode(request.PermissionMode) != ports.NormalizePermissionMode(md.Permissions))
 }
 
 // clearHandoffNote drops a switch target's saved note once the target has a
@@ -241,6 +317,9 @@ func (m *Manager) adoptTUISwitchSettings(ctx context.Context, id domain.SessionI
 	settings.AutoCompactWindow = ""
 	if request.TargetHarness == domain.HarnessClaudeCode {
 		settings.AutoCompactWindow = request.AutoCompactWindow
+	}
+	if request.PermissionMode != "" {
+		settings.ApprovalMode = ports.NormalizePermissionMode(request.PermissionMode)
 	}
 	if err := store.SetConversationSettings(ctx, conversation.ID, settings, m.clock()); err != nil {
 		m.logger.Warn("adopt terminal switch settings", "session", id, "error", err)
@@ -306,7 +385,10 @@ func preflightTUISwitchTarget(ctx context.Context, harness domain.AgentHarness, 
 	if runtimeChecker, ok := target.(ports.AgentRuntimeAuthChecker); ok && dataDir != "" {
 		// The probe sees what the relaunched session gets: no key AO holds
 		// back from this harness.
-		probeCtx := ports.WithAuthEnvironment(ctx, providerkeys.Withheld(dataDir, string(harness)))
+		probeCtx := ctx
+		if len(ports.AuthEnvironmentOverrides(ctx)) == 0 {
+			probeCtx = ports.WithAuthEnvironment(ctx, providerkeys.Withheld(dataDir, string(harness)))
+		}
 		status, _, _, err = runtimeChecker.AuthStatusForRuntime(probeCtx, dataDir)
 	} else if checker, ok := target.(ports.AgentAuthChecker); ok {
 		status, err = checker.AuthStatus(ctx)

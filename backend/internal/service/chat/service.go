@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -140,6 +141,8 @@ type Service struct {
 	runPromptSuggestion   func(context.Context, domain.SessionID, string, string, string) (string, error)
 	promptSuggestionSlots chan struct{}
 
+	otherWriter func(context.Context, domain.SessionRecord, time.Time) (bool, bool)
+
 	mu                 sync.RWMutex
 	controllers        map[domain.SessionID]*Controller
 	ownerControllers   map[domain.ConversationOwner]*Controller
@@ -169,6 +172,8 @@ type Service struct {
 	prewarming              sync.Map // domain.AgentHarness -> struct{}
 	providerSwitches        sync.Map // domain.SessionID -> chan struct{}, one switch at a time
 	terminalSwitcher        TerminalProviderSwitcher
+	switchModels            switchModelCatalog
+	switchLaunch            ProviderSwitchLaunch
 	replacementMutationGate ReplacementMutationGate
 }
 
@@ -620,6 +625,7 @@ func (s *Service) drainStartIntake(ctx context.Context, id domain.SessionID, con
 // startLocked is the launch implementation shared by ordinary starts and the
 // provider-switch saga. Callers must hold the typed controller gate.
 func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller, error) {
+	startedAt := s.now()
 	s.mu.Lock()
 	if s.shutdownQuiescing {
 		s.mu.Unlock()
@@ -1604,6 +1610,9 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		}
 		controller.strictReplacementReplay = &replacementReplayProof{owner: current.ControllerOwner(), capabilityVerifier: launchVerifier}
 	}
+	if !liveReconnect {
+		controller.startedAt = startedAt
+	}
 	s.bindControllerAdapter(controller)
 	s.mu.Lock()
 	s.publishControllerLocked(owner, controller)
@@ -1794,6 +1803,13 @@ func (s *Service) requireChatSession(ctx context.Context, id domain.SessionID) (
 	return record, nil
 }
 
+func sharesImportedClaudeTranscript(rec domain.SessionRecord) bool {
+	source := rec.Metadata.ImportSource
+	return rec.Harness == domain.HarnessClaudeCode && source != nil &&
+		(rec.Metadata.ProviderConversationID == "" ||
+			rec.Metadata.ProviderConversationID == cmp.Or(source.ResumeNativeID, source.NativeID))
+}
+
 // Send delivers a message to a session's agent.
 func (s *Service) Send(
 	ctx context.Context,
@@ -1810,11 +1826,33 @@ func (s *Service) Send(
 	if err := validateFileReferenceContent(msg, string(id)); err != nil {
 		return domain.ConversationTurn{}, err
 	}
-	if s.switchBeforeSend(ctx, record) {
-		// The provider stopped on its old release. The hibernated path below
-		// queues this message and wakes the session on the installed one.
+	refreshed, writerErr := s.checkOtherWriter(ctx, record)
+	if writerErr != nil {
+		if found, err := s.replaySendReceipt(ctx, id, msg); found || err != nil {
+			return domain.ConversationTurn{}, err
+		}
+		return domain.ConversationTurn{}, writerErr
+	}
+	if refreshed || s.switchBeforeSend(ctx, record) {
 		if record, err = s.requireChatSession(ctx, id); err != nil {
 			return domain.ConversationTurn{}, err
+		}
+	}
+	if record.HibernatedAt != nil && s.otherWriter != nil && sharesImportedClaudeTranscript(record) {
+		if found, err := s.replaySendReceipt(ctx, id, msg); found || err != nil {
+			return domain.ConversationTurn{}, err
+		}
+		// Reload native history before assigning a sequence to the next prompt.
+		// Replacement keeps its established durable queue and wake fence.
+		if fenceErr := s.replacementWakeFence(ctx, id); fenceErr == nil {
+			if err := s.wakeHibernated(ctx, id); err != nil {
+				return domain.ConversationTurn{}, fmt.Errorf("%w: reload imported conversation: %w", ports.ErrChatResumeFailed, err)
+			}
+			if record, err = s.requireChatSession(ctx, id); err != nil {
+				return domain.ConversationTurn{}, err
+			}
+		} else if !errors.Is(fenceErr, domain.ErrReplacementIntakeFenced) {
+			return domain.ConversationTurn{}, fenceErr
 		}
 	}
 	behindAccountMove := !record.ProvisionState.IsProvisioning() && record.HibernatedAt == nil &&
@@ -2346,9 +2384,40 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 	return err
 }
 
+// ReviewStopScope reads the original provider scope from a specific reviewer controller.
+func (s *Service) ReviewStopScope(ctx context.Context, reviewID, generation string) (*domain.CompactionProcessScope, error) {
+	controller, err := s.ControllerForOwner(domain.ReviewConversationOwner(reviewID))
+	if err != nil {
+		return nil, err
+	}
+	if generation == "" || controller.generation != generation {
+		return nil, ErrNoController
+	}
+	reader, ok := controller.conv.(ports.ChatCompactionScopeReader)
+	if !ok {
+		return nil, ports.ErrChatCompactionScopeUnsupported
+	}
+	scopeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	scope, err := reader.CompactionScope(scopeCtx)
+	return scope.Processes, err
+}
+
+// StopReviewGeneration closes only the expected reviewer controller.
+func (s *Service) StopReviewGeneration(ctx context.Context, reviewID, generation string) error {
+	if generation == "" {
+		return ErrNoController
+	}
+	return s.stopForOwner(ctx, domain.ReviewConversationOwner(reviewID), generation)
+}
+
 // StopForOwner closes a typed-owner controller without touching its parent
 // worker's Chat controller.
 func (s *Service) StopForOwner(ctx context.Context, owner domain.ConversationOwner) error {
+	return s.stopForOwner(ctx, owner, "")
+}
+
+func (s *Service) stopForOwner(ctx context.Context, owner domain.ConversationOwner, expectedGeneration string) error {
 	if owner.Kind == domain.ConversationOwnerSession {
 		return s.Stop(ctx, domain.SessionID(owner.ID))
 	}
@@ -2359,6 +2428,9 @@ func (s *Service) StopForOwner(ctx context.Context, owner domain.ConversationOwn
 	defer gate.unlock()
 
 	controller, err := s.ControllerForOwner(owner)
+	if expectedGeneration != "" && (err != nil || controller.generation != expectedGeneration) {
+		return ErrNoController
+	}
 	if errors.Is(err, ErrNoController) {
 		s.mu.Lock()
 		delete(s.startConfigs, owner)
@@ -2370,6 +2442,9 @@ func (s *Service) StopForOwner(ctx context.Context, owner domain.ConversationOwn
 		return err
 	}
 	err = controller.Terminate(ctx)
+	if err == nil && expectedGeneration != "" && !controller.providerTerminationStarted {
+		err = ports.ErrChatRecoveryInconclusive
+	}
 	select {
 	case <-controller.stopped:
 		s.mu.Lock()
@@ -3064,6 +3139,29 @@ func chatAdmissionError(driver ports.ChatDriver, harness domain.AgentHarness, ca
 	return nil
 }
 
+// PreflightChatWithEnv checks the task's native prerequisites separately from
+// cached global capabilities, before the session manager allocates durable state.
+func (s *Service) PreflightChatWithEnv(
+	ctx context.Context,
+	harness domain.AgentHarness,
+	permissions ports.PermissionMode,
+	env map[string]string,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	driver, err := s.drivers.Driver(harness)
+	if err != nil {
+		return fmt.Errorf("%w: %s has no chat driver", ports.ErrChatUnsupported, harness)
+	}
+	if validator, ok := driver.(ports.ChatEnvironmentValidator); ok {
+		if err := validator.ValidateEnvironment(ctx, env); err != nil {
+			return err
+		}
+	}
+	return s.PreflightChat(ctx, harness, permissions)
+}
+
 func capabilityAdmissionError(
 	harness domain.AgentHarness,
 	caps ports.ChatCapabilities,
@@ -3682,6 +3780,12 @@ func (s *Service) relayChatTurn(
 	// through the provider start, and a caller holding the session's input
 	// lease (a lifecycle nudge) deadlocks with the resume, which waits for that
 	// lease to drain.
+	wakeAfterRelay := false
+	defer func() {
+		if wakeAfterRelay {
+			s.startBackgroundWake(id)
+		}
+	}()
 	for {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -3693,6 +3797,17 @@ func (s *Service) relayChatTurn(
 		if record.IsTerminated && record.Kind == domain.KindOrchestrator {
 			turn, err := s.QueueReplacementIntake(ctx, id, msg)
 			return turn.ID, err
+		}
+		refreshed, writerErr := s.checkOtherWriter(ctx, record)
+		if writerErr != nil {
+			if found, err := s.replaySendReceipt(ctx, id, msg); found || err != nil {
+				return "", err
+			}
+			return "", writerErr
+		}
+		if refreshed {
+			wakeAfterRelay = true
+			continue
 		}
 		if record.HibernatedAt != nil || s.controllerStarting(id) {
 			turn, err := s.queueWithoutController(ctx, record, msg, false)

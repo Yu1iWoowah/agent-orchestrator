@@ -2,11 +2,14 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
@@ -85,5 +88,60 @@ func TestPersistentChatHostKeepSetSkipsExitedChatReviewers(t *testing.T) {
 	}
 	if _, ok := keep["review-active"]; !ok || len(keep) != 1 {
 		t.Fatalf("keep = %v, want only the active reviewer's host", keep)
+	}
+}
+
+type stopReceiptHostStore struct {
+	persistentChatSessionStore
+	receipts []domain.ReviewerStopReceipt
+	err      error
+}
+
+func (s stopReceiptHostStore) ListReviewerStopReceipts(context.Context) ([]domain.ReviewerStopReceipt, error) {
+	return s.receipts, s.err
+}
+
+func TestPersistentChatReconcilePreservesUnsettledReviewerHost(t *testing.T) {
+	root := t.TempDir()
+	hostID := "review-held"
+	hostDir := filepath.Join(root, "chat-hosts", hostID)
+	if err := os.MkdirAll(hostDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(hostDir, "host.json")
+	descriptor := persistenthost.Descriptor{Version: persistenthost.ProtocolVersion, SessionID: hostID, PID: 0, Address: "unused", Token: "synthetic-fixture"}
+	raw, err := json.Marshal(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := stopReceiptHostStore{
+		persistentChatSessionStore: sqlitetest.MustOpen(t),
+		receipts: []domain.ReviewerStopReceipt{
+			{ReviewerStopKey: domain.ReviewerStopKey{ReviewID: "held"}, InterfaceMode: domain.ReviewerInterfaceChat},
+		},
+	}
+	if err := reconcilePersistentChatHosts(t.Context(), root, store); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(raw) {
+		t.Fatalf("boot reconcile removed exact host evidence: %v", err)
+	}
+	store.receipts = nil
+	store.err = errors.New("receipts unavailable")
+	if err := reconcilePersistentChatHosts(t.Context(), root, store); !errors.Is(err, store.err) {
+		t.Fatalf("went ahead with an unreadable receipt set: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	store.err = nil
+	if err := reconcilePersistentChatHosts(t.Context(), root, store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("control fixture did not exercise host cleanup: %v", err)
 	}
 }

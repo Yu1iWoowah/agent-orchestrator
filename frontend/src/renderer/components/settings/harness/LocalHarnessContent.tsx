@@ -814,6 +814,7 @@ export function LocalHarnessContent({ focusAgentId, hostId, search, onDetailChan
 		authPlan: agentAuthPlans.get(agentId),
 		authPlansPending: authPlans.isPending,
 		authPlansFailed: authPlans.isError,
+		authCheckFailed: Boolean(authCheckErrors[agentId]),
 		authState: { error: authStates[agentId]?.error ?? null, pending: Boolean(authStates[agentId]?.pending || uiLoginAgent === agentId || pendingUILogins.has(agentLoginKey(agentId, hostId))) },
 		authWorkflow: authWorkflow?.agentId === agentId ? authWorkflow : null,
 		updatedAt: lastUpdatedAt[agentId],

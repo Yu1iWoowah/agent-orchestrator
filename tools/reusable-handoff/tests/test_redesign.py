@@ -941,7 +941,7 @@ class ControlledMaterialTests(unittest.TestCase):
                     return dict(session=dict(id=actor, kind=kind, projectId=h.PROJECT, isTerminated=False, activity=dict(state="idle")),
                                 transcript=dict(incomplete=[], truncatedFields=0, turns=[dict(id="turn", state="completed", completedAt="synthetic-completed")], entries=entries))
                 snaps = {"old": snapshot("old", "orchestrator", []), sid: snapshot(sid, "worker", [message])}
-                cli = SimpleNamespace(data_dir=data, session=lambda actor: snaps[actor], documents=lambda: dict(lease=dict(sessionId="old", frozen=False)),
+                cli = SimpleNamespace(data_dir=data, worker_binaries={}, session=lambda actor: snaps[actor], documents=lambda: dict(lease=dict(sessionId="old", frozen=False)),
                                       sessions=lambda: [dict(id=k, role=v["session"]["kind"], projectId=h.PROJECT, isTerminated=False) for k, v in snaps.items()])
                 fact = dict(kind="worker-control", expected_effect="worker-control", effect_id=handle, target=dict(session_id=sid),
                             origin="retrospective-review", message_sha256=h.digest(raw), terminal="returned", result=dict(returncode=0))
@@ -1242,7 +1242,7 @@ finally:
         attempt, = [fact for fact in facts if fact.get("effect_id") == handle]
         self.assertEqual(attempt["terminal"], "not-started")
         self.assertIsNone(attempt["result"]["dispatched_monotonic"])
-        observer = SimpleNamespace(session=lambda actor: self.snaps[actor], documents=lambda: dict(lease=dict(sessionId="old")),
+        observer = SimpleNamespace(worker_binaries={}, session=lambda actor: self.snaps[actor], documents=lambda: dict(lease=dict(sessionId="old")),
                                    sessions=lambda: [self.list_row(snap["session"]) for snap in self.snaps.values()])
         state = h.decode(h.private_read(self.run / "state.json"))
         controls = h.effect_closure(facts)

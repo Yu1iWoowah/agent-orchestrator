@@ -148,10 +148,10 @@ func hibernationHarnessWith(t *testing.T, state domain.TurnState, configure func
 	return hibernationHarnessForKind(t, state, "", configure)
 }
 
-func hibernationHarnessForKind(t *testing.T, state domain.TurnState, kind domain.SessionKind, configure func(*chatsvc.Options)) (*harness, *hibernationConversation) {
+func hibernationHarnessForKind(t *testing.T, state domain.TurnState, kind domain.SessionKind, configure func(*chatsvc.Options), customize ...func(*domain.SessionRecord)) (*harness, *hibernationConversation) {
 	t.Helper()
 	conv := &hibernationConversation{fakeConversation: newFakeConversation()}
-	st := openStore(t)
+	st := openStore(t, customize...)
 	h := &harness{st: st, conv: conv.fakeConversation, activity: &recordingActivity{}, clock: time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)}
 	var nextID atomic.Int32
 	opts := chatsvc.Options{

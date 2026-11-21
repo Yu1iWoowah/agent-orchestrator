@@ -92,7 +92,7 @@ func (s *Service) ReviewerLaunchEnv(ctx context.Context, id string, harness doma
 			return nil, err
 		}
 	}
-	return s.launchEnv(ctx, domain.SessionID(id), domain.AgentAccount{}, harness, id)
+	return s.launchEnv(ctx, domain.SessionID(id), domain.AgentAccount{}, harness, id, true)
 }
 
 func (s *Service) reviewerAccount(ctx context.Context, id string, p domain.AgentAccountProvider) (domain.AgentAccount, bool, error) {

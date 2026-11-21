@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 
@@ -54,6 +57,14 @@ test('packages/shared reaches the frontend and mobile, with all vitest files', (
   const pick = pickLanes(pr(['packages/shared/theme/palette.ts']));
   assert.deepEqual(pick.lanes, ['frontend', 'boundary', 'mobile']);
   assert.equal(pick.vitest, 'all');
+});
+
+test('the desktop harness marks and the daemon harness list reach the mobile parity test', () => {
+  assert.ok(pickLanes(pr(['frontend/src/renderer/assets/agents/codex.svg'])).lanes.includes('mobile'));
+  assert.ok(pickLanes(pr(['frontend/src/renderer/components/AgentAvatar.tsx'])).lanes.includes('mobile'));
+  assert.ok(pickLanes(pr(['backend/internal/domain/harness.go'])).lanes.includes('mobile'));
+  assert.ok(!pickLanes(pr(['frontend/src/renderer/components/AgentAvatarStack.tsx'])).lanes.includes('mobile'));
+  assert.ok(!pickLanes(pr(['backend/internal/domain/session.go'])).lanes.includes('mobile'));
 });
 
 test('the renderer typechecks against cloud-client types', () => {
@@ -119,12 +130,13 @@ test('every always-run vitest file exists', () => {
 });
 
 
-test('the approved integration base runs the full matrix once ready', () => {
-  const base = 'ao/upsync-design/upsync-integration';
-  assert.deepEqual(pickLanes(pr(['backend/a.go'], { base })), { lanes: Object.keys(LANES), full: true, macos: true, vitest: 'all' });
-  assert.deepEqual(pickLanes(pr(['backend/a.go'], { base, draft: true })).lanes, []);
-  assert.deepEqual(pickLanes(pr(['backend/a.go'], { base: base + '-other' })).lanes, []);
-});
+for (const base of ['ao/upsync-design/upsync-integration', 'ao/upsync2-design/upsync2-integration']) {
+  test(`the integration base ${base} runs the full matrix once ready`, () => {
+    assert.deepEqual(pickLanes(pr(['backend/a.go'], { base })), { lanes: Object.keys(LANES), full: true, macos: true, vitest: 'all' });
+    assert.deepEqual(pickLanes(pr(['backend/a.go'], { base, draft: true })).lanes, []);
+    assert.deepEqual(pickLanes(pr(['backend/a.go'], { base: base + '-other' })).lanes, []);
+  });
+}
 
 test('retained Cloud and HCG modules still run their dependent checks', () => {
   for (const path of ['cloud/internal/api/server.go', 'components/hcg/gateway.go', 'pricing/catalog.json']) {
@@ -150,9 +162,116 @@ test('retarget permits our own fork repository but refuses an external head', ()
   github.event.pull_request.head.repo.full_name = github.repository;
   github.base_ref = 'main';
   assert.equal(eligible(), true);
+  github.base_ref = 'ao/upsync2-design/upsync2-integration';
+  assert.equal(eligible(), false);
   github.base_ref = 'ao/upsync-design/upsync-integration-other';
   assert.equal(eligible(), false);
   github.base_ref = 'main';
   delete github.event.changes.base;
   assert.equal(eligible(), false);
+});
+
+test('legacy retarget reruns the CI with jobs when a newer run on the same head skipped them', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/ci-retarget.yml', import.meta.url), 'utf8');
+  const rerun = workflow.split('        run: |\n')[1];
+  assert.ok(rerun);
+  const fakeGitHub = `
+    gh() {
+      local filter
+      for filter; do :; done
+      case "$1 $2" in
+        "run list")
+          printf '141\\n'
+          ;;
+        "api repos/example/fork/actions/workflows/ci.yml/runs")
+          [[ "$*" == *"head_sha=$SHA"* && "$*" == *"event=pull_request"* ]]
+          jq -r "$filter" <<< '{"workflow_runs":[{"id":141},{"id":140}]}'
+          ;;
+        "run watch")
+          ;;
+        "run view")
+          local conclusion=success
+          if [ "$3" = 141 ]; then conclusion=skipped; fi
+          printf '{"jobs":[{"name":"changes","conclusion":"%s"}]}' "$conclusion" | jq -r "$filter"
+          ;;
+        "api repos/example/fork/pulls/42")
+          printf '%s\\n' "$SHA"
+          ;;
+        "run rerun")
+          printf 'rerun: %s\\n' "$3"
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    }
+  `;
+  const result = spawnSync('bash', ['-e', '-c', fakeGitHub + rerun], {
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_REPOSITORY: 'example/fork', PR: '42', SHA: 'fixture-head' },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'rerun: 140');
+});
+
+test('UPSYNC2 retarget runs fresh CI on same-repository ready base changes', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /types: \[[^\n]*\bedited\b/);
+  const condition = workflow.match(/^  changes:\n    if: (.+)$/m)?.[1];
+  assert.ok(condition);
+  const repository = 'Yu1iWoowah/agent-orchestrator';
+  const base = 'ao/upsync2-design/upsync2-integration';
+  const eligible = ({action = 'edited', base_ref = base, headRepo = repository, draft = false, changes = { base: {} }} = {}) => {
+    const github = {
+      base_ref, repository,
+      event: { action, changes, pull_request: { draft, head: { repo: { full_name: headRepo } } } },
+    };
+    return Boolean(runInNewContext(condition, { github }, { timeout: 1000 }));
+  };
+  assert.equal(eligible(), true);
+  assert.equal(eligible({ headRepo: 'external/agent-orchestrator' }), false);
+  assert.equal(eligible({ draft: true }), false);
+  assert.equal(eligible({ base_ref: base + '-other' }), false);
+  assert.equal(eligible({ base_ref: 'main' }), false);
+  assert.equal(eligible({ changes: { title: {} } }), false);
+  assert.equal(eligible({ action: 'ready_for_review' }), true);
+  assert.throws(() => pickLanes(pr(['backend/a.go'], { base, fork: true })), /target main and push again/);
+});
+
+test('UPSYNC2 verifies the retargeted merge tree and rejects the old base', (t) => {
+  const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const verification = workflow.match(/name: Verify the integration merge commit\n[\s\S]*?run: \|\n((?: {10}[^\n]+\n)+)/)?.[1];
+  assert.ok(verification);
+  const directory = mkdtempSync(join(tmpdir(), 'ao-ci-retarget-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const git = (...args) => execFileSync(
+    'git', ['-c', 'user.name=CI test', '-c', 'user.email=ci@example.test', ...args],
+    { cwd: directory, encoding: 'utf8' },
+  ).trim();
+  git('init', '--quiet');
+  const oldTree = git('write-tree');
+  const oldBase = git('commit-tree', oldTree, '-m', 'old base');
+  writeFileSync(join(directory, 'integration.txt'), 'new base content\n');
+  git('add', 'integration.txt');
+  const newBase = git('commit-tree', git('write-tree'), '-p', oldBase, '-m', 'new base');
+  git('read-tree', oldTree);
+  writeFileSync(join(directory, 'feature.txt'), 'PR content\n');
+  git('add', 'feature.txt');
+  const headTree = git('write-tree');
+  const head = git('commit-tree', headTree, '-p', oldBase, '-m', 'PR head');
+  const newTree = git('merge-tree', '--write-tree', newBase, head);
+  assert.notEqual(headTree, newTree);
+  const oldMerge = git('commit-tree', headTree, '-p', oldBase, '-p', head, '-m', 'initial merge');
+  const newMerge = git('commit-tree', newTree, '-p', newBase, '-p', head, '-m', 'retargeted merge');
+  const check = (merge) => {
+    git('update-ref', 'HEAD', merge);
+    return spawnSync('bash', ['-c', verification], {
+      cwd: directory, encoding: 'utf8',
+      env: { ...process.env, GITHUB_REF: 'refs/pull/42/merge', PR: '42', BASE_SHA: newBase, HEAD_SHA: head, GITHUB_SHA: merge },
+    });
+  };
+  const current = check(newMerge);
+  assert.equal(current.status, 0, current.stderr);
+  assert.match(current.stdout, new RegExp(`merge=${newMerge} tree=${newTree} parents=${newBase} ${head}`));
+  assert.equal(check(oldMerge).status, 1);
 });

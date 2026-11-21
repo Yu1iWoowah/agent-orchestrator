@@ -89,14 +89,32 @@ jobs:
             echo "::error::Repository variable VITE_WORKOS_CLIENT_ID is required for desktop artifacts." >&2
             exit 1
           fi
-      # Stamp the conductor-supplied version into package.json for this build,
-      # dropping any +build metadata.
-      - name: Stamp version
+      # The fork's u5 inputs are part of its reviewed commit. Other conductor
+      # builds still stamp the supplied version without +build metadata.
+      - name: Resolve build version
         shell: bash
         env:
           BUILD_VERSION: ${{ inputs.version }}
+          BUILD_REF: ${{ inputs.ref }}
         run: |
-          node -e "const v=process.env.BUILD_VERSION.split('+')[0]; const fs=require('fs'); const p=require('./package.json'); p.version=v; fs.writeFileSync('./package.json', JSON.stringify(p,null,'\t')+'\n');"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const { execFileSync } = require('node:child_process');
+          const manifest = require('./package.json');
+          const requested = process.env.BUILD_VERSION.split('+')[0];
+          const u5 = '0.15.3-woowah.6.u5';
+          if (process.env.GITHUB_REPOSITORY === 'Yu1iWoowah/agent-orchestrator' && (manifest.version === u5 || requested === u5)) {
+            const lock = require('./package-lock.json');
+            const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+            if (process.env.BUILD_REF !== head ||
+                [process.env.BUILD_VERSION, manifest.version, lock.version, lock.packages['']?.version].some(version => version !== u5)) {
+              throw new Error('The u5 build must use the full reviewed commit SHA and its committed manifest and lock versions');
+            }
+          } else {
+            manifest.version = requested;
+            fs.writeFileSync('./package.json', JSON.stringify(manifest, null, '\t') + '\n');
+          }
+          NODE
       # Electron 44's V8 headers put [[deprecated]] before __attribute__ in a
       # class head, which Ubuntu 22.04's GCC 11 rejects when node-gyp rebuilds
       # better-sqlite3, and need std::source_location, which 22.04's libstdc++

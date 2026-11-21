@@ -1,3 +1,4 @@
+import { keptArtifactsQueryKey } from "../hooks/useKeptArtifacts";
 import { codexAccountsQueryKey, writeCodexAccounts } from "../hooks/codex-accounts-state";
 import type { components } from "../../api/schema";
 import { sessionPlanQueryKey } from "../hooks/useSessionPlan";
@@ -9,7 +10,7 @@ import { setEventsConnectionState } from "./events-connection";
 import { computeSseRetryDelayMs } from "./sse-backoff";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { sessionScmSummaryQueryKey } from "../hooks/useSessionScmSummary";
-import { conversationConfigOptionsQueryKey, conversationModelsQueryKey, conversationQueryKey, conversationQueryRoot, conversationSettled, refreshRemoteConversationOnce } from "../hooks/useConversation";
+import { conversationConfigOptionsQueryKey, conversationModelsQueryKey, conversationQueryKey, conversationQueryRoot, conversationSettled, refreshLocalConversationTail, refreshRemoteConversationOnce } from "../hooks/useConversation";
 import {
 	reviewerConversationQueryKey,
 	reviewerConversationQueryRoot,
@@ -48,6 +49,8 @@ const EVENTSOURCE_CLOSED = 2;
 // the sidebar renders, so they all trigger a (batched) workspace refetch.
 const CDC_EVENT_TYPES = [
 	"session_created",
+	"session_deleted",
+	"project_deleted",
 	"session_updated",
 	"pr_created",
 	"pr_updated",
@@ -96,6 +99,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let pendingAgentAccounts = false;
 			const pendingModelCatalogScopes = new Map<string, { agentId: string; projectId: string }>();
 			let workspaceInvalidationPending = false;
+			let keptArtifactsInvalidationPending = false;
 			let allConversationsInvalidationPending = false;
 			let allEditorHandoffsInvalidationPending = false;
 			// Reviews, interface transitions and model catalogs are otherwise only
@@ -179,6 +183,42 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					if (state.dirty && !disposed) invalidate(queryKey, state.onRefreshed);
 				};
 				void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }).then(settled, settled);
+			};
+			// An open local chat with nothing loading reads only the rows that can still
+			// change, as a remote chat does, so a streaming turn stops refetching the
+			// whole history on every event. A closed chat, one still loading, and every
+			// tail that cannot be merged take the full invalidation above. Both share the
+			// one-in-flight, one-catch-up bookkeeping.
+			const refreshLocalChat = (sessionId: string) => {
+				if (disposed) return;
+				const queryKey = conversationQueryKey(sessionId);
+				const key = JSON.stringify(queryKey);
+				const running = refreshes.get(key);
+				if (running) {
+					running.dirty = true;
+					return;
+				}
+				if (!queryClient.getQueryCache().find({ queryKey, type: "active" }) || queryClient.isFetching({ queryKey }) > 0) {
+					invalidate(queryKey);
+					return;
+				}
+				const state = { dirty: false };
+				refreshes.set(key, state);
+				const settled = () => {
+					refreshes.delete(key);
+					if (state.dirty && !disposed) refreshLocalChat(sessionId);
+				};
+				void refreshLocalConversationTail(queryClient, sessionId)
+					.then((merged) => {
+						if (disposed) return undefined;
+						// A query fetch that started during the tail read (an older page, a
+						// mount) may predate this event, or write back the live page it
+						// captured before the merge. Catch up once it has finished.
+						if (queryClient.isFetching({ queryKey }) > 0) state.dirty = true;
+						if (merged) return undefined;
+						return queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+					})
+					.then(settled, settled);
 			};
 			const refreshAgentSettings = (sessionId: string, hostId?: string) => {
 				const key = agentSettingsQueryKey(sessionId, hostId);
@@ -367,6 +407,10 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					lastWorkspaceRefreshAt = Date.now();
 					idOnlyWorkspaceRefreshPending = false;
 				}
+				if (keptArtifactsInvalidationPending || allEventScopedCachesInvalidationPending) {
+					invalidate(keptArtifactsQueryKey);
+					keptArtifactsInvalidationPending = false;
+				}
 				if (allEventScopedCachesInvalidationPending) {
 					invalidate(["session-reviews"]);
 					invalidate(["session-interface-transition"]);
@@ -385,7 +429,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					pendingEditorHandoffSessions.clear();
 				}
 				for (const sessionId of pendingConversationSessions) {
-					invalidate(conversationQueryKey(sessionId));
+					refreshLocalChat(sessionId);
 					invalidate(sessionPlanQueryKey(sessionId));
 				}
 				pendingConversationSessions.clear();
@@ -467,6 +511,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				let conversationOnly = false;
 				let modelCatalogOnly = false;
 				let accountOnly = false;
+				if (event?.type === "session_deleted" || event?.type === "project_deleted") keptArtifactsInvalidationPending = true;
 				let idOnlySessionUpdate = false;
 				if (event === undefined) {
 					// A lifecycle refresh -- reconnect, daemon status change, base-URL change --

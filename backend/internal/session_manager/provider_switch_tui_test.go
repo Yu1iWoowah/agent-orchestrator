@@ -3,6 +3,7 @@ package sessionmanager
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -203,5 +204,210 @@ func TestPreflightTUISwitchTargetAcceptsAOSavedLogin(t *testing.T) {
 	}
 	if err := preflightTUISwitchTarget(context.Background(), domain.HarnessClaudeCode, target, ""); !errors.Is(err, ports.ErrAgentAuthRequired) {
 		t.Fatalf("preflight without a data directory = %v, want the native sign-in refusal", err)
+	}
+}
+
+type switchTargetAccount struct {
+	*transitionAccounts
+	provider domain.AgentAccountProvider
+}
+
+func (a switchTargetAccount) SessionAccountBinding(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (domain.ResolvedAgentAccount, error) {
+	if harness == domain.HarnessClaudeCode {
+		return a.transitionAccounts.SessionAccountBinding(ctx, id, harness)
+	}
+	return domain.ResolvedAgentAccount{AccountID: "acct-b", Provider: a.provider, Source: domain.AgentAccountSourceLegacy}, nil
+}
+
+func TestTUISwitchWrongTargetAccountLeavesSourceRunning(t *testing.T) {
+	manager, store, runtime, _, accounts, effects := newAccountTransitionManager(t, domain.SessionModeTUI)
+	manager.SetAgentAccounts(switchTargetAccount{transitionAccounts: accounts, provider: domain.AgentAccountProviderClaude})
+	id := domain.SessionID("session-1")
+	before := store.sessions[id]
+	if err := manager.SwitchTUIProvider(t.Context(), id, domain.ProviderSwitchRequest{TargetHarness: domain.HarnessCodex, Force: true}); !errors.Is(err, ports.ErrAgentAccountProviderMismatch) {
+		t.Fatalf("switch with mismatched target account = %v", err)
+	}
+	after := store.sessions[id]
+	if after.ControllerOwner() != before.ControllerOwner() || len(runtime.interrupts) != 0 || len(*effects) != 0 {
+		t.Fatalf("account refusal changed source ownership or touched runtime: %v", *effects)
+	}
+}
+
+func TestTUISwitchModelCheckUsesTargetAccountBeforeStoppingSource(t *testing.T) {
+	manager, store, runtime, _, accounts, effects := newAccountTransitionManager(t, domain.SessionModeTUI)
+	manager.SetAgentAccounts(switchTargetAccount{transitionAccounts: accounts, provider: domain.AgentAccountProviderCodex})
+	id := domain.SessionID("session-1")
+	before := store.sessions[id]
+	refusal := errors.New("fixture model refusal")
+	calls := 0
+	check := func(ctx context.Context, _ *domain.ProviderSwitchRequest) error {
+		calls++
+		account, found := ports.AgentAccountFromContext(ctx)
+		if !found || account.Provider != domain.AgentAccountProviderCodex || account.AccountID != "acct-b" {
+			t.Errorf("unexpected catalog account: %+v found=%v", account, found)
+		}
+		return refusal
+	}
+	if err := manager.SwitchTUIProviderWithPreflight(t.Context(), id, domain.ProviderSwitchRequest{
+		TargetHarness: domain.HarnessCodex, Model: "requested-model",
+	}, check); !errors.Is(err, refusal) {
+		t.Fatalf("switch = %v, want preflight refusal", err)
+	}
+	if calls != 1 || store.sessions[id].ControllerOwner() != before.ControllerOwner() || len(runtime.interrupts) != 0 || len(*effects) != 0 {
+		t.Fatalf("preflight refusal changed source or touched runtime: calls=%d effects=%v", calls, *effects)
+	}
+}
+
+type firstTUISwitchAccounts struct {
+	*transitionAccounts
+	target domain.ResolvedAgentAccount
+}
+
+func (a *firstTUISwitchAccounts) SessionAccountBinding(ctx context.Context, id domain.SessionID, harness domain.AgentHarness) (domain.ResolvedAgentAccount, error) {
+	if harness != domain.HarnessCodex {
+		return a.transitionAccounts.SessionAccountBinding(ctx, id, harness)
+	}
+	if a.target.AccountID == "" {
+		return a.target, ports.ErrAgentAccountUnknown
+	}
+	return a.target, nil
+}
+
+func (a *firstTUISwitchAccounts) ResolveAccount(_ context.Context, request ports.AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, error) {
+	provider, _ := domain.AgentAccountProviderFor(request.Harness)
+	return domain.ResolvedAgentAccount{
+		AccountID: request.ProjectConfig.RoleAccountReference(request.Role, request.Harness),
+		Provider:  provider, Source: domain.AgentAccountSourceRole,
+	}, nil
+}
+
+func (a *firstTUISwitchAccounts) BindResolvedSession(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, selected domain.ResolvedAgentAccount) error {
+	if harness != domain.HarnessCodex {
+		return a.transitionAccounts.BindResolvedSession(ctx, id, harness, selected)
+	}
+	a.target = selected
+	return nil
+}
+
+func TestTUISwitchRejectedModelDoesNotPinFirstTargetAccount(t *testing.T) {
+	manager, store, runtime, _, accounts, effects := newAccountTransitionManager(t, domain.SessionModeTUI)
+	selected := &firstTUISwitchAccounts{transitionAccounts: accounts}
+	manager.SetAgentAccounts(selected)
+	id := domain.SessionID("session-1")
+	before := store.sessions[id]
+	refusal := errors.New("fixture model refusal")
+	var scopes []string
+	check := func(ctx context.Context, _ *domain.ProviderSwitchRequest) error {
+		account, _ := ports.AgentAccountFromContext(ctx)
+		scopes = append(scopes, account.AccountID)
+		return refusal
+	}
+	for _, roleAccount := range []string{"acct-before", "acct-after"} {
+		project := store.projects[string(before.ProjectID)]
+		project.Config.Worker.AgentAccountID = roleAccount
+		store.projects[string(before.ProjectID)] = project
+		if err := manager.SwitchTUIProviderWithPreflight(t.Context(), id, domain.ProviderSwitchRequest{
+			TargetHarness: domain.HarnessCodex, Model: "requested-model",
+		}, check); !errors.Is(err, refusal) {
+			t.Fatalf("switch = %v, want preflight refusal", err)
+		}
+	}
+	if !slices.Equal(scopes, []string{"acct-before", "acct-after"}) || selected.target.AccountID != "" {
+		t.Fatalf("catalog accounts = %v, target binding = %+v", scopes, selected.target)
+	}
+	if store.sessions[id].ControllerOwner() != before.ControllerOwner() || len(runtime.interrupts) != 0 || len(*effects) != 0 {
+		t.Fatalf("model refusal touched source runtime: %v", *effects)
+	}
+}
+
+func TestForcedTUISwitchInterruptsAWorkingAgent(t *testing.T) {
+	ctx := context.Background()
+	settle, poll := tuiSwitchTargetSettle, tuiSwitchTargetSettlePoll
+	tuiSwitchTargetSettle, tuiSwitchTargetSettlePoll = 20*time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { tuiSwitchTargetSettle, tuiSwitchTargetSettlePoll = settle, poll })
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rec := mkLive("mer-1")
+	rec.Harness, rec.Mode, rec.Kind = domain.HarnessClaudeCode, domain.SessionModeTUI, domain.KindWorker
+	rec.Metadata.Branch, rec.Metadata.AgentSessionID = "branch", "source-native"
+	st.sessions[rec.ID] = rec
+	runtime := &childProbeRuntime{fakeRuntime: &fakeRuntime{}, childAlive: true}
+	runtime.onInterrupt = func(ports.RuntimeHandle) {
+		current := st.sessions[rec.ID]
+		current.Activity.State = domain.ActivityExited
+		st.sessions[rec.ID] = current
+	}
+	m := New(Deps{Runtime: runtime, Agents: singleAgent{agent: &recordingAgent{}},
+		Workspace: &fakeWorkspace{}, Store: &launchOptionsFakeStore{fakeStore: st}, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil }})
+
+	var refusal *domain.ProviderSwitchError
+	err := m.SwitchTUIProvider(ctx, rec.ID, domain.ProviderSwitchRequest{TargetHarness: domain.HarnessMuse})
+	if !errors.As(err, &refusal) || refusal.Kind != domain.ProviderSwitchRefusalBusy {
+		t.Fatalf("plain switch = %v, want a busy refusal", err)
+	}
+	err = m.SwitchTUIProvider(ctx, rec.ID, domain.ProviderSwitchRequest{TargetHarness: domain.HarnessClaudeCode})
+	if !errors.As(err, &refusal) || refusal.Kind != domain.ProviderSwitchRefusalAlreadyActive || !errors.Is(err, domain.ErrProviderAlreadyActive) {
+		t.Fatalf("switch to the running agent = %v, want already_active", err)
+	}
+	if err := m.SwitchTUIProvider(ctx, rec.ID, domain.ProviderSwitchRequest{TargetHarness: domain.HarnessMuse, Force: true}); err != nil {
+		t.Fatalf("forced switch: %v", err)
+	}
+	if len(runtime.interrupts) != 1 {
+		t.Fatalf("interrupts = %v, want the working agent interrupted once", runtime.interrupts)
+	}
+	if got := st.sessions[rec.ID].Harness; got != domain.HarnessMuse {
+		t.Fatalf("harness = %q, want the switch target", got)
+	}
+}
+
+func TestTUISwitchToTheRunningAgentWithNewSettingsResumesItsOwnThread(t *testing.T) {
+	ctx := context.Background()
+	settle, poll := tuiSwitchTargetSettle, tuiSwitchTargetSettlePoll
+	tuiSwitchTargetSettle, tuiSwitchTargetSettlePoll = 20*time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { tuiSwitchTargetSettle, tuiSwitchTargetSettlePoll = settle, poll })
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rec := mkLive("mer-1")
+	rec.Harness, rec.Mode, rec.Kind = domain.HarnessClaudeCode, domain.SessionModeTUI, domain.KindWorker
+	rec.Activity.State = domain.ActivityIdle
+	rec.Metadata.Branch, rec.Metadata.Model, rec.Metadata.Effort, rec.Metadata.AgentSessionID = "branch", "sonnet", "low", "own-native"
+	st.sessions[rec.ID] = rec
+	store := &launchOptionsFakeStore{fakeStore: st, options: domain.AgentLaunchOptions{FastMode: true}}
+	agent := &recordingAgent{}
+	m := New(Deps{Runtime: &childProbeRuntime{fakeRuntime: &fakeRuntime{}, childAlive: true}, Agents: singleAgent{agent: agent},
+		Workspace: &fakeWorkspace{}, Store: store, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		LookPath: func(string) (string, error) { return "/bin/true", nil }})
+
+	same := domain.ProviderSwitchRequest{TargetHarness: domain.HarnessClaudeCode, Model: "Sonnet", PermissionMode: domain.PermissionModeDefault}
+	if err := m.SwitchTUIProvider(ctx, rec.ID, same); !errors.Is(err, domain.ErrProviderAlreadyActive) {
+		t.Fatalf("unchanged settings = %v, want already_active", err)
+	}
+	if err := m.SwitchTUIProvider(ctx, rec.ID, domain.ProviderSwitchRequest{
+		TargetHarness: domain.HarnessClaudeCode, Model: "opus", Effort: "high", PermissionMode: domain.PermissionModeAcceptEdits,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := st.sessions[rec.ID]
+	if got.Harness != domain.HarnessClaudeCode || got.Metadata.AgentSessionID != rec.Metadata.AgentSessionID {
+		t.Fatalf("harness = %q native = %q, want the same agent on its own thread", got.Harness, got.Metadata.AgentSessionID)
+	}
+	if got.Metadata.Permissions != domain.PermissionModeAcceptEdits || agent.lastRestore.Config.Permissions != domain.PermissionModeAcceptEdits {
+		t.Fatalf("permission mode = %q, launched with %q", got.Metadata.Permissions, agent.lastRestore.Config.Permissions)
+	}
+	if agent.restoreCalls != 1 || agent.lastRestore.Config.Model != "opus" || agent.lastRestore.Config.Effort != "high" || agent.launchCalls != 0 {
+		t.Fatalf("restores = %d launches = %d config = %+v, want one resume on the new settings", agent.restoreCalls, agent.launchCalls, agent.lastRestore.Config)
+	}
+	if !store.options.FastMode {
+		t.Fatal("the restart dropped the session's launch options")
+	}
+
+	fresh := st.sessions[rec.ID]
+	fresh.Metadata.AgentSessionID = ""
+	st.sessions[rec.ID] = fresh
+	var refusal *domain.ProviderSwitchError
+	err := m.SwitchTUIProvider(ctx, rec.ID, domain.ProviderSwitchRequest{TargetHarness: domain.HarnessClaudeCode, Model: "haiku"})
+	if !errors.As(err, &refusal) || refusal.Kind != domain.ProviderSwitchRefusalUnsupported || agent.restoreCalls != 1 {
+		t.Fatalf("restart with no thread to resume = %v, restores = %d; want a refusal before anything stops", err, agent.restoreCalls)
 	}
 }

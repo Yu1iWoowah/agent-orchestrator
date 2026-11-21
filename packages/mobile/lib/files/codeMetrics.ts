@@ -19,6 +19,11 @@ export function codeScale(fontScale: number): number {
 	return Math.min(fontScale > 0 ? fontScale : 1, CODE_MAX_SCALE);
 }
 
+/** The fixed height shared by the unwrapped row and the list's layout. */
+export function codeLineHeight(scale: number): number {
+	return CODE_LINE_HEIGHT * scale;
+}
+
 export function gutterWidth(digits: number, scale = 1): number {
 	return Math.max(2, digits) * CODE_FONT_SIZE * CHAR_WIDTH_EM * scale + space.md;
 }

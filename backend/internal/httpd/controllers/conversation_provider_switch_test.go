@@ -252,3 +252,20 @@ func TestChatPermissionModesRouteListsEachAgentsModes(t *testing.T) {
 		t.Fatalf("permission modes = %d %s\nwant 200 %s", status, body, want)
 	}
 }
+
+func TestProviderSwitchRejectsInvalidPermissionBeforeDispatch(t *testing.T) {
+	svc := &fakeConversationService{}
+	status, body := providerSwitchRouteRequest(t, svc, http.MethodPost, "/sessions/p1-1/provider-switch",
+		`{"targetHarness":"codex","permissionMode":"bypass"}`)
+	if status != http.StatusBadRequest || svc.switchRequest.TargetHarness != "" {
+		t.Fatalf("invalid mode = %d %s, switch request %+v", status, body, svc.switchRequest)
+	}
+}
+
+func TestProviderSwitchReportsWhatAForcedSwitchStopped(t *testing.T) {
+	svc := &fakeConversationService{switchResult: domain.ProviderSwitchResult{StoppedTurn: true, CancelledQueued: 2, FailedApprovals: true}}
+	status, body := providerSwitchRouteRequest(t, svc, http.MethodPost, "/sessions/p1-1/provider-switch", `{"targetHarness":"codex","force":true}`)
+	if status != http.StatusOK || string(bytes.TrimSpace(body)) != `{"status":"ok","stoppedTurn":true,"cancelledQueuedMessages":2,"failedPendingApprovals":true}` {
+		t.Fatalf("switch = %d %s", status, body)
+	}
+}

@@ -71,15 +71,11 @@ func Capture(providerPID int) *Scope {
 	if err != nil {
 		return nil
 	}
-	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
-	if err != nil {
+	boot, ns := CurrentScope()
+	if boot == "" || ns == "" {
 		return nil
 	}
-	ns, err := os.Readlink("/proc/self/ns/pid")
-	if err != nil {
-		return nil
-	}
-	return &Scope{HostPID: host, HostBirth: hostBirth, ProviderPGID: pgid, LeaderPID: pgid, LeaderBirth: leaderBirth, BootID: strings.TrimSpace(string(boot)), PIDNamespace: ns}
+	return &Scope{HostPID: host, HostBirth: hostBirth, ProviderPGID: pgid, LeaderPID: pgid, LeaderBirth: leaderBirth, BootID: boot, PIDNamespace: ns}
 }
 
 func birth(pid int) (string, error) {
@@ -136,4 +132,14 @@ func readProcessStat(pid int) (processStat, error) {
 		return processStat{}, err
 	}
 	return processStat{birth: fields[19], state: fields[0], threads: fields[17]}, nil
+}
+
+// CurrentScope supplies the comparison boundary for a persisted process identity.
+func CurrentScope() (bootID, pidNamespace string) {
+	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return "", ""
+	}
+	ns, _ := os.Readlink("/proc/self/ns/pid")
+	return strings.TrimSpace(string(boot)), ns
 }

@@ -1513,6 +1513,8 @@ func (s *Service) Delete(ctx context.Context, id domain.SessionID, cleanup bool)
 	}
 	s.cancelTitleRefinement(id)
 	s.deleteArtifactDir(ctx, id)
+	// A kept record left by an earlier keeping delete that failed.
+	s.forgetKeptArtifacts(ctx, id)
 	return nil
 }
 
@@ -1522,8 +1524,9 @@ type archivedSessionLister interface {
 }
 
 // DeleteExpired permanently deletes the archived sessions whose worktree is
-// released and that were archived more than days ago, the same way Delete
-// does. The store leaves out sessions with shared history, which the delete
+// released and that were archived more than days ago. Their artifacts are
+// kept, the way DeleteKeepingArtifacts keeps them: artifacts are deleted only
+// when the person deletes them. The store leaves out sessions with shared history, which the delete
 // always refuses. A session the delete refuses for now (an operation running)
 // or that is already gone is left for a later pass.
 func (s *Service) DeleteExpired(ctx context.Context, days int) error {
@@ -1544,7 +1547,7 @@ func (s *Service) DeleteExpired(ctx context.Context, days int) error {
 		if sess.ArchivedAt.After(cutoff) {
 			continue
 		}
-		err := s.Delete(ctx, sess.ID, false)
+		err := s.DeleteKeepingArtifacts(ctx, sess.ID, false)
 		var apiErr *apierr.Error
 		if err == nil || errors.As(err, &apiErr) && (apiErr.Kind == apierr.KindConflict || apiErr.Kind == apierr.KindNotFound) {
 			continue
@@ -2145,6 +2148,8 @@ func mapSessionError(err error) error {
 	case errors.Is(err, domain.ErrSessionHistoryShared):
 		return apierr.Conflict("SESSION_HISTORY_SHARED",
 			"This session's turns belong to a conversation that outlives it, so it cannot be deleted.", nil)
+	case errors.Is(err, domain.ErrReviewerStopPending):
+		return apierr.Conflict("REVIEWER_STOP_PENDING", "Retry after the reviewer stop is confirmed.", nil)
 	case errors.Is(err, domain.ErrSessionHistoryProtected):
 		return apierr.Conflict("SESSION_HISTORY_PROTECTED",
 			"This session still holds input custody or orchestrator ownership records, so it cannot be deleted.", nil)
@@ -2231,6 +2236,8 @@ func mapSessionError(err error) error {
 		return apierr.Invalid("AGENT_SETTINGS_INVALID", err.Error(), nil)
 	case errors.Is(err, sessionmanager.ErrUnsupportedModel):
 		return apierr.Invalid("UNSUPPORTED_MODEL", err.Error(), nil)
+	case errors.Is(err, sessionmanager.ErrTerminalUnsupported):
+		return apierr.Invalid("TERMINAL_UNSUPPORTED", err.Error(), nil)
 	case errors.Is(err, sessionmanager.ErrTargetAgentUnauthorized):
 		return apierr.Invalid("TARGET_AGENT_UNAUTHORIZED",
 			"The target agent is not authenticated; authenticate it before switching", nil)

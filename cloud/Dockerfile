@@ -75,10 +75,10 @@ ADD --checksum=sha256:10973f4b4199eafa1d5735ef661ddb2ec2f97319ee9fd1824d4aabe08c
     https://deb.debian.org/debian/pool/main/b/brotli/brotli_1.1.0.orig.tar.gz ./
 ADD --checksum=sha256:3d913a3740bcad9a294007575a6beb1846beadbd62b44fb2bf9fdaeddea3236f \
     https://deb.debian.org/debian/pool/main/b/brotli/brotli_1.1.0-2.debian.tar.xz ./
-ADD --checksum=sha256:d6f962509000223def7062958229bd08457e5e032e7ed0d1d94fb790b054b1fc \
-    https://github.com/google/brotli/commit/0ed4268a4401abcb4472096340477cf4af7d1a2b.patch?full_index=1 \
-    ./0ed4268a44-detect-invalid-stream-earlier.patch
-RUN dpkg-source -x brotli_1.1.0-2.dsc source && \
+# Use the checked-in patch from the upstream Git commit as build input.
+COPY patches/0ed4268a44-detect-invalid-stream-earlier.patch ./
+RUN echo '418ab26eee529b6f809e478b28e1abac009fa085d0b96eb03e61c8032fe4e4d2  0ed4268a44-detect-invalid-stream-earlier.patch' | sha256sum -c - && \
+    dpkg-source -x brotli_1.1.0-2.dsc source && \
     cd source && \
     mv /build/0ed4268a44-detect-invalid-stream-earlier.patch debian/patches/ && \
     echo 0ed4268a44-detect-invalid-stream-earlier.patch >> debian/patches/series && \
