@@ -3630,6 +3630,8 @@
 	"artifacts.hostLoadFailed": "Artefakte von {{host}} konnten nicht geladen werden.",
 	"artifacts.hostLoadRetry": "Erneut versuchen",
 	"artifacts.sharedLoadFailed": "Mit dir geteilte Artefakte konnten nicht geladen werden.",
+	"artifacts.hostLoadFailed": "Artefakte von {{host}} konnten nicht geladen werden.",
+	"artifacts.hostLoadRetry": "Erneut versuchen",
 	"artifacts.empty.title": "Create your first artifact",
 	"artifacts.empty.description": "Artifacts are pages and documents an agent writes for you. Pick where the session should live.",
 	"artifacts.create": "Create artifact",

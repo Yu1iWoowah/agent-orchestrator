@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../hooks/useWorkspaceQuery", () => ({
 	workspaceQueryKeyForHost: () => ["workspaces"],
 	cloudSessionsQueryKey: ["cloud-sessions"],
+	useRemoteWorkspaces: () => ({ data: [], failedHostIds: [], refetch: vi.fn() }),
 	useWorkspaceQuery: () => ({
 		isLoading: false,
 		data: [

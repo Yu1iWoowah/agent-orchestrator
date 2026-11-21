@@ -3359,6 +3359,8 @@
 	"artifacts.bulkDeleteFailed": "{{total}} 箇中有 {{failed}} 個無法刪除:{{message}}",
 	"artifacts.noMatches": "沒有相符項目",
 	"artifacts.clearFilters": "清除篩選條件",
+	"artifacts.hostLoadFailed": "無法載入 {{host}} 的 artifact。",
+	"artifacts.hostLoadRetry": "重試",
 	"artifacts.empty.title": "建立你的第一個 artifact",
 	"artifacts.empty.description": "artifact 是 agent 為你撰寫的頁面與文件。請選擇 session 的建立位置。",
 	"artifacts.create": "建立 artifact",

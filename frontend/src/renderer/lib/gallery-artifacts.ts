@@ -1,7 +1,8 @@
 import type { ProjectCatalogResult } from "./artifact-catalog";
 import type { components } from "../../api/schema";
 import type { DocumentConnection } from "./document-read";
-import { artifactKey, groupArtifactsByProject, type ArtifactGroup, type ArtifactRow } from "./artifacts";
+import type { HostShareLink } from "../../shared/cloud-share";
+import { artifactKey, groupArtifactsByProject, withHostShareLinks, type ArtifactGroup, type ArtifactRow } from "./artifacts";
 import { STANDALONE_WORKSPACE_ID, type WorkspaceSummary } from "../types/workspace";
 
 export type CatalogItem = components["schemas"]["DocumentCatalogItem"];
@@ -69,17 +70,18 @@ export function catalogArtifactGroup(
 			.sort(newestGalleryFirst),
 	};
 }
-/** Cloud and Scratchpad retain their existing file/read paths, never a local project catalog. */
+/** Cloud, remote and Scratchpad artifacts use their session file routes. */
 export function legacyGalleryGroups(
 	workspaces: readonly WorkspaceSummary[],
 	connection: DocumentConnection,
+	hostShareLinks: readonly HostShareLink[] = [],
 ): GalleryGroup[] {
-	return groupArtifactsByProject(
+	return withHostShareLinks(groupArtifactsByProject(
 		workspaces.filter(
-			(workspace) => !workspace.hostId && (workspace.kind === "cloud" || workspace.id === STANDALONE_WORKSPACE_ID),
+			(workspace) => workspace.hostId || workspace.kind === "cloud" || workspace.id === STANDALONE_WORKSPACE_ID,
 		),
-	).map((group) => {
-		const source: DocumentConnection = group.cloud
+	), hostShareLinks).map((group) => {
+		const source: DocumentConnection = group.hostId ? { kind: "remote", identity: group.hostId } : group.cloud
 			? {
 					kind: "cloud",
 					identity:

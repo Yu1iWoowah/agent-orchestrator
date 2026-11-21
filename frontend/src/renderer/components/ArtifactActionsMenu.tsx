@@ -146,7 +146,7 @@ export function ArtifactActionsMenu({
 			: deleteSessionArtifactFile({ path: artifact.path, sessionId: session.id, hostId }),
 		onSuccess: async () => {
 			setConfirmingDelete(false);
-			if (!hostId) useArtifactsViewStore.getState().unpinArtifact(pinId ?? artifactKey({ sessionId: session.id, path: artifact.path }));
+			useArtifactsViewStore.getState().unpinArtifact(pinId ?? artifactKey({ sessionId: session.id, path: artifact.path, hostId }));
 			await onDeleted?.();
 			await Promise.all([
 				queryClient.invalidateQueries({ queryKey: session.cloud ? cloudSessionsQueryKey : workspaceQueryKeyForHost(hostId) }),
