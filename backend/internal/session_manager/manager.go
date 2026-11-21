@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,6 +70,10 @@ var (
 	// selected harness's catalog and the harness does not accept arbitrary model
 	// ids. The API maps it to a 400.
 	ErrUnsupportedModel = errors.New("session: model is not supported by the selected harness")
+	// ErrTerminalUnsupported means a terminal launch was requested for a
+	// harness that runs in Chat only. Unlike ports.ErrChatUnsupported it must
+	// not prompt a terminal retry. The API maps it to a 400.
+	ErrTerminalUnsupported = errors.New("session: terminal mode is not supported by the selected harness")
 	// ErrScratchBranchUnsupported means a caller tried to force git branch
 	// semantics onto a scratch project.
 	ErrScratchBranchUnsupported = errors.New("session: scratch projects do not support branches")
@@ -497,6 +502,7 @@ type Manager struct {
 	// Snapshot before the listener binds; background cleanup must never reclaim
 	// a preparation opened in this daemon after the listener is live.
 	startupTaskPreparations []domain.SessionRecord
+	startupHealthCutoff     time.Time
 	// Only pre-listener provisioning writes that failed may be retried after
 	// bind; scanning then would also sweep tasks created by this daemon.
 	startupProvisioningRetries []domain.SessionRecord
@@ -1210,14 +1216,19 @@ func (m *Manager) spawn(ctx context.Context, cfg ports.SpawnConfig, replacement 
 	if _, ok := m.agents.Agent(cfg.Harness); !ok {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: %q", ErrUnknownHarness, cfg.Harness)
 	}
-	// Unreal Agent has no terminal interface or interactive approval channel.
-	// Selecting the harness therefore supplies its only valid launch defaults;
-	// an explicit caller-supplied mode or permission remains authoritative and
-	// is rejected normally when the harness cannot honor it.
-	if cfg.Harness == domain.HarnessUnreal {
-		if !cfg.RequestedMode.Valid() {
-			cfg.RequestedMode = domain.SessionModeChat
+	// A chat-only harness has no terminal interface, so Chat is its only mode
+	// and a terminal request is refused before any durable state exists.
+	if cfg.Harness.ChatOnly() {
+		if cfg.RequestedMode == domain.SessionModeTUI {
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: %s supports Chat only", ErrTerminalUnsupported, cfg.Harness)
 		}
+		cfg.RequestedMode = domain.SessionModeChat
+	}
+	// Unreal Agent has no interactive approval channel either, so selecting it
+	// supplies bypass permissions by default; an explicit caller-supplied
+	// permission remains authoritative and is rejected normally when the
+	// harness cannot honor it.
+	if cfg.Harness == domain.HarnessUnreal {
 		if cfg.AgentConfig.Permissions == "" {
 			cfg.AgentConfig.Permissions = ports.PermissionModeBypassPermissions
 		}
@@ -1271,17 +1282,17 @@ func (m *Manager) spawn(ctx context.Context, cfg ports.SpawnConfig, replacement 
 			m.logger.Warn("spawn: default Chat unavailable; falling back to TUI",
 				"harness", cfg.Harness, "error", ports.ErrChatUnsupported)
 			mode = domain.SessionModeTUI
-		} else if err := m.chat.PreflightChat(ctx, cfg.Harness, agentConfig.Permissions); err != nil {
+		} else if err := m.preflightChat(ctx, cfg.Harness, agentConfig.Permissions, m.chatPreflightEnv(cfg, project.Config.Env)); err != nil {
 			fallbackAllowed := errors.Is(err, ports.ErrChatUnsupported) ||
 				errors.Is(err, ports.ErrChatDriverUnavailable) ||
 				errors.Is(err, ports.ErrChatDriverIncompatible) ||
 				errors.Is(err, ports.ErrChatAuthRequired)
 			if modeExplicitlyRequested || !fallbackAllowed ||
 				errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", agentlaunch.RedactError(err, project.Config.Env))
 			}
 			m.logger.Warn("spawn: default Chat unavailable; falling back to TUI",
-				"harness", cfg.Harness, "error", err)
+				"harness", cfg.Harness, "error", agentlaunch.RedactError(err, project.Config.Env))
 			mode = domain.SessionModeTUI
 		}
 
@@ -1629,7 +1640,9 @@ func (m *Manager) spawn(ctx context.Context, cfg ports.SpawnConfig, replacement 
 		created(err)
 	}
 	if err != nil {
-		if ws.Path != "" {
+		if ws.Path != "" && errors.Is(err, ports.ErrWorkspaceCreateRetained) {
+			m.recordRetainedSeedSpawnWorkspace(ctx, rec, ws, false)
+		} else if ws.Path != "" {
 			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, prep != nil, false)
 		} else {
 			// No worktree exists, so the seed row can be discarded.
@@ -2356,17 +2369,8 @@ func (m *Manager) createSessionWorkspaceAt(ctx context.Context, project domain.P
 		return ports.WorkspaceInfo{}, nil, err
 	}
 	childRepos := make([]ports.WorkspaceProjectRepoConfig, 0, len(repos))
-	assets := make([]ports.WorkspaceProjectAssetConfig, 0)
 	for _, repo := range repos {
 		if repo.GitStatus == domain.GitStatusNeedsInit {
-			repoPath := filepath.Join(project.Path, filepath.FromSlash(repo.RelativePath))
-			if _, err := os.Stat(filepath.Join(repoPath, ".git")); err == nil {
-				continue
-			}
-			assets = append(assets, ports.WorkspaceProjectAssetConfig{
-				RelativePath: repo.RelativePath,
-				SourcePath:   repoPath,
-			})
 			continue
 		}
 		repoPath := filepath.Join(project.Path, filepath.FromSlash(repo.RelativePath))
@@ -2396,7 +2400,6 @@ func (m *Manager) createSessionWorkspaceAt(ctx context.Context, project domain.P
 		BaseBranch:       project.Config.WorktreeBaseBranch(),
 		BaseRef:          baseRefs[filepath.Clean(project.Path)],
 		Repos:            childRepos,
-		Assets:           assets,
 	})
 	if err != nil && len(info.Worktrees) == 0 {
 		return ports.WorkspaceInfo{}, nil, err
@@ -2441,7 +2444,7 @@ func (m *Manager) createSessionWorkspaceAt(ctx context.Context, project domain.P
 			WorktreePath: wt.Path,
 			State:        "active",
 		}); storeErr != nil {
-			if cfg.TaskPreparation != "" {
+			if cfg.TaskPreparation != "" || errors.Is(err, ports.ErrWorkspaceCreateRetained) {
 				return info.Root, &info, errors.Join(err, fmt.Errorf("record prepared workspace worktree %q: %w", wt.RepoName, storeErr))
 			}
 			cleanupCtx, cancel := spawnRollbackContext(ctx)
@@ -2617,13 +2620,17 @@ func (m *Manager) rollbackSeedSpawnWorkspace(ctx context.Context, rec domain.Ses
 		}
 		return
 	}
-	cleanupCtx, cancel = spawnRollbackContext(ctx)
+	m.recordRetainedSeedSpawnWorkspace(ctx, rec, ws, published)
+}
+
+func (m *Manager) recordRetainedSeedSpawnWorkspace(ctx context.Context, rec domain.SessionRecord, ws ports.WorkspaceInfo, published bool) {
+	cleanupCtx, cancel := spawnRollbackContext(ctx)
+	defer cancel()
 	m.preserveFailedSpawnWorkspace(cleanupCtx, rec.ID, ws, true)
-	cancel()
 	if published {
 		return
 	}
-	m.markSpawnFailedTerminatedAfterFailure(ctx, rec.ID, false)
+	m.markSpawnFailedTerminatedAfterFailure(cleanupCtx, rec.ID, false)
 }
 
 func (m *Manager) preserveFailedSpawnWorkspace(ctx context.Context, id domain.SessionID, ws ports.WorkspaceInfo, runtimeDestroyed bool) {
@@ -2822,6 +2829,10 @@ func resolvedModelForMetadata(harness domain.AgentHarness, effective, adapter po
 // static catalog. Dynamic catalogs and direct-entry agents defer authoritative
 // model validation to the selected agent at launch time.
 func validateSpawnModel(harness domain.AgentHarness, model string) error {
+	if harness == domain.HarnessDockerAgent && strings.HasPrefix(strings.TrimSpace(model), "model:") {
+		return nil
+	}
+
 	if modelcatalog.Accepts(string(harness), model) {
 		return nil
 	}
@@ -5015,6 +5026,7 @@ func (m *Manager) ReconcileStartupSafety(ctx context.Context) error {
 	}
 	// Capture only rows that predate the listener. Git cleanup belongs in the
 	// background, where a slow or unavailable repository cannot delay boot.
+	m.startupHealthCutoff = m.clock()
 	m.startupTaskPreparations = []domain.SessionRecord{}
 	m.startupProvisioningRetries = nil
 	// No branch naming survives a restart; clients show the branch it left.
@@ -5108,6 +5120,11 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 	candidates := make([]domain.SessionRecord, 0, len(recs))
 	ids := make([]domain.SessionID, 0, len(recs))
 	for _, rec := range recs {
+		// A spawn accepted after the listener opened can still be between
+		// inserting its seed row and creating its workspace.
+		if !m.startupHealthCutoff.IsZero() && !rec.CreatedAt.Before(m.startupHealthCutoff) {
+			continue
+		}
 		if rec.IsTerminated || rec.IsTaskPreparation || rec.HibernatedAt != nil || rec.ProvisionState.WithDefault() != domain.SessionProvisionReady {
 			continue
 		}
@@ -7277,10 +7294,24 @@ func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issu
 	return m.runtimeEnvChecked(id, project, issue, projectEnv, m.accountOverride(id), harness)
 }
 
+// chatPreflightEnv is the environment a new Chat session will launch with,
+// before it has an ID: the same AO-stored provider keys and withheld keys as
+// runtimeEnvForHarness, so admission and launch agree on which provider keys
+// exist. Subscription-account environment is left to the launch: resolving it
+// now would bind the provider default to a session that does not exist yet.
+func (m *Manager) chatPreflightEnv(cfg ports.SpawnConfig, projectEnv map[string]string) map[string]string {
+	env, _ := m.runtimeEnvChecked("", cfg.ProjectID, cfg.IssueID, projectEnv, cfg.AgentAccountID, cfg.Harness)
+	return env
+}
+
 // runtimeEnvChecked refuses an incomplete account environment, so a caller
 // cannot start under the device login. A nonempty accountID replaces the
 // session's binding for an account move's preflight.
 func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, accountID string, harness domain.AgentHarness) (map[string]string, error) {
+	return m.runtimeEnvWithBindingPolicy(id, project, issue, projectEnv, accountID, harness, false)
+}
+
+func (m *Manager) runtimeEnvWithBindingPolicy(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, accountID string, harness domain.AgentHarness, preserveBindings bool) (map[string]string, error) {
 	caseInsensitive := envKeysCaseInsensitive
 	env := spawnEnvForOS(id, project, issue, m.dataDir, projectEnv, caseInsensitive)
 	if m.dataDir != "" {
@@ -7338,7 +7369,7 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 		env[EnvAgentBrowserURL] = m.agentBrowserURL
 		env[EnvAgentBrowserToken] = m.agentBrowserToken
 	}
-	accountErr := m.applyAgentAccountEnv(id, accountID, env, caseInsensitive, harness)
+	accountErr := m.applyAgentAccountEnvWithBindingPolicy(id, accountID, env, caseInsensitive, harness, preserveBindings)
 	if accountErr != nil {
 		return nil, accountErr
 	}
@@ -7365,16 +7396,21 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 // agent under a different login than the one the session shows. A nonempty
 // accountID replaces the session's binding. An error means the env may lack an
 // account's variables.
-func (m *Manager) applyAgentAccountEnv(id domain.SessionID, accountID string, env map[string]string, caseInsensitive bool, harness domain.AgentHarness) error {
+func (m *Manager) applyAgentAccountEnvWithBindingPolicy(id domain.SessionID, accountID string, env map[string]string, caseInsensitive bool, harness domain.AgentHarness, preserveBindings bool) error {
 	setProtectedEnv(env, agentlaunch.ManagedCodexAccountEnv, "", caseInsensitive)
-	if m.agentAccounts == nil {
+	if m.agentAccounts == nil || id == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var accountEnv map[string]string
 	var err error
-	if accountID != "" {
+	preflight, supported := m.agentAccounts.(interface {
+		ProviderSwitchLaunchEnv(context.Context, domain.SessionID, string, domain.AgentHarness) (map[string]string, error)
+	})
+	if preserveBindings && supported {
+		accountEnv, err = preflight.ProviderSwitchLaunchEnv(ctx, id, accountID, harness)
+	} else if accountID != "" {
 		accountEnv, err = m.agentAccounts.SessionLaunchEnvWith(ctx, id, accountID, harness)
 	} else {
 		accountEnv, err = m.agentAccounts.SessionLaunchEnv(ctx, id, harness)
@@ -7436,14 +7472,18 @@ func pinRuntimePermissionEnv(env map[string]string, mode domain.PermissionMode) 
 }
 
 func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, harness domain.AgentHarness) (map[string]string, string, error) {
-	return m.launchRuntimeEnvOnAccount(id, project, issue, projectEnv, harness, m.accountOverride(id))
+	return m.launchRuntimeEnvOnAccount(id, project, issue, projectEnv, harness, m.accountOverride(id), false)
 }
 
-func (m *Manager) launchRuntimeEnvOnAccount(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, harness domain.AgentHarness, accountID string) (map[string]string, string, error) {
-	env, err := m.runtimeEnvChecked(id, project, issue, projectEnv, accountID, harness)
+func (m *Manager) launchRuntimeEnvOnAccount(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, harness domain.AgentHarness, accountID string, preserveBindings bool) (map[string]string, string, error) {
+	env, err := m.runtimeEnvWithBindingPolicy(id, project, issue, projectEnv, accountID, harness, preserveBindings)
 	if err != nil {
 		return nil, "", err
 	}
+	return m.issueLaunchBrowserCapability(id, env)
+}
+
+func (m *Manager) issueLaunchBrowserCapability(id domain.SessionID, env map[string]string) (map[string]string, string, error) {
 	if m.browserCapabilities == nil {
 		return env, "", nil
 	}
@@ -7470,7 +7510,8 @@ func (m *Manager) prepareWorkerLaunchEnv(
 	if state, _ := ctx.Value(tuiSettingsLaunchKey{}).(*tuiSettingsLaunch); state != nil {
 		accountID = state.accountID
 	}
-	env, verifier, err := m.launchRuntimeEnvOnAccount(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness, accountID)
+	preserveBindings := ports.PreservesProviderSwitchAccounts(ctx)
+	env, verifier, err := m.launchRuntimeEnvOnAccount(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness, accountID, preserveBindings)
 	if err != nil {
 		return rec, nil, err
 	}
@@ -7493,7 +7534,20 @@ func (m *Manager) prepareChatControllerEnv(
 	projectEnv map[string]string,
 	expected domain.SessionControllerOwner,
 ) (domain.SessionRecord, map[string]string, error) {
-	env, verifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness)
+	var env map[string]string
+	var verifier string
+	var err error
+	if ports.PreservesProviderSwitchAccounts(ctx) {
+		// Until the Chat switch commits, rec still describes the source. The
+		// target's checked environment was resolved before stopping it.
+		if targetEnv := ports.AuthEnvironmentOverrides(ctx); targetEnv != nil {
+			env, verifier, err = m.issueLaunchBrowserCapability(rec.ID, maps.Clone(targetEnv))
+		} else {
+			env, verifier, err = m.launchRuntimeEnvOnAccount(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness, m.accountOverride(rec.ID), true)
+		}
+	} else {
+		env, verifier, err = m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Harness)
+	}
 	if err != nil {
 		return rec, nil, err
 	}

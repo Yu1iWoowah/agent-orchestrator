@@ -39,6 +39,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	previewutil "github.com/aoagents/agent-orchestrator/backend/internal/preview"
 	"github.com/aoagents/agent-orchestrator/backend/internal/previewserver"
+	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
@@ -2341,6 +2342,11 @@ func (c *SessionsController) send(w http.ResponseWriter, r *http.Request) {
 	} else {
 		err = c.Svc.Send(r.Context(), sessionID(r), message, attachment)
 	}
+	if errors.Is(err, chatsvc.ErrControllerHandoff) {
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CHAT_INTERFACE_TRANSITION",
+			"the session is switching agents or interfaces; send again after the handoff completes", nil)
+		return
+	}
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -2586,6 +2592,11 @@ func (c *SessionsController) activity(w http.ResponseWriter, r *http.Request) {
 		if err := c.Usage.RecordHook(r.Context(), sessionID(r), usageSignal); err != nil {
 			if errors.Is(err, usagesvc.ErrUsageSessionNotFound) {
 				envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "SESSION_NOT_FOUND", "Unknown session", nil)
+				return
+			}
+			if errors.Is(err, usagesvc.ErrHookQueueClosing) {
+				w.Header().Set("Retry-After", "1")
+				envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "USAGE_HOOK_QUEUE_CLOSING", "Usage hook queue is closing; retry the hook", nil)
 				return
 			}
 			slog.Default().Warn(

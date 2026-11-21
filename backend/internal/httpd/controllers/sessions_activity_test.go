@@ -327,6 +327,22 @@ func TestSessionsAPI_ActivityUsageFailureDoesNotRejectAgentSignal(t *testing.T) 
 	}
 }
 
+func TestSessionsAPI_ActivityReturnsRetryableErrorWhenUsageQueueCloses(t *testing.T) {
+	usage := &fakeUsageHookRecorder{err: usagesvc.ErrHookQueueClosing}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(
+		config.Config{}, log, nil, httpd.APIDeps{UsageHooks: usage}, httpd.ControlDeps{},
+	))
+	t.Cleanup(srv.Close)
+
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"event":"session-start","agentSessionId":"native-1"}`)
+	if status != http.StatusServiceUnavailable || headers.Get("Retry-After") != "1" ||
+		!strings.Contains(string(body), "USAGE_HOOK_QUEUE_CLOSING") {
+		t.Fatalf("activity = %d, Retry-After = %q, body=%s", status, headers.Get("Retry-After"), body)
+	}
+}
+
 func TestSessionsAPI_ActivityForwardsOrdinaryEventWithoutUsageMetadata(t *testing.T) {
 	activity := &fakeActivityRecorder{}
 	usage := &fakeUsageHookRecorder{}

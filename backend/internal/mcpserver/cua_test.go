@@ -1,4 +1,4 @@
-package cli
+package mcpserver
 
 import (
 	"encoding/base64"
@@ -34,7 +34,6 @@ func cuaDaemon(t *testing.T, tools *string, call func(request cuaCallRequest) st
 			_, _ = io.WriteString(w, call(request))
 		}
 	}))
-	t.Cleanup(srv.Close)
 	writeRunFileFor(t, cfg, srv)
 }
 

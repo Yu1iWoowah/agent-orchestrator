@@ -1,6 +1,6 @@
 //go:build unix
 
-package cli
+package mcpserver
 
 import (
 	"os"
@@ -28,7 +28,7 @@ func TestInlineLocalImagesReportsAFIFOAsMissingWithoutBlocking(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		_, missing, err := inlineLocalImages(`<img src="` + pipe + `">`)
+		_, missing, err := InlineLocalImages(`<img src="` + pipe + `">`)
 		done <- result{missing, err}
 	}()
 	select {
@@ -38,7 +38,7 @@ func TestInlineLocalImagesReportsAFIFOAsMissingWithoutBlocking(t *testing.T) {
 			t.Fatalf("err=%v missing=%q opens=%d", r.err, r.missing, opens)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("inlineLocalImages blocked on a FIFO")
+		t.Fatal("InlineLocalImages blocked on a FIFO")
 	}
 }
 
@@ -61,7 +61,7 @@ func TestInlineLocalImagesRefusesAFIFOSwappedInAfterTheStat(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		_, missing, err := inlineLocalImages(`<img src="` + png + `">`)
+		_, missing, err := InlineLocalImages(`<img src="` + png + `">`)
 		done <- result{missing, err}
 	}()
 	select {
@@ -70,6 +70,6 @@ func TestInlineLocalImagesRefusesAFIFOSwappedInAfterTheStat(t *testing.T) {
 			t.Fatalf("err=%v missing=%q", r.err, r.missing)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("inlineLocalImages blocked on a FIFO swapped in after the stat")
+		t.Fatal("InlineLocalImages blocked on a FIFO swapped in after the stat")
 	}
 }

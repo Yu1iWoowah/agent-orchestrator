@@ -283,7 +283,10 @@ func TestStopRemovesStaleRunFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return false }}, "stop", "--json")
+	out, _, err := executeCLI(t, Deps{
+		ProcessAlive:   func(int) bool { return false },
+		PIDMayBeHidden: func() bool { return false },
+	}, "stop", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}

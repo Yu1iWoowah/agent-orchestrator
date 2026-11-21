@@ -359,11 +359,9 @@ func TestE2E_SecondDaemonOnSameDataDir(t *testing.T) {
 	second.startDaemon(t)
 }
 
-func TestE2E_StaleRunFile(t *testing.T) {
+func TestE2E_RunFileWithUnseenPID(t *testing.T) {
 	e := newEnv(t)
-	// PID 2147483647 is never alive, but status judges the daemon only over
-	// loopback: nothing answers on the port, so it reports unhealthy, not stale.
-	// stop keeps its process check and still removes the stale run-file.
+	// Nothing answers status's loopback probe for this run-file.
 	content := fmt.Sprintf(`{"pid":2147483647,"port":%d,"startedAt":"2020-01-01T00:00:00Z"}`, e.port)
 	if err := os.MkdirAll(filepath.Dir(e.runFile), 0o755); err != nil {
 		t.Fatal(err)
@@ -375,7 +373,20 @@ func TestE2E_StaleRunFile(t *testing.T) {
 	out, _ := e.run(t, "status", "--json")
 	mustContain(t, out, `"state": "unhealthy"`)
 
-	if out, code := e.run(t, "stop"); code != 0 || !strings.Contains(out, "stopped") {
+	out, code := e.run(t, "stop")
+	if runtime.GOOS == "linux" {
+		// A PID namespace can hide a live daemon. A failed probe alone
+		// cannot authorize removing its run-file.
+		if code != 1 {
+			t.Fatalf("stop with unverified ownership: exit %d, want 1, out %s", code, out)
+		}
+		mustContain(t, out, "ownership could not be verified")
+		if got, err := os.ReadFile(e.runFile); err != nil || string(got) != content {
+			t.Fatalf("stop must preserve the original run-file: got %q, err %v", got, err)
+		}
+		return
+	}
+	if code != 0 || !strings.Contains(out, "stopped") {
 		t.Fatalf("stop stale: exit %d, out %s", code, out)
 	}
 	if _, err := os.Stat(e.runFile); !os.IsNotExist(err) {

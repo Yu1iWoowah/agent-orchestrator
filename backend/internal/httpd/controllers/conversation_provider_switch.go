@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,14 +46,24 @@ func (c *ConversationsController) switchProvider(w http.ResponseWriter, r *http.
 		Model:    capActivityMeta(strings.TrimSpace(domain.SanitizeControlChars(req.Model))),
 		Effort:   capActivityMeta(strings.TrimSpace(domain.SanitizeControlChars(req.Effort))),
 		FastMode: req.FastMode, Ultracode: req.Ultracode, AutoCompactWindow: req.AutoCompactWindow,
-		PermissionMode: domain.PermissionMode(req.PermissionMode),
+		PermissionMode: domain.PermissionMode(strings.TrimSpace(req.PermissionMode)), Force: req.Force,
+	}
+	if !request.PermissionMode.Valid() {
+		writeProviderSwitchError(w, r, &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalUnsupported,
+			Detail: fmt.Sprintf("permission mode %q is not one of default, accept-edits, auto, bypass-permissions", request.PermissionMode)})
+		return
 	}
 	if req.Message == nil {
-		if err := c.Svc.SwitchProvider(ctx, sessionID, request); err != nil {
+		result, err := c.Svc.SwitchProviderReport(ctx, sessionID, request)
+		if err != nil {
 			writeProviderSwitchError(w, r, err)
 			return
 		}
-		envelope.WriteJSON(w, http.StatusOK, ProviderSwitchResponse{Status: "ok"})
+		envelope.WriteJSON(w, http.StatusOK, ProviderSwitchResponse{
+			Status: "ok", StoppedTurn: result.StoppedTurn, CancelledQueuedMessages: result.CancelledQueued,
+			FailedPendingApprovals: result.FailedApprovals, SettingsUpdated: result.SettingsUpdated,
+			Warnings: result.Warnings,
+		})
 		return
 	}
 	turn, switched, err := c.Svc.SwitchProviderAndSend(ctx, sessionID, request, message)
@@ -74,6 +85,16 @@ func (c *ConversationsController) switchProvider(w http.ResponseWriter, r *http.
 }
 
 func writeProviderSwitchError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, ports.ErrAgentAccountProviderMismatch), errors.Is(err, ports.ErrAgentAccountUnknown),
+		errors.Is(err, ports.ErrAgentAccountSignedOut), errors.Is(err, ports.ErrAgentAccountLocalOnly),
+		errors.Is(err, ports.ErrAgentAccountStorageUnsafe), errors.Is(err, ports.ErrAgentAccountStorageUnavailable),
+		errors.Is(err, ports.ErrAgentAccountStorageUnsupported), errors.Is(err, ports.ErrAgentAccountUnshared),
+		errors.Is(err, ports.ErrAgentAccountInUse), errors.Is(err, ports.ErrAgentAccountCredentialStoreUnsupported),
+		errors.Is(err, ports.ErrAgentAccountUnavailableHomeOccupied):
+		writeAgentAccountError(w, r, err)
+		return
+	}
 	var refusal *domain.ProviderSwitchError
 	if !errors.As(err, &refusal) {
 		writeConversationError(w, r, err)

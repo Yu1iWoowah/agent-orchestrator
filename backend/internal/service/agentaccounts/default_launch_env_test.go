@@ -65,6 +65,19 @@ type fakeCodex struct{ fakeClaude }
 
 func (*fakeCodex) Provider() domain.AgentAccountProvider { return domain.AgentAccountProviderCodex }
 
+func TestProviderSwitchLaunchEnvLeavesUnboundAccountsUnchanged(t *testing.T) {
+	store := &memStore{bindings: map[domain.SessionID]string{}}
+	svc := New(store, []ports.AgentAccountProviderCLI{&fakeClaude{}, &fakeCodex{}}, t.TempDir(), nil, nil)
+	for _, accountID := range []string{domain.DeviceAgentAccountID(domain.AgentAccountProviderCodex), ""} {
+		if _, err := svc.ProviderSwitchLaunchEnv(t.Context(), "switch", accountID, domain.HarnessCodex); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.bindings) != 0 {
+			t.Fatalf("switch environment pinned an account: %v", store.bindings)
+		}
+	}
+}
+
 func TestCodexMetadataBindingDefersReadinessToPreflight(t *testing.T) {
 	ctx := context.Background()
 	store := &memStore{bindings: map[domain.SessionID]string{}}

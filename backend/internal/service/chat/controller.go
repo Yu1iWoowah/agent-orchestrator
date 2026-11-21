@@ -62,7 +62,7 @@ type Store interface {
 	ClaimChatControllerGeneration(ctx context.Context, session domain.SessionID, generation string) error
 	ClaimReviewChatController(ctx context.Context, reviewID, providerID, generation string, now time.Time) (bool, error)
 	ConversationBranch(ctx context.Context, conversationID, branchID string) (domain.ConversationBranch, error)
-	CommitProviderSwitch(ctx context.Context, rec domain.SessionRecord, branch domain.ConversationBranch, generation string, settings domain.ConversationSettings, activity domain.ConversationActivity) error
+	CommitProviderSwitch(ctx context.Context, rec domain.SessionRecord, branch domain.ConversationBranch, generation string, settings domain.ConversationSettings, activity domain.ConversationActivity, newBinding *domain.ResolvedAgentAccount) error
 	ListTerminalTurns(ctx context.Context, id domain.SessionID) ([]domain.HandoffTurn, error)
 	ConversationEditAnchor(ctx context.Context, conversationID, replacedTurnID string) (domain.ConversationEditAnchor, error)
 	RepairIncompleteConversationEdit(ctx context.Context, sessionID domain.SessionID, conversationID string, now time.Time) (domain.ConversationBranch, bool, error)
@@ -222,6 +222,7 @@ type replacementReplayProof struct {
 
 // Controller drives one Chat session.
 type Controller struct {
+	startedAt time.Time
 	// Immutable after publication; belongs only to this successfully replayed
 	// controller, never to a future controller rebuilt from startConfigs.
 	strictReplacementReplay       *replacementReplayProof
@@ -2976,6 +2977,67 @@ func (c *Controller) BeginIdleBranchHandoff(ctx context.Context) error {
 	c.handoff = controllerHandoffIdleBranch
 	c.branchHandoffDone = make(chan struct{})
 	return nil
+}
+
+// BeginForcedBranchHandoff stops only known work on this controller. A held
+// delivery must be recovered through the receipt path before switching.
+func (c *Controller) BeginForcedBranchHandoff(ctx context.Context) (domain.ProviderSwitchResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for !c.sendMu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return domain.ProviderSwitchResult{}, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	defer c.sendMu.Unlock()
+	if err := c.rejectPendingAgentSettings(ctx); err != nil {
+		return domain.ProviderSwitchResult{}, err
+	}
+	c.mu.Lock()
+	turn := c.pendingTurnID
+	fenced := c.handoff != controllerHandoffNone || c.deliveryQuiescing
+	unsettled := c.pendingDeliveryID != "" || c.compactionPending || c.dispatchingTurnID != ""
+	c.mu.Unlock()
+	if fenced {
+		return domain.ProviderSwitchResult{}, ErrControllerHandoff
+	}
+	if unsettled {
+		return domain.ProviderSwitchResult{}, c.blocked("delivery_not_settled", nil)
+	}
+	if journal, ok := c.store.(chatDeliveryJournal); ok {
+		pending, err := journal.PendingChatDeliveries(ctx, c.sessionID)
+		if err != nil {
+			return domain.ProviderSwitchResult{}, c.blocked("delivery_journal_unavailable", err)
+		}
+		if len(pending) != 0 {
+			return domain.ProviderSwitchResult{}, c.blocked("delivery_not_settled", nil)
+		}
+	}
+	running, err := c.store.ListVisibleRunningTurnProviderIDs(ctx, c.conversation.ID)
+	if err != nil {
+		return domain.ProviderSwitchResult{}, err
+	}
+	for _, providerTurnID := range running {
+		if turn == "" || providerTurnID != turn {
+			return domain.ProviderSwitchResult{}, c.blocked("delivery_not_settled", nil)
+		}
+	}
+	queued, err := c.store.ListQueuedBatch(ctx, c.conversation.ID, 0)
+	if err != nil && !errors.Is(err, domain.ErrNoQueuedTurn) {
+		return domain.ProviderSwitchResult{}, err
+	}
+	c.mu.Lock()
+	c.handoff = controllerHandoffIdleBranch
+	c.branchHandoffDone = make(chan struct{})
+	c.handoffInterrupted = ""
+	c.mu.Unlock()
+	if err := c.store.CancelAllQueuedTurns(ctx, c.conversation.ID, c.now()); err != nil {
+		c.AbortHandoff()
+		return domain.ProviderSwitchResult{}, err
+	}
+	return domain.ProviderSwitchResult{StoppedTurn: turn != "", CancelledQueued: len(queued)}, nil
 }
 
 // AbortHandoff reopens source intake when a drain is cancelled before the source

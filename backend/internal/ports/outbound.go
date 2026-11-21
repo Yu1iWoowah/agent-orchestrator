@@ -535,6 +535,9 @@ var (
 	// it holds uncommitted changes or untracked files. Teardown is never
 	// forced; callers treat the workspace as intentionally preserved.
 	ErrWorkspaceDirty = errors.New("workspace: uncommitted changes present")
+	// ErrWorkspaceCreateRetained means the adapter completed its claim-aware
+	// rollback and returned paths for recovery, not another automatic removal.
+	ErrWorkspaceCreateRetained = errors.New("workspace: create rollback preserved worktrees")
 	// ErrWorkspaceRepoUnavailable reports that the project's source repository
 	// is no longer reachable on disk, so git cannot be asked to remove the
 	// session's worktree. Teardown treats this like ErrWorkspaceDirty: the
@@ -692,14 +695,6 @@ type WorkspaceProjectConfig struct {
 	// import sets it; child repositories already start from their BaseRef.
 	StartRef string
 	Repos    []WorkspaceProjectRepoConfig
-	Assets   []WorkspaceProjectAssetConfig
-}
-
-// WorkspaceProjectAssetConfig describes a non-repository child directory that
-// is copied from the canonical workspace into each session workspace.
-type WorkspaceProjectAssetConfig struct {
-	RelativePath string
-	SourcePath   string
 }
 
 // WorkspaceProjectRepoConfig describes one registered child repo in a

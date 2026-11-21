@@ -1903,7 +1903,7 @@ func shellTerminalOperations() []operation {
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/provider-switch", id: "switchSessionProvider", tag: "conversations",
-			summary:    "Switch an idle Chat session to another provider",
+			summary:    "Switch a session to another provider or update the active provider settings",
 			pathParams: []any{controllers.SessionIDParam{}},
 			reqBody:    controllers.ProviderSwitchRequest{},
 			resps: []respUnit{
@@ -4709,6 +4709,7 @@ func sessionOperations() []operation {
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
+				{http.StatusServiceUnavailable, envelope.APIError{}},
 			},
 		},
 		{

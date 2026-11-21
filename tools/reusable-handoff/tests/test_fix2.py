@@ -394,7 +394,7 @@ class WorkerProducerTests(unittest.TestCase):
         fake.processes.pop(pid)
         # Precheck and runner both use the recorded B10 baseline and worker command rules.
         base = lambda pid, tick, started: h.provider_base(fake.read, sid, started, lambda _: None)
-        self.assertEqual(h.os_work_processes(fake.processes, sid, fake.data_dir, fake.worker_path, base), [])
+        self.assertEqual(h.os_work_processes(fake.processes, sid, fake.data_dir, fake.worker_path, base, fake.worker_binaries), [])
         self.assertTrue(h.quiescent(hidden, worker=True))
         self.assertEqual(fake.dispatch_actor(2)["state"], "safe")
         self.assertEqual(fake.run.worker_stop({"id": sid})["state"], "safe")

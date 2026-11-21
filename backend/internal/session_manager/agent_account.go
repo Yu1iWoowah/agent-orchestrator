@@ -64,6 +64,65 @@ func (m *Manager) beginBoundHarnessUse(ctx context.Context, rec domain.SessionRe
 	return m.beginHarnessAndAccountUse(ctx, rec.Harness, id)
 }
 
+// PrepareProviderSwitchLaunch resolves the target independently of the source.
+// An existing target binding is authoritative. A missing binding is resolved
+// using the same role-aware policy as an ordinary spawn. The caller publishes
+// a missing binding with the switch, while it still holds the launch lease.
+func (m *Manager) PrepareProviderSwitchLaunch(ctx context.Context, source domain.SessionRecord, target domain.AgentHarness) (context.Context, map[string]string, *domain.ResolvedAgentAccount, func(), error) {
+	project, err := m.loadProject(ctx, source.ProjectID)
+	if err != nil {
+		return ctx, nil, nil, nil, err
+	}
+	var selected domain.ResolvedAgentAccount
+	var missing bool
+	if m.agentAccounts != nil {
+		selected, err = m.agentAccounts.SessionAccountBinding(ctx, source.ID, target)
+		missing = errors.Is(err, ports.ErrAgentAccountUnknown)
+		provider, supported := domain.AgentAccountProviderFor(target)
+		if missing || !supported {
+			selected, err = m.agentAccounts.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{
+				Harness: target, Role: domain.AgentAccountRole(source.Kind), ProjectConfig: project.Config,
+			})
+		}
+		if err != nil {
+			return ctx, nil, nil, nil, err
+		}
+		if selected.AccountID != "" && (!supported || selected.Provider != provider) {
+			return ctx, nil, nil, nil, ports.ErrAgentAccountProviderMismatch
+		}
+		if ports.IsRemoteAccountRequest(ctx) && selected.Managed() {
+			return ctx, nil, nil, nil, ports.ErrAgentAccountLocalOnly
+		}
+	}
+	release, err := m.beginHarnessAndAccountUse(ctx, target, selected.AccountID)
+	if err != nil {
+		return ctx, nil, nil, nil, err
+	}
+	if missing && selected.Managed() {
+		if err := m.agentAccounts.ValidateAccount(ctx, target, selected.AccountID); err != nil {
+			release()
+			return ctx, nil, nil, nil, err
+		}
+	}
+	env, err := m.runtimeEnvWithBindingPolicy(source.ID, source.ProjectID, source.IssueID, project.Config.Env, selected.AccountID, target, true)
+	if err != nil {
+		release()
+		return ctx, nil, nil, nil, err
+	}
+	var binding *domain.ResolvedAgentAccount
+	if missing {
+		binding = &selected
+	}
+	if agent, ok := m.agents.Agent(target); ok {
+		m.augmentAgentRuntimeEnv(agent, env)
+	}
+	if selected.AccountID != "" {
+		ctx = ports.WithAgentAccount(ctx, selected)
+	}
+	ctx = ports.WithAuthEnvironment(ctx, env)
+	return ctx, env, binding, release, nil
+}
+
 // ReconcileAccountReviewers records which reviewers holding account id have no
 // process left, worker by worker, so owner checks count only reviewers that
 // still run. A failed reconcile keeps the account in use.

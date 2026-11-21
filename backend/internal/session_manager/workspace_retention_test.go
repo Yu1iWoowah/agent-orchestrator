@@ -64,6 +64,36 @@ func TestWorkspaceRowFailurePreservesSharedAbandonedWriter(t *testing.T) {
 	}
 }
 
+type retainsFailedWorkspace struct{ *fakeWorkspace }
+
+func (w retainsFailedWorkspace) CreateWorkspaceProject(ctx context.Context, cfg ports.WorkspaceProjectConfig) (ports.WorkspaceProjectInfo, error) {
+	info, err := w.fakeWorkspace.CreateWorkspaceProject(ctx, cfg)
+	return info, errors.Join(err, ports.ErrWorkspaceCreateRetained)
+}
+
+func TestSpawnDoesNotRetryRemovalOfWorkspaceRetainedByCreateRollback(t *testing.T) {
+	for _, failRow := range []bool{false, true} {
+		m, st, rt, ws := newManager()
+		st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+		m.workspace = retainsFailedWorkspace{ws}
+		if failRow {
+			st.upsertWTErr = errors.New("db locked")
+		}
+		_, _, _, err := m.Spawn(t.Context(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
+		if !errors.Is(err, ports.ErrWorkspaceCreateRetained) {
+			t.Fatalf("spawn error = %v, want retained workspace", err)
+		}
+		if ws.projectDestroyed != 0 || ws.destroyed != 0 || rt.created != 0 {
+			t.Fatalf("spawn touched workspace or runtime after rollback: workspace destroys=%d/%d runtime starts=%d",
+				ws.projectDestroyed, ws.destroyed, rt.created)
+		}
+		session := st.sessions["mer-1"]
+		if session.Metadata.WorkspacePath == "" || !session.IsTerminated {
+			t.Fatalf("failed session missing its retained workspace: %+v", session)
+		}
+	}
+}
+
 // ResolveWorkspacePath advertises the same canonical path that Create/Restore
 // would reattach; admission must run before either materializes that path.
 type retainedPathWorkspace struct{ *fakeWorkspace }

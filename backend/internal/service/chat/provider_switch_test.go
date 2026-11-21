@@ -15,9 +15,85 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
+type scopedSwitchLaunch struct{ account domain.ResolvedAgentAccount }
+
+func (l scopedSwitchLaunch) PrepareProviderSwitchLaunch(ctx context.Context, _ domain.SessionRecord, _ domain.AgentHarness) (context.Context, map[string]string, *domain.ResolvedAgentAccount, func(), error) {
+	return ports.WithAgentAccount(ctx, l.account), nil, &l.account, func() {}, nil
+}
+
+type scopedSwitchCatalog struct{ account domain.ResolvedAgentAccount }
+
+func (c *scopedSwitchCatalog) ModelCatalog(ctx context.Context, _, _ string, _ bool) (ports.AgentModelCatalog, error) {
+	c.account, _ = ports.AgentAccountFromContext(ctx)
+	return ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{ID: "approved-model"}}}, nil
+}
+
+func TestProviderSwitchModelCatalogUsesTargetAccountBeforeStoppingSource(t *testing.T) {
+	h, _, driver := newEditHarness(t, false)
+	account := domain.ResolvedAgentAccount{AccountID: "target-claude", Provider: domain.AgentAccountProviderClaude}
+	catalog := &scopedSwitchCatalog{}
+	h.svc.SetProviderSwitchLaunch(scopedSwitchLaunch{account})
+	h.svc.SetSwitchModelCatalog(catalog)
+
+	_, err := h.svc.SwitchProviderReport(t.Context(), testSession, domain.ProviderSwitchRequest{
+		TargetHarness: domain.HarnessClaudeCode, Model: "wrong-model",
+	})
+	var refused *domain.ProviderSwitchError
+	if !errors.As(err, &refused) || refused.Kind != domain.ProviderSwitchRefusalUnsupported || catalog.account.AccountID != account.AccountID {
+		t.Fatalf("switch = %v, catalog account = %+v", err, catalog.account)
+	}
+	driver.mu.Lock()
+	defer driver.mu.Unlock()
+	if len(driver.startConfigs) != 1 || !h.svc.HasLiveChatController(testSession) {
+		t.Fatal("model refusal touched the source or started the target")
+	}
+	if _, found, err := h.st.GetSessionAgentAccountBinding(t.Context(), testSession, account.Provider); err != nil || found {
+		t.Fatalf("model refusal left a target binding: found=%v err=%v", found, err)
+	}
+}
+
+func TestForcedProviderSwitchKeepsUnsettledDeliveryAndQueue(t *testing.T) {
+	h, _, driver := newEditHarness(t, false)
+	ctx := t.Context()
+	active, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "original work", ClientMessageID: "original-force"})
+	if err != nil || active.ID == "" {
+		t.Fatalf("start original work: %+v %v", active, err)
+	}
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, active.ID)
+	if err != nil || attempt.ExecutionSettled || attempt.Disposition != domain.ChatDeliveryAccepted {
+		t.Fatalf("expected accepted/unsettled delivery: %+v %v", attempt, err)
+	}
+	queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "queued work", ClientMessageID: "queued-force"})
+	if err != nil || queued.State != domain.TurnStateQueued {
+		t.Fatalf("queue original input: %+v %v", queued, err)
+	}
+	_, err = h.svc.SwitchProviderReport(ctx, testSession, domain.ProviderSwitchRequest{TargetHarness: domain.HarnessClaudeCode, Force: true})
+	var refused *domain.ProviderSwitchError
+	if !errors.As(err, &refused) || refused.Kind != domain.ProviderSwitchRefusalBusy {
+		t.Fatalf("force = %v, want busy refusal", err)
+	}
+	saved, err := h.st.ChatDeliveryAttempt(ctx, testSession, attempt.ID)
+	if err != nil || saved.ExecutionSettled || saved.Disposition != attempt.Disposition {
+		t.Fatalf("force changed acceptance: %+v %v", saved, err)
+	}
+	follower, err := h.st.TurnByID(ctx, queued.ID)
+	if err != nil || follower.State != domain.TurnStateQueued || len(h.conv.sentTexts()) != 1 {
+		t.Fatalf("force mutated source work: follower=%+v sends=%v err=%v", follower, h.conv.sentTexts(), err)
+	}
+	driver.mu.Lock()
+	starts := len(driver.startConfigs)
+	driver.mu.Unlock()
+	record, found, err := h.st.GetSession(ctx, testSession)
+	if err != nil || !found || record.Harness != domain.HarnessCodex || starts != 1 {
+		t.Fatalf("force changed source or started another provider: harness=%s starts=%d err=%v", record.Harness, starts, err)
+	}
+}
+
 func TestProviderSwitchPublishesApproximateBranch(t *testing.T) {
 	h, _, driver := newEditHarness(t, false)
 	ctx := context.Background()
+	selected := domain.ResolvedAgentAccount{AccountID: "device-claude", Provider: domain.AgentAccountProviderClaude, Source: domain.AgentAccountSourceDevice}
+	h.svc.SetProviderSwitchLaunch(scopedSwitchLaunch{selected})
 
 	// Give the source a complete durable exchange so the target assertion proves
 	// the bootstrap came from AO's canonical rows, not provider scrollback.
@@ -57,6 +133,9 @@ func TestProviderSwitchPublishesApproximateBranch(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SwitchProvider: %v", err)
 	}
+	if binding, found, err := h.st.GetSessionAgentAccountBinding(ctx, testSession, selected.Provider); err != nil || !found || binding != selected {
+		t.Fatalf("target binding = %+v, found=%v, err=%v", binding, found, err)
+	}
 
 	targetConfig := lastStart(driver)
 	if after, err := h.st.ConversationForSession(ctx, testSession); err != nil || after.Usage != nil && after.Usage.ContextWindow != 0 {
@@ -93,8 +172,8 @@ func TestProviderSwitchPublishesApproximateBranch(t *testing.T) {
 		IdempotencyKey: "switch-once",
 	})
 	var refusal *domain.ProviderSwitchError
-	if !errors.As(err, &refusal) || refusal.Kind != domain.ProviderSwitchRefusalUnsupported {
-		t.Fatalf("repeated switch error = %v, want an unsupported refusal", err)
+	if !errors.As(err, &refusal) || refusal.Kind != domain.ProviderSwitchRefusalAlreadyActive {
+		t.Fatalf("repeated switch error = %v, want an already-active refusal", err)
 	}
 
 	record, found, err := h.st.GetSession(ctx, testSession)
@@ -382,7 +461,7 @@ type failingProviderSwitchStore struct {
 	err error
 }
 
-func (s failingProviderSwitchStore) CommitProviderSwitch(context.Context, domain.SessionRecord, domain.ConversationBranch, string, domain.ConversationSettings, domain.ConversationActivity) error {
+func (s failingProviderSwitchStore) CommitProviderSwitch(context.Context, domain.SessionRecord, domain.ConversationBranch, string, domain.ConversationSettings, domain.ConversationActivity, *domain.ResolvedAgentAccount) error {
 	return s.err
 }
 

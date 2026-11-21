@@ -1,4 +1,4 @@
-package cli
+package mcpserver
 
 import (
 	"encoding/base64"
@@ -17,7 +17,7 @@ import (
 // A render page runs in an opaque-origin sandbox, so it cannot load a local
 // file. The CLI runs as the agent, with the agent's file access, and inlines
 // every local image the page names by absolute path. Ported from T3 Code's
-// HtmlRender.inlineLocalImages.
+// HtmlRender.InlineLocalImages.
 
 const (
 	maxRenderImageBytes = 10 << 20
@@ -109,8 +109,8 @@ type renderImageError string
 
 func (e renderImageError) Error() string { return string(e) }
 
-// missingImagesError refuses a page that names images nobody can read.
-func missingImagesError(missing []string) error {
+// MissingImagesError refuses a page that names images nobody can read.
+func MissingImagesError(missing []string) error {
 	return renderImageError("These local images could not be read: " + strings.Join(missing, ", ") +
 		". Use absolute paths to existing image files, or remove them.")
 }
@@ -134,9 +134,9 @@ func dataURIPrefix(path string) string {
 	return "data:" + mime + ";base64,"
 }
 
-// inlineLocalImages replaces every absolute local image reference with a data URI.
+// InlineLocalImages replaces every absolute local image reference with a data URI.
 // missing lists references that could not be read or are not images; they stay as written.
-func inlineLocalImages(html string) (inlined string, missing []string, err error) {
+func InlineLocalImages(html string) (inlined string, missing []string, err error) {
 	refs := findLocalImages(html)
 	var paths []string
 	sizes := map[string]int{}

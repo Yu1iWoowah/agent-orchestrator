@@ -637,7 +637,7 @@ def proc_table():
                 return denied, True
             except OSError as exc:
                 raise Stop("process table UNKNOWN: " + directory.name + ": " + str(exc)) from exc
-        argv, missing_argv = read(lambda: [x.decode(errors="replace") for x in (directory / "cmdline").read_bytes().split(b"\0") if x], [])
+        argv, _ = read(lambda: [x.decode(errors="replace") for x in (directory / "cmdline").read_bytes().split(b"\0") if x], [])
         cwd, missing_cwd = read(lambda: os.readlink(directory / "cwd"), None)
         # After the main thread exits (pthread_exit) the leader shows Z while other threads work; a real zombie has no
         # live thread left: it has terminated and only its parent's wait() removes it.
@@ -652,14 +652,40 @@ def proc_table():
                     missing_cwd = False
                     break
         terminal, _ = read(lambda: b"AO_SHELL_TERMINAL=1" in (directory / "environ").read_bytes().split(b"\0"), False)
-        if (missing_argv or missing_cwd) and (proc_stat(directory) or (None, None, None))[2] != tick:
+        def executable():
+            link = directory / "exe"
+            actual = os.readlink(link)
+            identity = link.stat()
+            return actual, identity.st_dev, identity.st_ino
+        exe, _ = read(executable, None)
+        current = proc_stat(directory)
+        if current is None or current[2] != tick:
             continue  # the PID really went away (or was reused) while reading
+        parent_changed = current[1] != ppid
+        if parent_changed or read(executable, None)[0] != exe:
+            exe = None
         table[int(directory.name)] = dict(ppid=ppid, tick=tick, start=btime + tick / hz, cwd=cwd, argv=argv, terminal=terminal,
-                                          cwd_unknown=missing_cwd and live_thread, zombie=not live_thread)
+                                          cwd_unknown=missing_cwd and live_thread, zombie=not live_thread, exe=exe,
+                                          parent_changed=parent_changed)
     return table
 
 
-def os_work_processes(table, sid, data_dir, workspace, base_of, exclude=()):
+def worker_executables(ao):
+    # Only the run's fixed CLI and its packaged siblings establish executable
+    # provenance. The /proc symlink and file identity must agree with both.
+    paths = {"ao": ao, "ao-chat-host": ao.with_name("ao-chat-host"), "ao-mcp": ao.with_name("ao-mcp")}
+    executables = {}
+    for name, path in paths.items():
+        try:
+            info = path.lstat()
+            if stat.S_ISREG(info.st_mode) and info.st_mode & 0o111:
+                executables[name] = (str(path), info.st_dev, info.st_ino)
+        except OSError:
+            continue
+    return executables
+
+
+def inspect_worker_processes(table, sid, data_dir, workspace, base_of, executables, exclude=()):
     """A worker's work processes: its chat-host tree plus reparented processes in its worktree, minus contract §5.2 B1-B10."""
     children = {}
     for pid, row in table.items():
@@ -673,29 +699,59 @@ def os_work_processes(table, sid, data_dir, workspace, base_of, exclude=()):
                 stack.extend(children.get(pid, []))
         return found
     name = lambda pid: Path(table[pid]["argv"][0]).name if table[pid]["argv"] else "?"
-    hosts = {pid for pid, row in table.items() if len(row["argv"]) >= 4 and row["argv"][1] == "chat-host"}
-    own = {pid for pid in hosts if table[pid]["argv"][2] == sid and os.path.realpath(table[pid]["argv"][3]) == os.path.realpath(data_dir)}
+    def child_of(pid, parents):
+        row = table[pid]
+        parent = row["ppid"]
+        return not row.get("parent_changed") and parent in parents and table[parent]["tick"] <= row["tick"]
+    def matches(row, binary):
+        return binary in executables and row.get("exe") == executables[binary]
+    host_claims, hosts = {}, {}
+    for pid, row in table.items():
+        argv = row["argv"]
+        if len(argv) >= 4 and argv[1] == "chat-host":
+            binary, arguments = "ao", argv[2:4]
+        elif len(argv) >= 3 and Path(argv[0]).name == "ao-chat-host":
+            binary, arguments = "ao-chat-host", argv[1:3]
+        else:
+            continue
+        scope = arguments[0], os.path.realpath(arguments[1])
+        host_claims[pid] = scope
+        if matches(row, binary):
+            hosts[pid] = scope
+    scope = sid, os.path.realpath(data_dir)
+    own = {pid for pid, claim in hosts.items() if claim == scope}
+    unverified = {pid for pid, claim in host_claims.items() if claim == scope and pid not in hosts}
     terminal = tree(pid for pid, row in table.items() if row["terminal"])  # B9: the user's AO session terminal, whole tree
     host_trees = tree(hosts)  # B7: other actors' chat-hosts are never this worker's
     # A live process whose cwd cannot be read at all may be this worker's reparented work: fail closed and name it.
-    candidates = tree(own) | {pid for pid, row in table.items() if pid not in host_trees and (row.get("cwd_unknown") or
+    candidates = tree(own | unverified) | {pid for pid, row in table.items() if pid not in host_trees and (row.get("cwd_unknown") or
                               (row["cwd"] and Path(row["cwd"]).is_relative_to(workspace)))}
     candidates -= terminal | tree(exclude)  # B8: RH itself
-    roots = {pid for pid in candidates if table[pid]["ppid"] in own}  # B2
-    providers = roots | {pid for pid in candidates if table[pid]["ppid"] in roots and name(pid) == "claude"}  # B3
+    roots = {pid for pid in candidates if child_of(pid, own)}  # B2
+    providers = roots | {pid for pid in candidates if child_of(pid, roots) and name(pid) == "claude"}  # B3
     base = None
     if len(roots) == 1:
         root = next(iter(roots))
         base = base_of(root, table[root]["tick"], table[root]["start"])
     infrastructure = own | providers
     for pid in candidates:
-        argv, parent = table[pid]["argv"], table[pid]["ppid"]
-        if parent in providers and (argv[1:] in (["mcp"], ["usage", "delegation", "mcp"]) or  # B4
+        row = table[pid]
+        argv, parent = row["argv"], row["ppid"]
+        legacy_mcp = argv[1:] in (["mcp"], ["usage", "delegation", "mcp"])
+        helper_mcp = name(pid) == "ao-mcp"
+        verified_mcp = legacy_mcp and matches(row, "ao") or helper_mcp and len(argv) == 1 and matches(row, "ao-mcp")
+        if child_of(pid, providers) and (verified_mcp or  # B4
                                     (parent in roots and (name(pid) == "node_repl" or argv[:2] == ["node", "./mcp/launch.mjs"])) or  # B5, B6
-                                    (base is not None and table[pid]["start"] < base)):  # B10
+                                    (not legacy_mcp and not helper_mcp and pid not in host_claims and
+                                     base is not None and row["start"] < base)):  # B10
             infrastructure.add(pid)
     # A terminated zombie stays in the tree for traversal but is not work: stopping it is its parent's wait(), not the worker's.
-    return [dict(pid=pid, exe=name(pid)) for pid in sorted(candidates - infrastructure) if not table[pid].get("zombie")]
+    work = [dict(pid=pid, exe=name(pid)) for pid in sorted(candidates - infrastructure) if not table[pid].get("zombie")]
+    return work, any(not table[pid].get("zombie") and pid not in terminal for pid in own)
+
+
+def os_work_processes(table, sid, data_dir, workspace, base_of, executables, exclude=()):
+    return inspect_worker_processes(table, sid, data_dir, workspace, base_of, executables, exclude)[0]
 
 
 def provider_base(read, sid, started, evidence, clock=time.time):
@@ -1265,6 +1321,7 @@ class CLI:
         self.sha256 = sha256 or digest(self.executable.read_bytes())
         if sha256:
             self.unchanged()
+        self.worker_binaries = worker_executables(self.executable)
         self.env = cli_environment(old, data_dir, run_file, temp)
         self.data_dir, self.run_file = Path(data_dir), Path(run_file)
         raw = self.run_file.read_bytes()
@@ -2034,6 +2091,9 @@ class Run:
         return str(path)
 
     def work(self, sid):
+        return self.worker_processes(sid)[0]
+
+    def worker_processes(self, sid):
         """OS-level work processes of a worker (contract §5.2); only the B10 baseline and its B2 identity persist."""
         def base_of(pid, tick, started):
             records = self.state.setdefault("workers_infra_cutoff", {})
@@ -2046,7 +2106,9 @@ class Run:
             records[sid] = dict(b2_pid=pid, b2_starttime=tick, base=provider_base(self.cli.read, sid, started, evidence))
             self.save()
             return records[sid]["base"]
-        return os_work_processes(proc_table(), sid, self.cli.data_dir, Path(workspace_entry(self.request, sid)["path"]), base_of, [os.getpid()])
+        return inspect_worker_processes(
+            proc_table(), sid, self.cli.data_dir, Path(workspace_entry(self.request, sid)["path"]),
+            base_of, self.cli.worker_binaries, [os.getpid()])
 
     def worker_stop(self, worker):
         sid = identifier(worker["id"])
@@ -2092,7 +2154,7 @@ class Run:
             self.unsettled[sid] = ["worker-stop projection unsettled: " + dispatched]
             return False
         quiet = self.quiescent_worker(sid, snap)
-        work = self.work(sid)
+        work, live_host = self.worker_processes(sid)
         if not work and quiet and not control.exists():
             workspace = self.workspace(sid)
             before = git_snapshot(workspace, directory / ("before-" + uuid.uuid4().hex))
@@ -2116,8 +2178,7 @@ class Run:
             return stop
         if work:
             require(rules and rules["reserved_stop_d"], "worker processes running without a reserved stop directive: " + sid + ": " + processes_text(work))
-            require(any(len(row["argv"]) >= 4 and row["argv"][1] == "chat-host" and row["argv"][2] == sid and
-                        os.path.realpath(row["argv"][3]) == os.path.realpath(self.cli.data_dir) for row in proc_table().values()),
+            require(live_host,
                     "worker processes running without an agent to stop them: " + sid + ": " + processes_text(work))
             self.unsettled[sid] = ["work processes: " + processes_text(work)]
         elif not control.exists() and not (rules and rules["reserved_stop_d"]) and not quiet:
@@ -4076,7 +4137,9 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
         record = state.get("workers_infra_cutoff", {}).get(sid) or {}
         base_of = lambda pid, tick, started: (record["base"] if (record.get("b2_pid"), record.get("b2_starttime")) == (pid, tick) else
                                               provider_base(cli.read, sid, started, lambda cursor: None))
-        work = os_work_processes(proc_table(), sid, state["data_dir"], Path(workspace_entry(request, sid)["path"]), base_of, [os.getpid()])
+        work = os_work_processes(
+            proc_table(), sid, state["data_dir"], Path(workspace_entry(request, sid)["path"]),
+            base_of, cli.worker_binaries, [os.getpid()])
         require(not work, "worker processes still running: " + sid + ": " + processes_text(work))
         declared = [item for item in materials if item["worker_id"] == sid]
         verified = []

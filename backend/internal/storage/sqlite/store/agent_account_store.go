@@ -93,6 +93,24 @@ func (s *Store) BindSessionAgentAccountWithSource(ctx context.Context, id domain
 	return s.bindSessionAgentAccount(ctx, id, selected, at, true)
 }
 
+func insertFirstSwitchAccount(ctx context.Context, q *gen.Queries, rec domain.SessionRecord, selected domain.ResolvedAgentAccount, at time.Time) error {
+	provider, supported := domain.AgentAccountProviderFor(rec.Harness)
+	if !supported || provider != selected.Provider || selected.AccountID == "" {
+		return ports.ErrAgentAccountProviderMismatch
+	}
+	_, err := q.GetSessionAgentAccountBinding(ctx, gen.GetSessionAgentAccountBindingParams{SessionID: string(rec.ID), Provider: string(provider)})
+	if err == nil {
+		return ports.ErrAgentAccountChanged
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	return q.BindSessionAgentAccount(ctx, gen.BindSessionAgentAccountParams{
+		SessionID: string(rec.ID), Provider: string(provider), AccountID: selected.AccountID,
+		BoundAt: at.UTC(), ResolutionSource: string(selected.Source),
+	})
+}
+
 // Historical receipts retain their source timestamps; live execution choices
 // must become the latest binding before any native probe or launch can run.
 func (s *Store) bindSessionAgentAccount(ctx context.Context, id domain.SessionID, selected domain.ResolvedAgentAccount, at time.Time, live bool) error {

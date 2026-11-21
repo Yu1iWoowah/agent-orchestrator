@@ -10370,6 +10370,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
       summary: Report an agent activity-state signal for a session
       tags:
       - sessions
@@ -16616,7 +16622,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Service Unavailable
-      summary: Switch an idle Chat session to another provider
+      summary: Switch a session to another provider or update the active provider
+        settings
       tags:
       - conversations
   /api/v1/sessions/{sessionId}/questions:
@@ -27643,6 +27650,7 @@ components:
           - deepseek-harness
           - openhands
           - command-code
+          - docker-agent
           - memcode
           - hermes
           - fake
@@ -29916,6 +29924,7 @@ components:
           - deepseek-harness
           - openhands
           - command-code
+          - docker-agent
           - memcode
           - hermes
           - cloudflared
@@ -31938,6 +31947,8 @@ components:
           type: string
         fastMode:
           type: boolean
+        force:
+          type: boolean
         idempotencyKey:
           type: string
         message:
@@ -31961,10 +31972,22 @@ components:
       type: object
     ProviderSwitchResponse:
       properties:
+        cancelledQueuedMessages:
+          type: integer
+        failedPendingApprovals:
+          type: boolean
         message:
           $ref: '#/components/schemas/SendConversationMessageResponse'
+        settingsUpdated:
+          type: boolean
         status:
           type: string
+        stoppedTurn:
+          type: boolean
+        warnings:
+          items:
+            type: string
+          type: array
       required:
       - status
       type: object
@@ -36503,6 +36526,7 @@ components:
           - deepseek-harness
           - openhands
           - command-code
+          - docker-agent
           - memcode
           - hermes
           type: string

@@ -147,7 +147,7 @@ func TestSettingsColdReplayUsesNewProviderBindingPreference(t *testing.T) {
 	settings := conversation.Settings
 	settings.Model = string(current.Model)
 	settings.ReasoningEffort = string(current.Effort)
-	if err := h.st.CommitProviderSwitch(t.Context(), record, branch, "switched", settings, domain.ConversationActivity{ID: "switch-activity", Kind: "ao_action", Status: "completed", Summary: "fake switch"}); err != nil {
+	if err := h.st.CommitProviderSwitch(t.Context(), record, branch, "switched", settings, domain.ConversationActivity{ID: "switch-activity", Kind: "ao_action", Status: "completed", Summary: "fake switch"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	controller := restartJournalController(t, h, validator, provider)
