@@ -23,7 +23,7 @@
    ```
 
 3. **交付狀態入口再啟動。** 現任執行 `python3 -I <部署版腳本> prepare <私有 request.json>`。將輸出的 `Status:` 指令先交給使用者，再由現任執行同一輸出中的 `Start:` 指令一次，結束本回合進入 idle。固定入口和材料保存在 AO data dir 的私有 `.manual-handoff/<run-id>/`，old 終止後仍可讀。
-4. **從同一入口查結果。** Runner 在終止 old 前核對 target 的 approval mode 與指定帳號的模型及 effort。切換後核收同專案的原 spawn、new 寫的 old/new receipt 與 lease，再核 exit、native resume 及前後實際設定。由 new 以自己的身分通知具授權的存活 worker，再向使用者回報完成與待決。當 `lastConfirmed` 為 `complete`，runner 已按原通知 ID 核對一般訊息的 provider turn 終態或 steer 的送達收據。若 `status` 顯示 `STOP`，保留 `lastConfirmed`、`pending`、`reason` 和原 run，據此裁決未確認的效果。
+4. **從同一入口查結果。** Runner 在終止 old 前核對 target 的 approval mode 與指定帳號的模型及 effort。切換後核收同專案的原 spawn、new 寫的 old/new receipt 與 bootstrap lease，再核 exit、native resume 及前後實際設定。恢復後由 new 用現任文件權限寫獨立收據，runner 核實新 epoch 與原 receipt 才發驗證通知。New 收到後以自己的身分通知具授權的存活 worker，再向使用者回報完成與待決。當 `lastConfirmed` 為 `complete`，runner 已按原通知 ID 核對一般訊息的 provider turn 終態或 steer 的送達收據。若 `status` 顯示 `STOP`，保留 `lastConfirmed`、`pending`、`reason` 和原 run，據此裁決未確認的效果。
 
 ## 操作界面
 

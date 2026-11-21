@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,7 @@ class ManualHandoffTests(unittest.TestCase):
             shutil.copyfile(SCRIPT, script)
             shared = root / "shared"
             receipt = shared / "handoff/receipt-old-new.json"
+            lease_receipt = shared / "handoff/receipt-old-new.resumed-lease.json"
             receipt.parent.mkdir(parents=True)
             identity = dict(projectId="project", oldId="old", runId="run", newId="new")
             content = json.dumps(identity)
@@ -100,17 +102,26 @@ class ManualHandoffTests(unittest.TestCase):
                         rows.append(dict(row, id="second"))
                     return result(dict(data=rows, meta=dict(hiddenTerminatedCount=0, hiddenOrchestratorCount=0)))
                 if args[:3] == ["project", "documents", "info"]:
-                    lease_id, epoch = ("new", 2) if receipt.exists() else ("old", 1)
+                    epoch = 3 if lease_receipt.exists() else 2 if receipt.exists() else 1
+                    lease_id = "old" if epoch == 1 else "new"
                     if failure == "lease" and receipt.exists():
                         lease_id = "wrong-owner"
                     return result(dict(documents=dict(sharedDir=str(shared),
                                        lease=dict(sessionId=lease_id, epoch=epoch, frozen=False))))
                 if args[:3] == ["project", "documents", "read"]:
+                    if args[3] == str(lease_receipt.relative_to(shared)):
+                        self.assertEqual(args[4:], ["--json"])
+                        observed = lease_receipt.read_text()
+                        return result(dict(file=dict(path=args[3], binary=False, content=observed,
+                                                     hash=hashlib.sha256(observed.encode()).hexdigest())))
                     self.assertEqual(args[3:], [str(receipt.relative_to(shared)), "--json"])
                     if failure == "permission":
                         return subprocess.CompletedProcess(argv, 1, "", "open handoff: permission denied")
                     if not receipt_read:
                         receipt_read = True
+                        if failure == "receipt-published-during-read":
+                            receipt.write_text(content)
+                            receipt.chmod(0o600)
                         return subprocess.CompletedProcess(argv, 1, "",
                             "Project document not found (PROJECT_DOCUMENT_NOT_FOUND) [request fixture]")
                     observed = content if failure != "receipt" else json.dumps(dict(identity, projectId="other"))
@@ -131,8 +142,25 @@ class ManualHandoffTests(unittest.TestCase):
                     return result(dict(ok=True, sessionId="new",
                                        resumeMode="replay" if failure == "replay" else "native"))
                 self.assertEqual(args[:3], ["send", "--session", "new"])
+                handle = args[args.index("--client-message-id") + 1]
+                commands[-1] = handle
+                if handle == "run:renew-lease":
+                    self.assertTrue(resumed)
+                    self.assertEqual(current["pending"], "renew-new-lease")
+                    self.assertEqual(current.get("bootstrapLeaseEpoch"), 2)
+                    self.assertFalse(lease_receipt.exists())
+                    message = args[args.index("--message") + 1]
+                    command = shlex.split(message.splitlines()[1])
+                    self.assertEqual(command, ["ao", "project", "documents", "write", "--project", "project",
+                                               str(lease_receipt.relative_to(shared)), "--expected-hash", "missing",
+                                               "--file", str(root / "resumed-lease.json")])
+                    shutil.copyfile(command[-1], lease_receipt)
+                    lease_receipt.chmod(0o600)
+                    return result(None)
+                if failure == "lease-renewed-after-resume":
+                    self.assertTrue(lease_receipt.exists(), "verification notified new with the stale epoch")
                 self.assertEqual(current["lastConfirmed"], "verified")
-                self.assertEqual(args[args.index("--client-message-id") + 1], "run:verified")
+                self.assertEqual(handle, "run:verified")
                 if failure == "notification-steered":
                     return subprocess.CompletedProcess(argv, 0, "Steering accepted by provider for active turn "
                         "native-steer with delivery handle run:verified; agent action is not confirmed.\n", "")
@@ -160,7 +188,7 @@ class ManualHandoffTests(unittest.TestCase):
                     account = None if failure == "empty-account" else "acct"
                     return dict(codex=account, bindings=dict(codex=dict(accountId=account, available=True)))
                 if path == "sessions/new/conversation?limit=500":
-                    self.assertEqual(commands.count("send"), 1)
+                    self.assertEqual(commands.count("run:verified"), 1)
                     if failure == "notification-steered":
                         return dict(sessionId="new", conversationId="conversation", messages=[], turns=[],
                                     activities=[dict(id="steer-receipt", activityKind="system", status="completed",
@@ -213,7 +241,7 @@ class ManualHandoffTests(unittest.TestCase):
                                     cwd=root, capture_output=True, text=True)
             self.assertEqual(old_worktree.exists(), preflight_failed)
             self.assertEqual(commands.count("spawn"), int(not preflight_failed))
-            self.assertEqual(commands.count("send"), int(not expected_stop or failure == "notification-queued"))
+            self.assertEqual(commands.count("run:verified"), int(not expected_stop or failure == "notification-queued"))
             self.assertEqual(status.returncode, int(bool(expected_stop)), status.stderr)
             saved = json.loads(status.stdout)
             if expected_stop:
@@ -234,6 +262,10 @@ class ManualHandoffTests(unittest.TestCase):
                 self.assertEqual(saved["outcome"], "complete")
                 self.assertEqual(saved["resume"]["resumeMode"], "native")
                 self.assertEqual(saved["before"], saved["after"])
+                if failure == "lease-renewed-after-resume":
+                    self.assertEqual(commands.count("run:renew-lease"), 1)
+                    self.assertEqual(saved.get("bootstrapLeaseEpoch"), 2)
+                    self.assertEqual(saved.get("resumedLeaseEpoch"), 3)
                 if failure == "notification-steered":
                     self.assertEqual(saved["notification"]["activityId"], "steer-receipt")
                 else:
@@ -264,6 +296,37 @@ class ManualHandoffTests(unittest.TestCase):
 
     def test_verification_notification_recovers_original_steer_receipt(self):
         self.run_handoff("notification-steered")
+
+    def test_receipt_published_after_404_is_read_again(self):
+        self.run_handoff("receipt-published-during-read")
+
+    def test_native_resume_requires_a_fresh_writer_lease(self):
+        self.run_handoff("lease-renewed-after-resume")
+
+    def test_prepare_uses_the_scoped_canonical_project_directory(self):
+        for project, key in (("Demo", "%44emo"), ("demo.ops", "demo%2Eops")):
+            with self.subTest(project=project), tempfile.TemporaryDirectory() as tmp:
+                data = Path(tmp)
+                shared = data / "projects" / key / "orchestrator" / "shared"
+                shared.mkdir(parents=True)
+                old = project + "-1"
+                request = data / "request.json"
+                request.write_text(json.dumps(dict(projectId=project, oldId=old, confirmation="fixture",
+                    handoff="A–F", target={}, version="fixture", workers={}, materials={})))
+                cli = manual.AO(sys.executable, project)
+                docs = dict(sharedDir=str(shared), lease=dict(sessionId=old, epoch=1, frozen=False))
+                with patch.dict(os.environ, AO_SESSION_ID=old), patch.object(manual.shutil, "which", return_value=sys.executable), \
+                        patch.object(manual, "AO", return_value=cli) as create_cli, \
+                        patch.object(cli, "locate", return_value=dict(dataDir=str(data))), \
+                        patch.object(cli, "checked", return_value="fixture"), patch.object(cli, "preflight_target"), \
+                        patch.object(cli, "session", return_value=dict(isTerminated=False)), \
+                        patch.object(cli, "documents", return_value=docs), patch("builtins.print"):
+                    manual.prepare(request)
+                create_cli.assert_called_once_with(str(Path(sys.executable).resolve()), project)
+                state_path, = (data / ".manual-handoff").glob("*/state.json")
+                state = json.loads(state_path.read_bytes())
+                self.assertEqual((state["projectId"], state["oldId"], state["sharedDir"]),
+                                 (project, old, str(shared)))
 
     def test_start_detaches_from_old_actor_and_cannot_relaunch(self):
         with tempfile.TemporaryDirectory() as tmp:

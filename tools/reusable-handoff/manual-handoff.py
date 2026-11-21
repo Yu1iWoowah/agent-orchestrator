@@ -31,8 +31,8 @@ def require(condition, reason):
 
 
 def identifier(value):
-    require(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", value),
-            "invalid project/session ID")
+    require(isinstance(value, str) and len(value) <= 128 and
+            re.fullmatch(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*", value), "invalid session ID")
     return value
 
 
@@ -109,6 +109,10 @@ class AO:
     def documents(self):
         return self.read("project", "documents", "info")["documents"]
 
+    def send(self, sid, handle, message):
+        self.checked(("send", "--session", sid, "--steer", "--client-message-id", handle,
+                      "--message", message), scoped=False, timeout=60)
+
     def preflight_target(self, target):
         for key in ("harness", "accountId", "model", "effort", "approvalMode"):
             value = field(target, key)
@@ -148,20 +152,22 @@ class AO:
     def receipt(self, shared_dir, relative, expected):
         shared = Path(shared_dir)
         path = shared / relative
-        result = self.call(("project", "documents", "read", relative, "--json"))
-        if result.returncode:
-            if re.fullmatch(r"Project document not found \(PROJECT_DOCUMENT_NOT_FOUND\)"
-                            r"(?: \[request [^\]\n]+\])?", result.stderr.strip()):
-                # The same daemon error can hide an inaccessible shared root.
-                require(shared.resolve(strict=True) == shared and shared.is_dir() and
-                        os.access(shared, os.R_OK | os.X_OK),
-                        "receipt shared directory missing or inaccessible")
-                require(not path.parent.is_symlink(), "receipt directory is a symlink")
-                try:
-                    path.lstat()
-                except FileNotFoundError:
-                    return None
-            raise Stop("receipt read: " + result.stderr.strip())
+        args = ("project", "documents", "read", relative, "--json")
+        result = self.call(args)
+        if result.returncode and re.fullmatch(r"Project document not found \(PROJECT_DOCUMENT_NOT_FOUND\)"
+                                              r"(?: \[request [^\]\n]+\])?", result.stderr.strip()):
+            # The same daemon error can hide an inaccessible shared root.
+            require(shared.resolve(strict=True) == shared and shared.is_dir() and
+                    os.access(shared, os.R_OK | os.X_OK),
+                    "receipt shared directory missing or inaccessible")
+            require(not path.parent.is_symlink(), "receipt directory is a symlink")
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                return None
+            # Publication may have won the race after the daemon returned 404.
+            result = self.call(args)
+        require(result.returncode == 0, "receipt read: " + result.stderr.strip())
         file = json.loads(result.stdout)["file"]
         require(file.get("path") == relative and file.get("binary") is False, "receipt path or type mismatch")
         require(path.resolve(strict=True) == path and stat.S_IMODE(path.stat().st_mode) == 0o600,
@@ -302,8 +308,8 @@ def handoff(ao, root, state, request):
         require(epoch > old_epoch, "new lease did not follow old lease")
         return (receipt_hash, epoch) if activity(new) == "idle" else None
 
-    receipt_hash, epoch = wait_for("new receipt and idle", 2700, ready)
-    record("new-idle", receipt={"path": relative, "hash": receipt_hash}, newLeaseEpoch=epoch)
+    receipt_hash, bootstrap_epoch = wait_for("new receipt and idle", 2700, ready)
+    record("new-idle", receipt={"path": relative, "hash": receipt_hash}, bootstrapLeaseEpoch=bootstrap_epoch)
     before = ao.settings(new, target)
     require(activity(new) == "idle", "new no longer idle before exit")
     record("settings-before", "exit-agent", before=before)
@@ -317,15 +323,38 @@ def handoff(ao, root, state, request):
     record("new-resumed-native", resume={"sessionId": new, "resumeMode": "native"})
     after = ao.settings(new, target)
     require(after == before, "session, conversation or settings changed after native resume")
-    require(ao.receipt(state["sharedDir"], relative, expected) == receipt_hash and
-            lease_for(project_documents(), new) == epoch, "receipt or new lease changed after resume")
+
+    # Info can still show the previous controller's epoch after a native resume.
+    lease_handle = run + ":renew-lease"
+    lease_path = relative.removesuffix(".json") + ".resumed-lease.json"
+    lease_expected = dict(expected, bootstrapReceiptHash=receipt_hash, clientMessageId=lease_handle)
+    lease_draft = root / "resumed-lease.json"
+    lease_draft.write_text(json.dumps(lease_expected))
+    lease_proof = dict(path=lease_path, clientMessageId=lease_handle)
+    record("new-resumed-native", "renew-new-lease", after=after, leaseRenewal=lease_proof)
+    command = shlex.join(["ao", "project", "documents", "write", "--project", project,
+                          lease_path, "--expected-hash", "missing", "--file", str(lease_draft)])
+    ao.send(new, lease_handle, f"請用目前的文件寫入權限執行一次下列命令。\n{command}\n"
+            "寫入後結束本回合，維持 worker hold，等驗證通知再接續。")
+
+    def renewed_lease():
+        proof_hash = ao.receipt(state["sharedDir"], lease_path, lease_expected)
+        if proof_hash is None:
+            return None
+        resumed_epoch = lease_for(project_documents(), new)
+        require(resumed_epoch > bootstrap_epoch, "resumed writer lease did not advance past bootstrap")
+        return (resumed_epoch, proof_hash) if activity(new) == "idle" else None
+
+    resumed_epoch, proof_hash = wait_for("resumed writer lease and idle", 600, renewed_lease)
+    require(ao.receipt(state["sharedDir"], relative, expected) == receipt_hash, "original receipt changed after resume")
+
     handle = run + ":verified"
-    record("verified", "notify-new", after=after, notification=dict(clientMessageId=handle))
-    ao.checked(("send", "--session", new, "--steer", "--client-message-id", handle,
-                "--message", f"手動換手已通過驗證。先執行 {status_command(root)} 確認 lastConfirmed 為 "
-                f"verified 或 complete，且 newId 是你。依 {root / 'request.json'} 的 workers 授權，"
-                f"以你自己的身分通知 {project} 中仍存活的具名 worker；依原 hold 與 D 接續。"
-                "向使用者回報完成與待決事項。"), scoped=False, timeout=60)
+    record("verified", "notify-new", resumedLeaseEpoch=resumed_epoch, leaseRenewal=dict(lease_proof, hash=proof_hash),
+           notification=dict(clientMessageId=handle))
+    ao.send(new, handle, f"手動換手已通過驗證。先執行 {status_command(root)} 確認 lastConfirmed 為 "
+            f"verified 或 complete，且 newId 是你。依 {root / 'request.json'} 的 workers 授權，"
+            f"以你自己的身分通知 {project} 中仍存活的具名 worker；依原 hold 與 D 接續。"
+            "向使用者回報完成與待決事項。")
     delivered = wait_for("verification notification delivery", 600,
                          lambda: ao.notification_receipt(new, after["conversationId"], handle))
     record("complete", outcome="complete", notification=delivered)
@@ -334,7 +363,9 @@ def handoff(ao, root, state, request):
 def prepare(path):
     raw = path.read_bytes()
     request = json.loads(raw)
-    project, old = (identifier(request.get(key)) for key in ("projectId", "oldId"))
+    project = field(request, "projectId")
+    require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", project) and ".." not in project, "invalid project ID")
+    old = identifier(request.get("oldId"))
     require(os.environ.get("AO_SESSION_ID") == old, "prepare must run as the named old orchestrator")
     field(request, "confirmation")
     field(request, "handoff")
@@ -348,9 +379,11 @@ def prepare(path):
     require(ao.session(old)["isTerminated"] is False, "old already terminated")
     docs = ao.documents()
     shared = field(docs, "sharedDir")
-    require(Path(shared).resolve(strict=True) == Path(shared) and Path(shared).is_relative_to(
-        Path(daemon["dataDir"]).resolve(strict=True) / "projects" / project / "orchestrator"),
-        "receipt shared directory outside the named project")
+    shared_path = Path(shared)
+    projects_root = Path(daemon["dataDir"]).resolve(strict=True) / "projects"
+    require(shared_path.resolve(strict=True) == shared_path and shared_path.is_dir() and
+            shared_path.is_relative_to(projects_root) and shared_path != projects_root,
+            "receipt shared directory outside AO project data")
     epoch = lease_for(docs, old)
     for sid, message in request["workers"].items():
         ao.session(identifier(sid), kind="worker")
