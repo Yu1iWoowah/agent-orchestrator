@@ -211,6 +211,7 @@ session.branch／實際 branch／HEAD 只作證據；同路徑 root、sibling、
 未結工具＝status 非終態；或帶遠端 job／async-operation handle（含 `Job running with ID`）而無完成收據。worker 的本機程序類 handle（exec／write_stdin session、`Process running`／`Script running` 續接）不要求收據，command 缺 exitCode 也不算未結，改由下述 OS 層檢查判定。old 與 new 仍要求本機 handle 的收據；command 缺 exitCode 且帶 `processId`／`terminalId`、沒有同一操作的終態收據時，old 與 new 仍算未結（status 證明不了程序已結束）。
 worker 停點另用 OS 層檢查該 worker 的工作程序：在 agent 程序樹內，或 cwd 在其 worktree；排除 AO／provider 基礎程序、provider 在啟動後第一個 turn 開始前就已啟動的直接子程序（MCP 伺服器；之後才出現的一律算工作程序，provider 重啟就重算基準），以及 AO session 終端機（`AO_SHELL_TERMINAL`）整棵樹。有工作程序就送停止 D，要求 worker 先停掉；回條後 runner 再核，仍有程序就 STOP 並指名 worker 與程序；沒有 controller 的 worker 有工作程序時直接 STOP 指名。
 讀 `/proc` 時只有 PID 已消失（或 start tick 不同）才當成已結束；其他讀取或解析錯誤一律 STOP「process table UNKNOWN」，不當成程序已停止。沒有任何存活執行緒的 zombie 不算工作程序。
+已核身分的 Codex app-server 所直接啟動、與 provider 同一安裝位置的 `codex-code-mode-host --listen grpc+stdio:` 屬基礎程序。辨識同時核 executable 身分與父子關係，helper 啟動的工作仍照原規則判定。
 已驗證的 blocked／pending 回條立即具名 STOP。原回合終態後才確認固定回條缺件，保留同一輪合法發布的回條。可收束的工作逾時時，workers 會列出未完成的 worker 及已知原因。
 worker 普通 command 若已 completed、有 JSON 整數 exitCode，且留存資料無可辨識的遠端線索，即使 stdout 截斷也可進 OS 與 workspace 停點檢查（Q1＝B）。可辨識遠端操作照原終態／收據規則，必要證據被截去且無法補足時具名 STOP。固定 helper 及 old／new 的截斷規則照舊。
 無法保全必要敏感／不可讀原件時具名停止，不越權讀取或 force clean／commit。
@@ -378,11 +379,14 @@ worker 自述及 script-quiescent 都用同一 `rh-workspace-snapshot/2`，保�
 old 先自己以正常 managed write／expected-hash 更新 A–F，原 `--json` bytes 保存為 `old/managed.json`。
 old statement 的 `classification[].path` 只以 old workspace 為基準，必為乾淨相對路徑；填 disposition／basis，必要檔逐檔 copy，可重建／可丟棄目錄才用 scope=directory。
 不接受 actor 自選 copy 目的地、絕對路徑、漏分類／重疊、缺保護 ref 或 lease 不符。
-old-receipt 核當下真 turn／managed 原回應／正文／lease／worker index，先固定必要副本與 preservation/2，最後才發布 phase-2a 作信號。
+old-receipt 核當下真 turn／managed 原回應／正文／lease／worker index，先在私有目錄準備必要副本並核 Git 保全，再發布 intent、固定原件和 preservation/2，最後發布 phase-2a。
+例行 fetch 留在 linked-worktree Git 目錄的 regular `FETCH_HEAD` 可保留原位。refs、index、dirty patch、進行中的 Git 操作及未知 metadata 仍照原保全規則處理。
 old 只保存原控制、dispatch turn 與原 CLI snapshot，不在執行中找自身 running activity，也不產 self exclusion proof；worker 的既有 proof 不變。
-無最後信號只 WAIT；有信號但引用缺失即 STOP。成功重呼叫僅相同 intent／輸入／原件 hash 可讀原結果，部分發布或 managed 效果不明不自動補寫。
+Git 查驗在 intent 之前失敗時，可在同一 2a turn 修正本機問題後執行同一固定 helper。原 managed write 和派送沿用已存結果。
+原 2a turn 已結束且缺回條，或固定發布未閉合時，顯示 `old 2a incomplete`。依本 run 的 status 與具名授權退役後才開新 run。
+成功重入須核同一 intent／輸入／原件 hash 與 lease，再回傳原結果。有回條但引用缺失時即 STOP。
 
-2a 必須等原 dispatch turn 真 completed，才核同 turn 唯一精確 old-receipt command 的實際結果：
+2a 必須等原 dispatch turn 真 completed，才核同 turn 唯一成功的精確 old-receipt command 的實際結果。先前已有明確非零 exit 的終態活動留在原 transcript：
 exitCode=0、完整 stdout JSON 等於 phase-2a.json、producer-result 的原 output hash 一致，並核 managed／preservation 與所有既有後驗。
 檔案存在、outer exit0、CLI 觀測 rc0 或 outputMayBePartial 都不能代替實際結果；缺 exit／stdout、JSON 不符或必要截斷仍拒絕。
 只有該已核 command 的 pending 投影及對應 incomplete entry 可在 2a、quiescent、匯出判斷中略過；原 status／revision／raw 不改寫，也不要求曾觀測 running。
@@ -488,6 +492,7 @@ opaque 材料由 manifest／producer／核收清單綁定，不執行內容。pa
 - 每個 execution／call／effect 完整閉合；新 generation 缺 intent 不得降級。
 - runner 與 helper 真結束，boot／PID／啟動身分可核；舊鎖不是 launch 證明。
 - managed lease／old 責任與 actor 集合仍成立，slot 沒換包。
+- 送給 old 的 2a 以原 journal 的 accepted call、原 payload 與實際 consuming turn 終態閉合。可從已保存證據辨明的缺證在 freeze 前 STOP，admission 保持 open。鎖與 fence 內重新核收原 effect 和現行責任。
 - 每個 worker 的已接收 directive、實際 consuming turn completed、原 stop、ACK、hold 分開核對；後來 user／durable steer 指令使授權 UNKNOWN。
 - 受控 worker 的 stop.preservation 逐筆閉合：run 內副本核原 bytes/hash；run 外原件須有同 worker/path/hash 的唯一授權 materials，限原 workspace/artifact roots。每筆授權材料都先核存在與 hash，再由保存階段複製；缺項或漂移不得產生退役 receipt。
 - 沒新控制的 worker 有原持續 hold 與 quiescent 證據。不能為了退役先送指令或把 blocked 改 safe。
@@ -498,7 +503,7 @@ progress-notification 只具固定進度回報能力，是 effect，不列 read�
 metadata-refresh 也不是 read，須全域 scope／原授權與本地終態；保留成功或失敗。控制派送 UNKNOWN 不可套用通知規則。
 
 提交保存完整 journal 副本、退役所用 CLI、必要材料與不可變 manifest／intent；同 filesystem 原子 rename run 到 `.retired/<uuid>`，整槽保存到其 retired-start-slot，再建空槽。
-receipt/2 綁授權、fence、固定 execution 集合及 effect／hold 原件；不改原 state 為 complete。
+歸檔和空槽完成後，才發布終態 receipt/2，綁授權、fence、固定 execution 集合及 effect／hold 原件，保留原 run outcome。
 pending 永擋同 old 新 start；任意退役／void UUID 永拒執行。manifest 後、intent 前中斷，只有帶 CLI 綁定（`cli`）的新格式 manifest 會沿原 manifest 恢復，不覆寫原件。
 本版之前發布、沒有 CLI 綁定的舊格式 pending manifest 不支援恢復：即使有新的具名 recovery 授權也會具名 STOP，不產 intent／receipt，fence 維持 retiring，持續阻擋同一 old 的新 start。已完成的退役 receipt 照舊可以驗證。
 

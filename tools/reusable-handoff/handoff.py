@@ -22,6 +22,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -394,7 +395,9 @@ def helper_result(run, action, sid, arguments):
         require(intent.get("run_id") == run.run_id and intent.get("actor_id") == sid and
                 intent.get("action") == action and intent.get("command") == helper_command(run.root, action, sid),
                 "old producer intent mismatch")
-        plan = decode(private_read(run.root / "old/preservation.json"))
+        require(result.get("preservation", {}).get("path") == str(run.root / "old/preservation.json"),
+                "old helper plan path mismatch")
+        plan = decode(hash_reference(result["preservation"]))
         require(plan.get("schema") == "rh-old-preservation/2" and plan.get("evidence_turn_id") == result.get("evidence_turn_id"),
                 "old helper plan mismatch")
         hash_reference(result["managed_reply"])
@@ -412,11 +415,19 @@ def helper_result(run, action, sid, arguments):
     return result
 
 
+def failed_old_helper(entry):
+    code = (entry.get("detail") or {}).get("exitCode")
+    return entry.get("status") in ("completed", "failed") and type(code) is int and code != 0
+
+
 def known_helper(run, sid, entry):
     detail = entry.get("detail") or {}
     identity = helper_identity(detail.get("rawCommand") or detail.get("command", ""), run.root, sid)
     if not identity:
         return False
+    if identity[0] == "old-receipt" and failed_old_helper(entry) and (run.root / "old/phase-2a.json").exists():
+        if entry.get("turnId") == helper_result(run, "old-receipt", sid, {})["evidence_turn_id"]:
+            return False
     require(detail.get("exitCode") == 0 and not detail.get("outputTruncated"), "helper output not positively complete")
     expected = helper_result(run, identity[0], sid, identity[1])
     output = detail.get("output", "")
@@ -449,7 +460,7 @@ def completed_old_helper(run, snapshot):
     matches = [entry for entry in entries(snapshot) if entry.get("turnId") == turn and
                entry.get("kind") == "activity" and entry.get("activityKind") == "command" and
                helper_identity((entry.get("detail") or {}).get("rawCommand") or (entry.get("detail") or {}).get("command", ""),
-                               run.root, run.old) == ("old-receipt", {})]
+                               run.root, run.old) == ("old-receipt", {}) and not failed_old_helper(entry)]
     require(len(matches) == 1, "old helper activity missing/ambiguous")
     entry = matches[0]
     require(isinstance(entry.get("id"), str) and entry["id"] and type(entry.get("sequence")) is int,
@@ -733,6 +744,25 @@ def inspect_worker_processes(table, sid, data_dir, workspace, base_of, executabl
     if len(roots) == 1:
         root = next(iter(roots))
         base = base_of(root, table[root]["tick"], table[root]["start"])
+    def codex_code_mode_host(pid):
+        row = table[pid]
+        if (not child_of(pid, roots) or name(pid) != "codex-code-mode-host" or
+                row["argv"][1:] != ["--listen", "grpc+stdio:"]):
+            return False
+        provider = table[row["ppid"]]
+        binary = provider.get("exe")
+        if not binary or Path(binary[0]).name != "codex" or provider["argv"][1:2] != ["app-server"]:
+            return False
+        parent_exe = Path(binary[0])
+        sibling = parent_exe.with_name("codex-code-mode-host")
+        try:
+            parent_info = parent_exe.lstat()
+            info = sibling.lstat()
+        except OSError:
+            return False
+        return (stat.S_ISREG(parent_info.st_mode) and binary[1:] == (parent_info.st_dev, parent_info.st_ino) and
+                stat.S_ISREG(info.st_mode) and bool(info.st_mode & 0o111) and row.get("exe") == (str(sibling), info.st_dev, info.st_ino))
+
     infrastructure = own | providers
     for pid in candidates:
         row = table[pid]
@@ -740,7 +770,7 @@ def inspect_worker_processes(table, sid, data_dir, workspace, base_of, executabl
         legacy_mcp = argv[1:] in (["mcp"], ["usage", "delegation", "mcp"])
         helper_mcp = name(pid) == "ao-mcp"
         verified_mcp = legacy_mcp and matches(row, "ao") or helper_mcp and len(argv) == 1 and matches(row, "ao-mcp")
-        if child_of(pid, providers) and (verified_mcp or  # B4
+        if child_of(pid, providers) and (verified_mcp or codex_code_mode_host(pid) or  # B4
                                     (parent in roots and (name(pid) == "node_repl" or argv[:2] == ["node", "./mcp/launch.mjs"])) or  # B5, B6
                                     (not legacy_mcp and not helper_mcp and pid not in host_claims and
                                      base is not None and row["start"] < base)):  # B10
@@ -1668,7 +1698,7 @@ def old_environment(run, workspace, common):
     return {"pre_remove": hooks, "protected_paths": sorted(str(p) for p in fixed_paths)}
 
 
-def old_git_state(run, plan, workspace=None):
+def old_git_state(run, plan, workspace=None, staged=None):
     workspace = no_symlinks(workspace or run.workspace(run.old))
     git = lambda *args: old_git(args, workspace=workspace)
     inputs = workspace_git_inputs(workspace)
@@ -1743,7 +1773,8 @@ def old_git_state(run, plan, workspace=None):
                 saved = no_symlinks(copy.get("path", ""))
                 require(saved.is_relative_to(run.root / "old/saved"), "old copy outside fixed private saved directory")
                 sha = digest(read_regular(path))
-                require(digest(private_read(saved)) == sha == copy.get("sha256"), "necessary old copy hash mismatch")
+                source = staged / saved.relative_to(run.root / "old") if staged is not None else saved
+                require(digest(private_read(source)) == sha == copy.get("sha256"), "necessary old copy hash mismatch")
                 item.update(copy=dict(copy, original_mode=stat.S_IMODE(info.st_mode), relative_path=relative), sha256=sha)
             classified[relative] = item
     require(all(i in used for i, rule in enumerate(rules) if rule.get("disposition") == "copy"),
@@ -1754,6 +1785,9 @@ def old_git_state(run, plan, workspace=None):
         for name in names:
             path = no_symlinks(Path(directory) / name)
             relative = str(path.relative_to(metadata))
+            if relative == "FETCH_HEAD":
+                require(stat.S_ISREG(path.lstat().st_mode), "per-worktree FETCH_HEAD must be a regular file")
+                continue
             require(relative in ("HEAD", "index", "commondir", "gitdir", "ORIG_HEAD", "logs/HEAD"),
                     "per-worktree Git dependency unresolved: " + relative)
             meta[relative] = {"bytes": read_regular(path).hex(), "mode": stat.S_IMODE(path.stat().st_mode)}
@@ -1766,7 +1800,7 @@ def old_git_state(run, plan, workspace=None):
             "index": index.hex(), "staged_patch": staged_patch.hex(), "dirty_patch": dirty_patch.hex(),
             "metadata": meta, "gitfile": read_regular(workspace / ".git").hex(), "gitlinks": links, "tree": tree, "classification": classified,
             "unmatched_rules": [rule for i, rule in enumerate(rules) if i not in used],
-            "plan_sha256": digest(private_read(run.root / "old/preservation.json"))}
+            "plan_sha256": digest(canonical(plan) if staged is not None else private_read(run.root / "old/preservation.json"))}
 
 
 def capture_old(run):
@@ -2606,14 +2640,23 @@ def producer_description(run, action, sid):
 def old_receipt(run):
     sid = identifier(os.environ.get("AO_SESSION_ID", ""))
     require(sid == run.old, "old-receipt must run as old")
+    directory = mkdir(run.root / "old")
+    require(os.environ.get("TMPDIR") == str(directory / "draft"), "producer requires exact actor/draft environment")
+    with lock(directory / "producer.lock"):
+        return prepare_old_receipt(run, sid, directory)
+
+
+def prepare_old_receipt(run, sid, directory):
+    output = directory / "phase-2a.json"
+    committed = [(directory / name).exists() for name in ("producer-intent.json", "producer-result.json", output.name)]
+    require(not any(committed) or all(committed), "old 2a incomplete publication; retire the stopped run")
     workspace = bound_workspace(run, sid)
     workspace_git_inputs(workspace)
-    directory = mkdir(run.root / "old")
     statement_raw = private_read(directory / "draft/statement.json")
     statement = decode(statement_raw)
     require(statement.get("schema") == "rh-old-statement/1" and statement.get("run_id") == run.run_id and statement.get("old_id") == sid and
             isinstance(statement.get("classification"), list) and isinstance(statement.get("pending_question_refs"), list), "old statement identity/fields")
-    rules, paths, copy_rows, unmatched = [], [], [], []
+    rules, copy_rows, unmatched = [], [], []
     for row in statement["classification"]:
         relative = row.get("path")
         require(isinstance(relative, str) and relative and not Path(relative).is_absolute() and str(Path(relative)) == relative and
@@ -2632,14 +2675,21 @@ def old_receipt(run):
             require(path.is_file() and rule.get("scope") != "directory", "necessary copy must enumerate regular files")
             copy_rows.append(dict(path=str(path), kind="old-necessary-material", basis=rule["basis"]))
         rules.append(rule)
-        paths.append(relative)
     rows = source_inputs(run, sid, workspace, copy_rows)
     managed_raw = private_read(directory / "managed.json")
     inputs = {"statement_sha256": digest(statement_raw), "managed_sha256": digest(managed_raw), "materials": rows}
-    intent, cached = begin_producer(run, "old-receipt", sid, directory, inputs, directory / "phase-2a.json")
-    if cached is not None:
+    if all(committed):
+        _, cached = begin_producer(run, "old-receipt", sid, directory, inputs, output)
+        plan = decode(hash_reference(cached["preservation"]))
+        require((plan.get("run_id"), plan.get("old_id")) == (run.run_id, sid), "old helper plan identity mismatch")
+        for item in decode(hash_reference(plan["provenance"])):
+            hash_reference(item["copy"])
+        hash_reference(cached["producer_observation"])
+        documents = run.cli.documents()
+        verify_managed(cached, run.run_id, dict(documents, lease=lease_view(documents)), old=True)
         return cached
     snap = run.snapshot(sid)
+    observation_raw = getattr(run.cli, "last_raw", canonical(snap))
     session = snap["session"]
     control_entry, control = producer_control(run, sid, "2a", snap)
     turn = control_entry["dispatch_turn_id"]
@@ -2647,35 +2697,47 @@ def old_receipt(run):
             not session.get("isTerminated") and session.get("kind") == "orchestrator" and
             [t["id"] for t in snap["transcript"].get("turns", []) if t.get("state") == "running"] == [turn] and
             control["instruction"]["worker_index_sha256"] == run.state["stop_index_sha256"],
-            "old helper directive/index mismatch")
-    observation_path = mkdir(directory / "observations") / "session.raw"
-    publish(observation_path, getattr(run.cli, "last_raw", canonical(snap)))
-    observation = file_reference(observation_path)
+            "old 2a incomplete: original turn/index unavailable; retire the stopped run")
+    observation_path = directory / "observations/session.raw"
     documents = run.cli.documents()
     handoff = no_symlinks(Path(documents["sharedDir"]) / documents["documentPath"])
     receipt = {"schema": "rh-old-2a/1", "run_id": run.run_id, "old_id": sid, "evidence_turn_id": turn,
-               "created_at": intent["created_at"], "managed_reply": file_reference(directory / "managed.json"),
+               "managed_reply": file_reference(directory / "managed.json"),
                "handoff": {"path": str(handoff), "sha256": digest(read_regular(handoff))}, "lease": lease_view(documents),
                "worker_index_sha256": run.state["stop_index_sha256"], "pending_question_refs": statement["pending_question_refs"],
-               "user_status_instruction": status_command(run.root, run.run_id), "producer_observation": observation}
+               "user_status_instruction": status_command(run.root, run.run_id)}
     require(receipt["lease"]["session_id"] == sid, "old is not managed owner")
     verify_managed(receipt, run.run_id, dict(documents, lease=lease_view(documents)), old=True)
-    copies, provenance = save_sources(directory, rows)
-    for rule in rules:
-        if rule["disposition"] == "copy":
-            source = str(workspace / rule["path"])
-            item = next(x for x in provenance if x["path"] == source)
-            rule["copy"] = item["copy"]
     common = no_symlinks(old_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], workspace=workspace).decode().strip())
     metadata = no_symlinks(old_git(["rev-parse", "--absolute-git-dir"], workspace=workspace).decode().strip())
-    publish(directory / "provenance.json", canonical(provenance))
-    plan = {"schema": "rh-old-preservation/2", "run_id": run.run_id, "old_id": sid, "evidence_turn_id": turn,
-            "original_ref": statement["original_ref"], "classification": rules,
-            "gitlinks": gitlink_facts(workspace, "old", common, metadata), "provenance": file_reference(directory / "provenance.json")}
-    publish(directory / "preservation.json", canonical(plan))
-    receipt["unmatched_rules"] = unmatched + old_git_state(run, plan, workspace=workspace)["unmatched_rules"]
-    receipt["preservation"] = file_reference(directory / "preservation.json")
-    return commit_producer(directory, directory / "phase-2a.json", receipt)
+    with tempfile.TemporaryDirectory(dir=directory, prefix=".prepare-") as scratch:
+        staged = Path(scratch)
+        _, provenance = save_sources(staged, rows)
+        for item in provenance:
+            copy = item["copy"]
+            copy["path"] = str(directory / Path(copy["path"]).relative_to(staged))
+        copies = {item["path"]: item["copy"] for item in provenance}
+        for rule in rules:
+            if rule["disposition"] == "copy":
+                rule["copy"] = copies[str(workspace / rule["path"])]
+        provenance_raw = canonical(provenance)
+        provenance_path = directory / "provenance.json"
+        plan = {"schema": "rh-old-preservation/2", "run_id": run.run_id, "old_id": sid, "evidence_turn_id": turn,
+                "original_ref": statement["original_ref"], "classification": rules,
+                "gitlinks": gitlink_facts(workspace, "old", common, metadata),
+                "provenance": {"path": str(provenance_path), "sha256": digest(provenance_raw)}}
+        proof = old_git_state(run, plan, workspace=workspace, staged=staged)
+        intent, _ = begin_producer(run, "old-receipt", sid, directory, inputs, output)
+        for copy in copies.values():
+            destination = Path(copy["path"])
+            publish(destination, hash_reference(dict(copy, path=str(staged / destination.relative_to(directory)))))
+        publish(observation_path, observation_raw)
+        publish(provenance_path, provenance_raw)
+        plan_path = directory / "preservation.json"
+        publish(plan_path, canonical(plan))
+        receipt.update(created_at=intent["created_at"], producer_observation=file_reference(observation_path),
+                       unmatched_rules=unmatched + proof["unmatched_rules"], preservation=file_reference(plan_path))
+    return commit_producer(directory, output, receipt)
 
 
 # Explicit value whitelist. In particular, never SELECT * from sessions/turns.
@@ -2814,7 +2876,8 @@ def phase_2a(run):
     def ready():
         snap, turn_id = observed_dispatch(run, run.old, "2a", run.snapshot(run.old))
         if not path.exists():
-            require_productive_turn(snap, run.old, "old_2a", turn_id, "phase-2a.json")
+            if terminal_turn(snap, turn_id) and not phase_projection_pending(snap, turn_id):
+                raise Stop(f"old 2a incomplete: {run.old} turn {turn_id} ended without phase-2a.json; retire the stopped run")
             return False
         receipt = decode(private_read(path))
         require(Path(receipt.get("managed_reply", {}).get("path", "")).is_relative_to(run.root / "old"), "2a reply outside fixed directory")
@@ -4077,6 +4140,75 @@ def effect_closure(facts):
     return controls
 
 
+def old_2a_closure(current, state, facts):
+    """Close a dispatched old directive using the original runner's journal."""
+    old, run_id = state["old_id"], state["run_id"]
+    key, handle = "2a-" + old, run_id + ":2a:" + old
+    directory = current / "control" / key
+    target = {"project_id": PROJECT, "session_id": old}
+    attempts = [f for f in facts if f.get("effect_id") == handle or
+                (f.get("phase"), f.get("kind"), f.get("target")) == ("2a", "worker-control", target)]
+    calls = [f for f in attempts if f["terminal"] != "not-started"]
+    if not calls:
+        require(not worker_control_has_dispatch_record(directory) and state.get("effects", {}).get(key) in (None, "not-dispatched"),
+                "old 2a original dispatch evidence UNKNOWN")
+        return None
+    payload_raw = private_read(directory / "payload.json")
+    payload = decode(payload_raw)
+    require((payload.get("run_id"), payload.get("phase"), payload.get("old_id"), payload.get("recipient")) ==
+            (run_id, "2a", old, old) and payload.get("actor") == "detached-runner" and payload.get("new_id") is None,
+            "old 2a payload scope UNKNOWN")
+    base = ["send", "--session", old, "--steer"]
+    original = base + ["--client-message-id", handle, "--message"]
+    recover = base + ["--recover-only", "--client-message-id", handle]
+    require(decode(private_read(directory / "intent.json")).get("argv") == original + [payload_raw.decode()],
+            "old 2a original intent mismatch")
+    payload_hash = digest(payload_raw)
+    def original_send(fact):
+        argv = fact["parameters"]["argv"]
+        return (argv[:-1] == original and isinstance(argv[-1], dict) and argv[-1].get("sha256") == payload_hash)
+    require(all((f.get("origin"), f.get("phase"), f.get("kind"), f.get("actor"), f.get("target"), f.get("effect_id")) ==
+                ("native-intent", "2a", "worker-control", old, target, handle) and
+                (original_send(f) or f["parameters"]["argv"] == recover) for f in attempts),
+            "old 2a journal call binding UNKNOWN")
+    require(any(original_send(f) and f["result"].get("dispatched_monotonic") is not None for f in calls),
+            "old 2a original dispatch evidence UNKNOWN")
+    accepted = {f["call_id"]: f["result"]["stdout_sha256"] for f in calls
+                if f["terminal"] == "returned" and f["result"].get("returncode") == 0 and
+                f["result"].get("dispatched_monotonic") is not None}
+    business = decode(private_read(directory / "result.json"))
+    require(isinstance(business.get("stdout"), str) and
+            accepted.get(business.get("call_id")) == business.get("sha256") == digest(business["stdout"].encode()),
+            "old 2a original accepted result UNKNOWN")
+
+    observations = {}
+    for fact in facts:
+        if ((fact.get("phase"), fact.get("kind"), fact.get("actor"), fact.get("target"), fact.get("transport")) !=
+                ("2a", "observation", old, target, "cli") or fact["terminal"] != "returned" or fact["result"].get("returncode") != 0):
+            continue
+        argv = fact["parameters"]["argv"]
+        if argv[:3] != ["session", "get", old] or "--transcript" not in argv:
+            continue
+        snap = decode(hash_reference({"path": str(Path(fact["evidence"]["path"]) / "stdout.raw"),
+                                      "sha256": fact["result"]["stdout_sha256"]}))
+        session, transcript = snap["session"], snap["transcript"]
+        if ((session.get("id"), session.get("projectId"), session.get("kind"), session.get("mode")) !=
+                (old, PROJECT, "orchestrator", "chat") or session.get("isTerminated") or transcript.get("truncatedFields")):
+            continue
+        entry = directive_entry(snap, handle, old, payload_raw.decode(), pending=True)
+        if entry:
+            turn_id = entry["dispatch_turn_id"]
+            turn = terminal_turn(snap, turn_id)
+            scope = transcript.get("conversationId"), transcript.get("activeBranchId"), entry.get("id"), turn_id
+            if all(scope) and turn and turn.get("completedAt") and not phase_projection_pending(snap, turn_id):
+                observations[scope] = fact["call_id"]
+    require(len(observations) == 1, "old 2a consuming turn terminal evidence UNKNOWN")
+    (conversation, branch, message, turn), observation = next(iter(observations.items()))
+    return dict(effect_id=handle, kind="old-2a", call_ids=[f["call_id"] for f in calls],
+                accepted_call_id=business["call_id"], observation_call_id=observation, payload_sha256=payload_hash,
+                conversation_id=conversation, branch_id=branch, message_id=message, turn_id=turn)
+
+
 def verify_partial_snapshots(current):
     for pattern in ("workers/*/before-*/objects", "workers/*/after-*/objects"):
         for path in current.glob(pattern):
@@ -4106,7 +4238,7 @@ def worker_control_not_started(facts, run_id, old, sid, argv):
     return bool(attempts)
 
 
-def retirement_preconditions(cli, state, request, controls, authorization, current, *, facts=()):
+def retirement_preconditions(cli, state, request, controls, authorization, current, *, facts=(), old_2a=None):
     old = request["old_id"]
     snap = cli.session(old)
     require(snap["session"].get("id") == old and snap["session"].get("kind") == "orchestrator" and
@@ -4122,13 +4254,22 @@ def retirement_preconditions(cli, state, request, controls, authorization, curre
     live = [x for x in cli.sessions() if x["projectId"] == PROJECT and not x["isTerminated"]]
     require([x["id"] for x in live if x["role"] == "orchestrator"] == [old], "actor membership/responsibility changed")
     require(not state.get("new_id"), "new ownership responsibility not proven for retirement")
+    closed = []
+    if old_2a:
+        transcript = snap["transcript"]
+        require(snap["session"].get("mode") == "chat" and documents["lease"].get("frozen") is False,
+                "old 2a live managed responsibility UNKNOWN")
+        require((transcript.get("conversationId"), transcript.get("activeBranchId")) ==
+                (old_2a["conversation_id"], old_2a["branch_id"]), "old 2a live conversation responsibility changed")
+        controls = {key: rows for key, rows in controls.items() if key != old_2a["effect_id"]}
+        closed.append(old_2a)
     effects = state.get("effects", {})
     # No worker ever received this run's control: no dispatch, hold or preservation is left to close.
     if not controls and not any(worker_control_has_dispatch_record(d) or effects.get(d.name) not in (None, "not-dispatched")
                                 for d in (current / "control").glob("worker-stop-*")):
-        return []
+        return closed
     require({x["id"] for x in live if x["role"] == "worker"} == set(workers), "actor membership/responsibility changed")
-    closed, remaining = [], set(controls)
+    remaining = set(controls)
     for sid, rules in workers.items():
         snap = cli.session(sid)
         require(snap["session"].get("id") == sid and snap["session"].get("kind") == "worker" and
@@ -4294,6 +4435,12 @@ def retire_run(root, run_id, initial=None):
     with lock(directory / "retire-owner.lock"):
         fence = journal.state()
         if fence["status"] == "open":
+            old_control = "2a-" + old
+            old_handle = run_id + ":2a:" + old
+            if state.get("call_protocol") == CALL_PROTOCOL and (old_control in state.get("effects", {}) or
+                    old_handle in authorization.get("expected_effect_ids", []) or (current / "control" / old_control).exists()):
+                closure = old_2a_closure(current, state, journal.facts(require_ended=True))
+                require(not closure or old_handle in authorization.get("expected_effect_ids", []), "old 2a effect absent from retirement authority")
             fence = journal.freeze(operator, authorization["directive_ref"], digest(authorization_raw))
         else:
             recovery = decode(private_read(directory / "recovery-authorization.json"))
@@ -4324,6 +4471,7 @@ def retire_run(root, run_id, initial=None):
                     facts = historical_facts(root, current, directory, state, authorization, inputs)
                     require(not fence["frozen_executions"], "historical run has unreviewed native executions")
                 controls = effect_closure(facts)
+                old_2a = old_2a_closure(current, state, facts) if native else None
                 effect_ids = {x["effect_id"] for x in facts if x.get("effect_id")}
                 require(effect_ids == set(authorization.get("expected_effect_ids", [])), "authorized effect set changed")
                 for key in state.get("effects", {}):
@@ -4356,7 +4504,7 @@ def retire_run(root, run_id, initial=None):
                 require(cli.base == state["daemon_base"], "retirement daemon location changed")
                 cli.execution = execution
                 try:
-                    closed = retirement_preconditions(cli, state, request, controls, authorization, current, facts=facts)
+                    closed = retirement_preconditions(cli, state, request, controls, authorization, current, facts=facts, old_2a=old_2a)
                     closed.extend(dict(effect_id=effect_id, kind=rows[-1]["kind"], terminal="attempt-terminal", delivery="UNKNOWN",
                                        call_ids=[x["call_id"] for x in rows])
                                   for effect_id in sorted(effect_ids - set(controls))
