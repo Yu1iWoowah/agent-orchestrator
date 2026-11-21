@@ -2218,6 +2218,39 @@ class OSProcessTests(unittest.TestCase):
         work = h.os_work_processes(table, "cworker", "/data", Path("/wt/c"), lambda *a: 200.0, WORKER_BINARIES)
         self.assertEqual([x["pid"] for x in work], [24, 26])
 
+    def test_codex_code_mode_host_is_infrastructure_only_under_its_provider(self):
+        codex = self.root / "codex"
+        helper = self.root / "codex-code-mode-host"
+        for executable in (codex, helper):
+            executable.touch(mode=0o700)
+        table = {
+            10: proc(1, ["ao", "chat-host", "worker", str(self.root), self.ws()]),
+            11: dict(proc(10, ["codex", "app-server"], start=101),
+                     exe=(str(codex), codex.stat().st_dev, codex.stat().st_ino)),
+            12: dict(proc(11, [str(helper), "--listen", "grpc+stdio:"], start=300),
+                     exe=(str(helper), helper.stat().st_dev, helper.stat().st_ino)),
+        }
+
+        def work():
+            return h.os_work_processes(table, "worker", str(self.root), Path(self.ws()), lambda *a: 200, WORKER_BINARIES)
+
+        self.assertEqual(work(), [])
+        managed_argv = ["codex", "-c", 'cli_auth_credentials_store="file"', "app-server"]
+        table[11]["argv"] = managed_argv
+        self.assertEqual(work(), [])
+        for argv in (
+            ["codex", "app-server", "--unexpected"],
+            ["codex", "-c", 'cli_auth_credentials_store="keyring"', "app-server"],
+        ):
+            with self.subTest(argv=argv):
+                table[11]["argv"] = argv
+                self.assertEqual(work(), [dict(pid=12, exe="codex-code-mode-host")])
+        table[11]["argv"] = managed_argv
+        table[13] = proc(12, ["bash", "-c", "run-test"], start=301)
+        table[14] = dict(table[12], exe=(str(helper), helper.stat().st_dev, helper.stat().st_ino + 1))
+        table[15] = dict(table[12], ppid=1, cwd=self.ws())
+        self.assertEqual([entry["pid"] for entry in work()], [13, 14, 15])
+
     def test_packaged_helpers_own_the_same_scope_without_a_B10_baseline(self):
         for host in (["ao", "chat-host"], ["ao-chat-host"]):
             for mcp in (["ao", "mcp"], ["ao-mcp"]):
