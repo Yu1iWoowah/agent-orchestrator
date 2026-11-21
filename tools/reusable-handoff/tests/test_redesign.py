@@ -945,14 +945,15 @@ class ControlledMaterialTests(unittest.TestCase):
                                       sessions=lambda: [dict(id=k, role=v["session"]["kind"], projectId=h.PROJECT, isTerminated=False) for k, v in snaps.items()])
                 fact = dict(kind="worker-control", expected_effect="worker-control", effect_id=handle, target=dict(session_id=sid),
                             origin="retrospective-review", message_sha256=h.digest(raw), terminal="returned", result=dict(returncode=0))
-                if mode.endswith("-ok"):
-                    closed = h.retirement_preconditions(cli, state, request, {handle: [fact]}, dict(materials=materials), current)
-                    self.assertTrue(closed[0]["held"])
-                    self.assertEqual(closed[0]["preservation"][0]["sha256"], sha)
-                    self.assertEqual((closed[0]["last_ack_d"], closed[0]["next_d"]), ("D-1", "D-77"))
-                else:
-                    with self.assertRaises(h.Stop):
-                        h.retirement_preconditions(cli, state, request, {handle: [fact]}, dict(materials=materials), current)
+                with patch.object(h, "proc_table", return_value={}):
+                    if mode.endswith("-ok"):
+                        closed = h.retirement_preconditions(cli, state, request, {handle: [fact]}, dict(materials=materials), current)
+                        self.assertTrue(closed[0]["held"])
+                        self.assertEqual(closed[0]["preservation"][0]["sha256"], sha)
+                        self.assertEqual((closed[0]["last_ack_d"], closed[0]["next_d"]), ("D-1", "D-77"))
+                    else:
+                        with self.assertRaises(h.Stop):
+                            h.retirement_preconditions(cli, state, request, {handle: [fact]}, dict(materials=materials), current)
                 self.assertFalse((current.parent / ".retirement" / run_id / "receipt.json").exists())
                 self.assertTrue(current.is_dir())
 
@@ -1361,8 +1362,9 @@ finally:
         for turn in actual["transcript"]["turns"]:
             turn.update(state="completed", completedAt=h.now())
         self.snaps[sid] = actual
-        with self.assertRaisesRegex(h.Stop, "new directive/authority"):
-            self.retire()
+        with patch.object(h, "proc_table", return_value={}):
+            with self.assertRaisesRegex(h.Stop, "new directive/authority"):
+                self.retire()
         self.assertFalse((self.directory / "receipt.json").exists())
 
     def test_canonical_success_before_business_receipt_reenters_without_dispatch(self):
