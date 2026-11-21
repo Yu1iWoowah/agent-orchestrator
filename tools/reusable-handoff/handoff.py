@@ -751,7 +751,13 @@ def inspect_worker_processes(table, sid, data_dir, workspace, base_of, executabl
             return False
         provider = table[row["ppid"]]
         binary = provider.get("exe")
-        if not binary or Path(binary[0]).name != "codex" or provider["argv"][1:2] != ["app-server"]:
+        # Match the two launcher forms in accountAppServerArgs.
+        app_server_args = (
+            ["app-server"],
+            ["-c", 'cli_auth_credentials_store="file"', "app-server"],
+        )
+        if (not binary or Path(binary[0]).name != "codex" or
+                provider["argv"][1:] not in app_server_args):
             return False
         parent_exe = Path(binary[0])
         sibling = parent_exe.with_name("codex-code-mode-host")

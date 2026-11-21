@@ -2235,6 +2235,17 @@ class OSProcessTests(unittest.TestCase):
             return h.os_work_processes(table, "worker", str(self.root), Path(self.ws()), lambda *a: 200, WORKER_BINARIES)
 
         self.assertEqual(work(), [])
+        managed_argv = ["codex", "-c", 'cli_auth_credentials_store="file"', "app-server"]
+        table[11]["argv"] = managed_argv
+        self.assertEqual(work(), [])
+        for argv in (
+            ["codex", "app-server", "--unexpected"],
+            ["codex", "-c", 'cli_auth_credentials_store="keyring"', "app-server"],
+        ):
+            with self.subTest(argv=argv):
+                table[11]["argv"] = argv
+                self.assertEqual(work(), [dict(pid=12, exe="codex-code-mode-host")])
+        table[11]["argv"] = managed_argv
         table[13] = proc(12, ["bash", "-c", "run-test"], start=301)
         table[14] = dict(table[12], exe=(str(helper), helper.stat().st_dev, helper.stat().st_ino + 1))
         table[15] = dict(table[12], ppid=1, cwd=self.ws())
