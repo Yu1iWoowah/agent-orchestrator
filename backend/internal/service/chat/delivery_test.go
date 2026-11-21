@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -354,6 +355,8 @@ type originalDeliveryReservationStore struct {
 	calls        atomic.Int32
 	original     chan domain.ChatDeliveryAttempt
 	missingReads atomic.Int32
+	priorSeen    chan struct{}
+	seenOnce     sync.Once
 }
 
 func (s *originalDeliveryReservationStore) ReserveChatDelivery(ctx context.Context, a domain.ChatDeliveryAttempt) (domain.ChatDeliveryAttempt, bool, error) {
@@ -376,12 +379,24 @@ func (s *originalDeliveryReservationStore) ChatDeliveryAttempt(ctx context.Conte
 	}
 	return a, err
 }
+
+func (s *originalDeliveryReservationStore) PendingChatDeliveries(ctx context.Context, id domain.SessionID) ([]domain.ChatDeliveryAttempt, error) {
+	attempts, err := s.Store.PendingChatDeliveries(ctx, id)
+	for _, attempt := range attempts {
+		if attempt.ID == "existing-attempt" {
+			s.seenOnce.Do(func() { close(s.priorSeen) })
+			break
+		}
+	}
+	return attempts, err
+}
+
 func TestReservationBlockedByOriginalAttemptWaitsForSettlement(t *testing.T) {
 	clock := newSettingsTestClock()
 	conv := newFakeConversation()
 	var fault *originalDeliveryReservationStore
 	h := newHarnessWithConversationAndStoreForHarness(t, conv, func(st *store.Store) chatsvc.Store {
-		fault = &originalDeliveryReservationStore{Store: st, original: make(chan domain.ChatDeliveryAttempt, 1)}
+		fault = &originalDeliveryReservationStore{Store: st, original: make(chan domain.ChatDeliveryAttempt, 1), priorSeen: make(chan struct{})}
 		return fault
 	}, domain.HarnessCodex, func(o *chatsvc.Options) { o.Now = clock.Now; o.After = clock.After })
 	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "wait for exact prior attempt", ClientMessageID: "original-attempt"})
@@ -389,8 +404,15 @@ func TestReservationBlockedByOriginalAttemptWaitsForSettlement(t *testing.T) {
 		t.Fatalf("original intake lost: %+v %v", turn, err)
 	}
 	prior := <-fault.original
-	clock.awaitTimer(t, 30*time.Second)
-	clock.advance(60 * time.Second)
+	select {
+	case <-fault.priorSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delivery monitor did not read the prior attempt")
+	}
+	if prior.NextCheckAt == nil {
+		t.Fatal("prior attempt has no check deadline")
+	}
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(prior.NextCheckAt.Sub(clock.Now()) + time.Nanosecond) })
 	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
 		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, prior.ID)
 		return e == nil && a.AttentionID != ""
