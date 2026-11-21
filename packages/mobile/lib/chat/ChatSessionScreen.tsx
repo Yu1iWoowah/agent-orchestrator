@@ -26,7 +26,7 @@ import type { Theme } from "../theme";
 import { Frost, FROST_TAIL, frostStops } from "../frost";
 import { stackScreenOptions, SYSTEM_GLASS_HEADER } from "../stackScreenOptions";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
-import { getWorkspacePaths, openSessionShell, forkSession, getForkOptions, type ForkOptions } from "./api";
+import { getWorkspacePaths, openSessionShell, forkSession, getForkOptions, resolveWorkspacePath, type ForkOptions } from "./api";
 import { requestDockModel } from "./requestDockModel";
 import type { ResponseQuoteRequest } from "./responseQuotes";
 import { ChatComposer } from "./ChatComposer";
@@ -67,7 +67,10 @@ import { agentAccountLabel, agentAccountOptions, moveSessionAgentAccount, useAge
 import { useStillHere } from "../useStillHere";
 import { ARCHIVE_SESSION_CONFIRM } from "../worker-action-model";
 import { changedPathCount, fileRoute, filesRoute, FilesNavigationContext, type FilesNavigation } from "../files/navigation";
+import { isAbsoluteFileReference, matchBareFile } from "./fileLinks";
 import { TurnArtifactsContext, useTurnArtifactSourceFor } from "./TurnArtifacts";
+import { TurnRecoveryContext, type TurnRecovery } from "./UsageLimitNotice";
+import { usageLimitedTurn } from "./usageLimit";
 import { useChangeSummary } from "../files/useChangeSummary";
 import { sessionLink } from "./automationMessages";
 import { readSession } from "./sessionLookup";
@@ -143,6 +146,9 @@ export function ChatSessionScreen({ session: boardSession }: { session: MobileCh
 	const restoreRequest = useCallback(() => setDismissedRequest(undefined), []);
 	const [filePaths, setFilePaths] = useState<string[]>([]);
 	const [filePathsTruncated, setFilePathsTruncated] = useState(false);
+	// Whether `filePaths` has been read: a bare file name in a reply waits for it.
+	const [filePathsLoaded, setFilePathsLoaded] = useState(false);
+	const loadFilePaths = useRef<() => void>(() => {});
 	const filePathsRequest = useRef<Promise<{ paths: string[]; truncated: boolean }> | null>(null);
 	const [openingShell, setOpeningShell] = useState(false);
 	const [resuming, setResuming] = useState(false);
@@ -185,15 +191,16 @@ export function ChatSessionScreen({ session: boardSession }: { session: MobileCh
 
 	// Agent switching, from the model menu's "Other agents" (the new task's
 	// menu). As on desktop, a pick only records the agent the next message goes
-	// to; the send then switches and sends in one request. Not offered to
-	// orchestrators or terminated sessions, which desktop leaves out too.
-	const isWorker = !("projectName" in session);
+	// to; the send then switches and sends in one request. Orchestrators switch
+	// too, as on desktop, including once their agent has stopped at a usage
+	// limit: the daemon wakes it to hand over. Not offered to terminated
+	// sessions, which must be restored first.
 	const currentHarness = conversation.snapshot?.harness || "";
 	const agentSwitchMenu = useAgentSwitchMenu({
 		cfg: config,
 		current: currentHarness,
 		projectId: session.projectId,
-		enabled: isWorker && !terminated && Boolean(currentHarness),
+		enabled: !terminated && Boolean(currentHarness),
 	});
 	const [chosenSwitch, setChosenSwitch] = useState<PendingAgentSwitch>();
 	const pendingSwitch = pendingSwitchFor(chosenSwitch, currentHarness || undefined);
@@ -296,10 +303,38 @@ export function ChatSessionScreen({ session: boardSession }: { session: MobileCh
 
 	const sessionName = sessionTitle(session);
 	// Codex-style: every surface that shows the agent changed files can open them.
+	// A file action placed by the daemon lands only if it is still the latest one
+	// and the reader is still on this chat: a newer tap, or leaving, drops it.
+	const fileOpenRequest = useRef(0);
+	const fileOpenStillHere = useStillHere(`${currentHostId ?? ""}|${session.id}`, () => navigation.isFocused?.() !== false);
 	const filesNavigation = useMemo<FilesNavigation>(() => ({
-		openChanges: () => router.push(filesRoute(session.id, currentHostId, sessionName)),
-		openFile: (path, previousPath) => router.push(fileRoute(session.id, path, currentHostId, previousPath)),
-	}), [currentHostId, router, session.id, sessionName]);
+		openChanges: () => {
+			fileOpenRequest.current++;
+			router.push(filesRoute(session.id, currentHostId, sessionName));
+		},
+		openFile: (path, previousPath, line) => {
+			const request = ++fileOpenRequest.current;
+			// Agents also cite absolute paths (`/…/worktree/src/a.ts:12`): the
+			// daemon places those, in the worktree or among the session's artifacts.
+			if (!config || !isAbsoluteFileReference(path)) {
+				router.push(fileRoute(session.id, path, currentHostId, previousPath, line));
+				return;
+			}
+			const here = fileOpenStillHere();
+			const current = () => request === fileOpenRequest.current && here();
+			void resolveWorkspacePath(config, session.id, path).then((resolved) => {
+				if (!current()) return;
+				if (resolved.kind === "workspace" && resolved.path) router.push(fileRoute(session.id, resolved.path, currentHostId, previousPath, line));
+				else if (resolved.kind === "artifact" && resolved.path) router.push({ pathname: "/artifact/[sessionId]", params: { sessionId: session.id, path: resolved.path, hostId: currentHostId } });
+				else Alert.alert("Outside this session", `${path} isn't in this session's worktree.`);
+			}, () => {
+				if (current()) router.push(fileRoute(session.id, path, currentHostId, previousPath, line));
+			});
+		},
+		bareFile: (name) => filePathsLoaded ? matchBareFile(name, filePaths, !filePathsTruncated) : undefined,
+		// One list answers every bare name, so any name loads all of it once.
+		wantBareFile: () => loadFilePaths.current(),
+	}), [config, currentHostId, fileOpenStillHere, filePaths, filePathsLoaded, filePathsTruncated, router, session.id, sessionName]);
 	// The artifacts a turn made, drawn as cards under its reply.
 	const turnArtifacts = useTurnArtifactSourceFor(session.id, conversation.snapshot?.turns, currentHostId);
 	// Re-read git's totals when a turn reports edits, not on a timer.
@@ -417,6 +452,7 @@ export function ChatSessionScreen({ session: boardSession }: { session: MobileCh
 			.then((result) => {
 				setFilePaths(result.paths);
 				setFilePathsTruncated(result.truncated);
+				setFilePathsLoaded(true);
 				return result;
 			})
 			.catch(() => ({ paths: filePaths, truncated: filePathsTruncated }))
@@ -424,6 +460,7 @@ export function ChatSessionScreen({ session: boardSession }: { session: MobileCh
 		filePathsRequest.current = request;
 		return request;
 	}, [config, conversation.snapshot, filePaths, filePathsTruncated, session.id]);
+	loadFilePaths.current = () => { void loadWorkspaceFiles(); };
 
 	const openShell = useCallback(async () => {
 		if (!config || openingShell) return;
@@ -590,6 +627,17 @@ export function ChatSessionScreen({ session: boardSession }: { session: MobileCh
 	const currentAccount = agentAccounts.accounts.find((account) => account.id === agentAccounts.current);
 	const menuAccountName = currentAccount ? agentAccountLabel(currentAccount, agentAccounts.accounts) : undefined;
 	const menuAccountCanMove = agentAccounts.accounts.some((account) => account.signedIn && account.id !== agentAccounts.current);
+	const limitedTurnId = useMemo(() => conversation.snapshot ? usageLimitedTurn(conversation.snapshot)?.id : undefined, [conversation.snapshot]);
+	const { retryTurn, setTurnAutoResume } = conversation;
+	const turnRecovery = useMemo((): TurnRecovery => ({
+		limitedTurnId,
+		resume: retryTurn,
+		setAutoResume: setTurnAutoResume,
+		accountLabel: (accountId) => {
+			const account = agentAccounts.accounts.find((candidate) => candidate.id === accountId);
+			return account ? agentAccountLabel(account, agentAccounts.accounts) : undefined;
+		},
+	}), [agentAccounts.accounts, limitedTurnId, retryTurn, setTurnAutoResume]);
 	const menuGroups = useMemo(() => menuReady ? conversationMenuGroups({
 		previewReady,
 		artifactCount: menuArtifactCount,
@@ -866,6 +914,7 @@ export function ChatSessionScreen({ session: boardSession }: { session: MobileCh
 			<ChatLinkProvider onLinkOpen={openLink} sessionName={nameOfSession} onSessionNameNeeded={wantSessionName} onAddToChat={conversation.snapshot?.supportsExcerpts ? addResponseToChat : undefined}>
 				<FilesNavigationContext.Provider value={filesNavigation}>
 				<TurnArtifactsContext.Provider value={turnArtifacts}>
+				<TurnRecoveryContext.Provider value={turnRecovery}>
 				<ChatTimeline
 					snapshot={snapshot}
 					loadingOlder={conversation.loadingOlder}
@@ -888,6 +937,7 @@ export function ChatSessionScreen({ session: boardSession }: { session: MobileCh
 					bottomInset={composerHeight}
 					jumpHidden={composerOpen}
 				/>
+				</TurnRecoveryContext.Provider>
 				</TurnArtifactsContext.Provider>
 				</FilesNavigationContext.Provider>
 			</ChatLinkProvider>
