@@ -704,7 +704,7 @@ export function SessionArtifactsView({
 	// Who each published card's link opens for, so it is marked as on the Artifacts page.
 	const shareAccess = useReconciledShareLinks();
 	// A remote host's daemon lists no links: this computer's records mark its files.
-	const hostShareLinks = useHostShareLinks();
+	const hostShareLinks = useHostShareLinks(shareAccess);
 	const { client: cloudClient } = useCloudCp(cloud);
 	// Only the person who started a cloud session shares its files.
 	const cloudUserId = useCloudMeUserId(cloud);

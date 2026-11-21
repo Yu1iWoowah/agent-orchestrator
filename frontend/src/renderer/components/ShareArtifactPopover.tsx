@@ -326,7 +326,7 @@ const NO_HOST_SHARE_LINKS: readonly HostShareLink[] = [];
  * Published marks: a remote daemon has no copy of the records, so its list
  * carries no link. Read again whenever a panel changes a link.
  */
-export function useHostShareLinks(): readonly HostShareLink[] {
+export function useHostShareLinks(confirmedAccess: ShareAccessByUrl): readonly HostShareLink[] {
 	const available = useShareAvailable();
 	const { baseUrl, signedIn, scope } = useShareAccess();
 	const revision = useSyncExternalStore(subscribeShareLinks, () => shareLinksRevision);
@@ -336,7 +336,13 @@ export function useHostShareLinks(): readonly HostShareLink[] {
 		enabled: Boolean(available) && signedIn,
 		staleTime: 60_000,
 	});
-	return available && signedIn ? query.data ?? NO_HOST_SHARE_LINKS : NO_HOST_SHARE_LINKS;
+	// Device records can survive sign-out. Wait for the current account's link list.
+	return useMemo(() => available && signedIn && query.data
+		? query.data.flatMap((link) => {
+			const access = confirmedAccess.get(link.url);
+			return access ? [{ ...link, access }] : [];
+		})
+		: NO_HOST_SHARE_LINKS, [available, signedIn, query.data, confirmedAccess]);
 }
 
 /** The control plane URL and whether the person is signed in to share. */

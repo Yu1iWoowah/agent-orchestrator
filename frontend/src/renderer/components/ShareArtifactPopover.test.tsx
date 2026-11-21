@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudShareFile, CloudShareGrant, CloudShareInspection, CloudShareLink, CloudShareLinks, CloudSharePublishResult } from "../../shared/cloud-share";
 import { workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
 import { aoBridge } from "../lib/bridge";
-import { ShareArtifactButton, ShareArtifactMenuPopover, publishTitle, resetShareCachesForTests, useArtifactShareFile, useReconciledShareLinks } from "./ShareArtifactPopover";
+import { ShareArtifactButton, ShareArtifactMenuPopover, publishTitle, resetShareCachesForTests, useArtifactShareFile, useHostShareLinks, useReconciledShareLinks } from "./ShareArtifactPopover";
 import { TooltipProvider } from "./ui/tooltip";
 
 const mocks = vi.hoisted(() => ({
@@ -897,6 +897,22 @@ describe("useReconciledShareLinks", () => {
 		await waitFor(() => expect(result.current.size).toBe(2));
 		expect(result.current.get("https://viewer.test/artifact/abc")).toBe("restricted");
 		expect(result.current.get("https://pub.share.test/")).toBe("anyone");
+	});
+
+	it("marks a remote artifact published only when its link belongs to the current Cloud account", async () => {
+		vi.spyOn(aoBridge.cloudShare, "available").mockResolvedValue(true);
+		vi.spyOn(aoBridge.cloudShare, "list").mockImplementation(async () => ({ ...links, shares: mocks.userId === "u-1" ? [share] : [] }));
+		const record = { hostId: "host-a", sessionId: "session-1", path: "docs/report.html", url: share.viewerUrl!, access: "anyone" as const };
+		vi.spyOn(aoBridge.cloudShare, "hostLinks").mockResolvedValue([record]);
+		const client = new QueryClient();
+		const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+		const { result, rerender } = renderHook(() => useHostShareLinks(useReconciledShareLinks()), { wrapper });
+		await waitFor(() => expect(result.current).toEqual([{ ...record, access: "restricted" }]));
+		mocks.userId = "u-2";
+		rerender();
+		expect(result.current).toEqual([]);
+		await waitFor(() => expect(client.getQueriesData({ queryKey: ["host-share-links", mocks.baseUrl, "u-2"] })[0]?.[1]).toEqual([record]));
+		expect(result.current).toEqual([]);
 	});
 
 	it("shares one list read between surfaces mounted together", async () => {

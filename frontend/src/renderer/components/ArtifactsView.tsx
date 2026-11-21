@@ -143,7 +143,8 @@ function ArtifactsGallery() {
 	const remote = useRemoteWorkspaces({ cachedHostIds: remoteHostIds });
 	const remoteWorkspaces = remote.data;
 	const hostLabels = useMemo(() => new Map((remoteHosts ?? []).map((host) => [host.hostId, host.label])), [remoteHosts]);
-	const hostShareLinks = useHostShareLinks();
+	const shareAccess = useReconciledShareLinks();
+	const hostShareLinks = useHostShareLinks(shareAccess);
 	const kept = useKeptArtifacts().data;
 	const noProjectName = t("artifacts.noProject");
 	const catalog = useArtifactCatalogs(workspaces);
@@ -178,7 +179,6 @@ function ArtifactsGallery() {
 		row: ArtifactRow & { connection: GalleryRow["connection"] };
 		projectName: string;
 	} | null>(null);
-    const shareAccess = useReconciledShareLinks();
     const publishedRows = useMemo(() => withShareAccess(groupArtifactsByProject(workspaces ?? [], t("artifacts.source.orchestrator")), shareAccess).flatMap((group) => group.rows), [workspaces, shareAccess, t]);
 	const groups = useMemo(
 		() =>
