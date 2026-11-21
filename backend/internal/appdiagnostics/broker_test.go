@@ -439,7 +439,13 @@ func TestNativeRuntimeGrantAuditRevokeRoundTrip(t *testing.T) {
 	}
 	defer service.Close()
 	b.BindAuthority(service)
-	_, d, e := connect(t, b, "diagnostics-token")
+	c, d, e := connect(t, b, "diagnostics-token")
+	beginTransaction := func() {
+		t.Helper()
+		if err := c.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var hello frame
 	if err := d.Decode(&hello); err != nil {
 		t.Fatal(err)
@@ -450,6 +456,7 @@ func TestNativeRuntimeGrantAuditRevokeRoundTrip(t *testing.T) {
 	if err := e.Encode(frame{Type: "ready", Windows: []domain.AppDiagnosticsWindow{{ID: "window-1", Generation: 1}}}); err != nil {
 		t.Fatal(err)
 	}
+	beginTransaction()
 	if err := e.Encode(frame{Type: "grant", SchemaVersion: 1, RequestID: "grant-request", SessionID: "project-1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -457,6 +464,7 @@ func TestNativeRuntimeGrantAuditRevokeRoundTrip(t *testing.T) {
 	if err := d.Decode(&granted); err != nil || granted.GrantID == "" || granted.Code != "" {
 		t.Fatalf("grant: %+v %v", granted, err)
 	}
+	beginTransaction()
 	if err := e.Encode(frame{Type: "audit", SchemaVersion: 1, RequestID: "audit-request", GrantID: granted.GrantID}); err != nil {
 		t.Fatal(err)
 	}
@@ -464,6 +472,7 @@ func TestNativeRuntimeGrantAuditRevokeRoundTrip(t *testing.T) {
 	if err := d.Decode(&audit); err != nil || !strings.Contains(string(audit.Audit), "granted") || audit.Code != "" {
 		t.Fatalf("audit: %+v %v", audit, err)
 	}
+	beginTransaction()
 	if err := e.Encode(frame{Type: "revoke", SchemaVersion: 1, RequestID: "revoke-request", GrantID: granted.GrantID}); err != nil {
 		t.Fatal(err)
 	}
@@ -475,6 +484,7 @@ func TestNativeRuntimeGrantAuditRevokeRoundTrip(t *testing.T) {
 	if err := d.Decode(&revoked); err != nil || revoked.Code != "" {
 		t.Fatalf("revoke: %+v %v", revoked, err)
 	}
+	beginTransaction()
 	if err := e.Encode(frame{Type: "audit", SchemaVersion: 1, RequestID: "revoked-audit", GrantID: granted.GrantID}); err != nil {
 		t.Fatal(err)
 	}
