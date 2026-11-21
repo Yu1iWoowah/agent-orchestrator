@@ -562,6 +562,22 @@ class GitChainTests(unittest.TestCase):
             self.assertNotIn('FETCH_HEAD', proof['metadata'])
             self.assertIn('index', proof['metadata'])
 
+    def test_old_rejects_non_regular_linked_worktree_fetch_head(self):
+        for kind in ('directory', 'symlink'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temp:
+                fake = OldProducerTests().prepare(Path(temp))
+                gitdir = Path(self.git(fake.workspace, 'rev-parse', '--absolute-git-dir'))
+                fetch_head = gitdir / 'FETCH_HEAD'
+                if kind == 'directory':
+                    fetch_head.mkdir()
+                else:
+                    target = Path(temp) / 'outside-gitdir'
+                    target.mkdir()
+                    fetch_head.symlink_to(target, target_is_directory=True)
+                with self.assertRaisesRegex(h.Stop, 'per-worktree FETCH_HEAD must be a regular file'):
+                    h.phase_2a(fake.run)
+                self.assertFalse((fake.run.root / 'old/phase-2a.json').exists())
+
     def test_old_dirty_or_unprotected_gitlink_stops_before_kill(self):
         for state in ('dirty', 'unprotected'):
             with self.subTest(state=state), tempfile.TemporaryDirectory() as temp:

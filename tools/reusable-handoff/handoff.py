@@ -1788,12 +1788,14 @@ def old_git_state(run, plan, workspace=None, staged=None):
     # Preserve only the required linked-worktree Git state, never the common history tree.
     meta = {}
     for directory, dirs, names in os.walk(metadata):
+        if Path(directory) == metadata and "FETCH_HEAD" in dirs + names:
+            # os.walk lists links to directories in dirs even without following them.
+            require("FETCH_HEAD" in names and stat.S_ISREG((metadata / "FETCH_HEAD").lstat().st_mode),
+                    "per-worktree FETCH_HEAD must be a regular file")
+            names.remove("FETCH_HEAD")
         for name in names:
             path = no_symlinks(Path(directory) / name)
             relative = str(path.relative_to(metadata))
-            if relative == "FETCH_HEAD":
-                require(stat.S_ISREG(path.lstat().st_mode), "per-worktree FETCH_HEAD must be a regular file")
-                continue
             require(relative in ("HEAD", "index", "commondir", "gitdir", "ORIG_HEAD", "logs/HEAD"),
                     "per-worktree Git dependency unresolved: " + relative)
             meta[relative] = {"bytes": read_regular(path).hex(), "mode": stat.S_IMODE(path.stat().st_mode)}
