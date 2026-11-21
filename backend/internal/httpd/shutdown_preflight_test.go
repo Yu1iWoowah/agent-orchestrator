@@ -110,3 +110,20 @@ func TestShutdownReportsProtectedSideReasonAndEntry(t *testing.T) {
 		t.Fatalf("%d %s", response.Code, response.Body.String())
 	}
 }
+
+// A refused shutdown names the blocking session and reason code; the cause's
+// text never reaches the body (SDR-PR1 AC6).
+func TestShutdownNamesBlockingSessionAndReason(t *testing.T) {
+	router := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{}, ControlDeps{RequestShutdown: func() { t.Error("shutdown requested") }, ShutdownPreflight: func(context.Context) error {
+		return &ports.ChatShutdownBlockedError{SessionID: "atm-544", Reason: "journal_gap", Cause: errors.New("private-provider-text-must-not-leak")}
+	}})
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/shutdown", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+	body := response.Body.String()
+	if response.Code != http.StatusConflict || !strings.Contains(body, `"status":"shutdown_not_settled"`) || !strings.Contains(body, `"blockedSession":"atm-544"`) ||
+		!strings.Contains(body, `"blockedReason":"journal_gap"`) || strings.Contains(body, "private-provider-text") {
+		t.Fatalf("%d %s", response.Code, body)
+	}
+}

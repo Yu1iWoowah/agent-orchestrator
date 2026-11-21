@@ -3,10 +3,26 @@ package ports
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
+
+type providerSwitchAccountContextKey struct{}
+
+// WithProviderSwitchAccountPreservation keeps launch environment preparation
+// from implicitly binding accounts during a provider switch or its rollback.
+func WithProviderSwitchAccountPreservation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, providerSwitchAccountContextKey{}, true)
+}
+
+// PreservesProviderSwitchAccounts reports whether launch preparation may
+// read account bindings but must leave them unchanged.
+func PreservesProviderSwitchAccounts(ctx context.Context) bool {
+	preserve, _ := ctx.Value(providerSwitchAccountContextKey{}).(bool)
+	return preserve
+}
 
 // AgentAccountReviewerInUseError identifies a local execution that must stop
 // before cleanup. It carries only opaque references, never provider output.
@@ -38,6 +54,7 @@ var (
 	ErrAgentAccountUnknown            = errors.New("agent account not found")
 	ErrAgentAccountProviderMismatch   = errors.New("the account belongs to another provider")
 	ErrAgentAccountSignedOut          = errors.New("the account's config folder is not signed in")
+	ErrAgentAccountLoginRevoked       = errors.New("the saved login was revoked by the provider")
 	ErrAgentAccountDuplicate          = errors.New("that login is already an account")
 	ErrAgentAccountLoginUnknown       = errors.New("agent account sign-in not found")
 	ErrAgentAccountDeviceFixed        = errors.New("the computer's own login cannot be removed here")
@@ -89,6 +106,13 @@ type AgentAccountStore interface {
 	// AgentAccountUsageSince sums each account's model usage since the time,
 	// attributing every usage event to the account its session used then.
 	AgentAccountUsageSince(ctx context.Context, since time.Time) ([]domain.AgentAccountUsage, error)
+}
+
+// AgentLimitReadingStore keeps the recent history of account limit readings.
+type AgentLimitReadingStore interface {
+	RecordAgentLimitReadings(ctx context.Context, readings []domain.AgentLimitReading) error
+	ListAgentLimitReadings(ctx context.Context, since time.Time) ([]domain.AgentLimitReading, error)
+	LimitHistoryEnabled(ctx context.Context) bool
 }
 
 // AgentAccountLaunchEnv gives Session Manager the account environment of a
@@ -167,10 +191,25 @@ type ReviewerExecutionStore interface {
 	CreateReviewerAccountExecution(context.Context, string, string, domain.ResolvedAgentAccount, time.Time) (domain.Review, bool, error)
 }
 
+// WorkerRoleAccountMismatchError carries only public launch selection identifiers.
+type WorkerRoleAccountMismatchError struct {
+	AccountID string
+	Harness   domain.AgentHarness
+	Provider  domain.AgentAccountProvider
+}
+
+func (e *WorkerRoleAccountMismatchError) Error() string {
+	return fmt.Sprintf("Worker role account %s belongs to %s and cannot run %s. Choose a matching harness, choose an account for this run, or update the worker account in Project Settings.", e.AccountID, e.Provider, e.Harness)
+}
+
+func (*WorkerRoleAccountMismatchError) Unwrap() error { return ErrAgentAccountProviderMismatch }
+
 // AgentAccountInUseError describes a refused mutation. No operation has been
 // scheduled and no account was disabled; callers can show the affected owners.
 type AgentAccountInUseError struct {
-	Owners []domain.AgentAccountUsageOwner
+	Owners     []domain.AgentAccountUsageOwner
+	AccountID  string
+	Contention string
 }
 
 func (*AgentAccountInUseError) Error() string { return ErrAgentAccountInUse.Error() }

@@ -147,6 +147,18 @@ describe("conversation frame geometry", () => {
 			}),
 		).toEqual(conversationFrameSafeRect(boxes));
 	});
+	it("moves both collapsed entries below a toolbar crossing the second row", () => {
+		const rect = conversationFrameSafeRect({
+			surface: { left: 17, top: 51, width: 356, height: 934 },
+			viewport: { left: 17, top: 51, width: 356, height: 792 },
+			composer: { left: 17, top: 843, width: 356, height: 142 },
+			avoid: [{ left: 261, top: 113, width: 92, height: 28 }],
+		});
+		const preferences = defaultConversationFramePreferences();
+		preferences.attention.userOpen = false;
+		const layout = deriveConversationFrameLayout({ safeRect: rect, preferences, availableFrames: ["attention", "plan"] });
+		for (const frame of Object.values(layout.frames)) expect(frame.rect.top + 51).toBeGreaterThan(141);
+	});
 	it("clips an oversized Chat surface to the real visual viewport at high zoom", () => {
 		expect(
 			conversationFrameSafeRect({

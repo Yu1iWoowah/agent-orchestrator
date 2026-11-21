@@ -46,3 +46,22 @@ func TestChatDeliveryRequiresExactPositiveEvidence(t *testing.T) {
 		})
 	}
 }
+
+// Only the daemon's incomplete legacy receipt may settle an unknown outcome.
+func TestChatDeliveryReceiptSettlesUnknownOnlyAsIncomplete(t *testing.T) {
+	at := time.Now().UTC()
+	for _, tc := range []struct {
+		source string
+		valid  bool
+	}{
+		{"provider_event", false},
+		{"incomplete", true},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			r := ChatDeliveryReceipt{AttemptID: "attempt", Disposition: ChatDeliveryUnknown, Source: tc.source, ExecutionSettled: true, ObservedAt: at}
+			if got := r.Validate() == nil; got != tc.valid {
+				t.Fatalf("valid=%v want=%v", got, tc.valid)
+			}
+		})
+	}
+}

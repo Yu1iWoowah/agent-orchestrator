@@ -18,8 +18,8 @@ import { coerceUiSettings, DEFAULT_UI_SETTINGS } from "../../src/shared/ui-local
 // live preload; the injected bridge is only the deterministic stand-in for the
 // browser harness.
 //
-// SCOPE / CAVEAT — renderer smoke, not full e2e. Because `window.ao`,
-// `EventSource`, and the workspace snapshot are all faked here, this harness
+// SCOPE / CAVEAT — renderer smoke, not full e2e. Because `window.ao` (its
+// local SSE streams included) and the workspace snapshot are faked here, this harness
 // CANNOT catch daemon, storage, API, preload, PTY, or filesystem regressions —
 // those are the packaged-app pod gate's job (#2697). In particular,
 // `useWorkspaceQuery` reads an already-shaped `WorkspaceSummary` straight from
@@ -94,20 +94,29 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 						onStatus: () => () => undefined,
 						onCancel: () => () => undefined,
 					},
+					dictation: {
+						start: async () => undefined,
+						stop: async () => undefined,
+						cancel: async () => undefined,
+						onEvent: unsubscribe,
+					},
 					app: {
 						getVersion: async () => version,
 						chooseDirectory: async () => null,
 						checkGitRepository: async () => true,
 						openExternal: async () => undefined,
+						openChromeExtensions: async () => undefined,
 						scanImportFolder: async ({ path }: { path: string }) => ({ path, repos: [] }),
 						checkAncestorRepo: async () => undefined,
 						getRepositoryBranch: async () => undefined,
 						getGitHubLogin: async () => "",
-						getCachedGitHubOwners: async () => [],
+						listGitHubRepos: async () => [],
+		getCachedGitHubOwners: async () => [],
 						refreshGitHubOwners: async () => [],
 						checkGitHubRepositoryAvailability: async () => ({ available: true }),
 						getPathForFile: () => "",
 					onOpenFolderPath: () => () => undefined,
+					onOpenSessionDeepLink: () => () => undefined,
 					onNewSessionShortcut: unsubscribe,
 					onKeyboardShortcutsHelp: unsubscribe,
 					onQuitConfirmRequest: unsubscribe,
@@ -123,12 +132,22 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					onNextTabShortcut: unsubscribe,
 					onDocumentEscape: unsubscribe,
 					onShortcut: unsubscribe,
+					reportSessionsShown: () => undefined,
+					setMenuAvailability: () => undefined,
+					onMenuAction: unsubscribe,
 					onScrollPhase: unsubscribe,
+					showPrivacyGuide: async () => undefined,
+					updatePrivacyGuide: async () => false,
+					closePrivacyGuide: async () => undefined,
 				},
 				terminal: {
 					saveDroppedFile: async () => "",
 					setFocused: () => undefined,
 					onFontSizeShortcut: () => () => undefined,
+				},
+				artifactZoom: {
+					setEngaged: () => undefined,
+					onShortcut: () => () => undefined,
 				},
 				window: {
 					getZoomFactor: async () => 1,
@@ -140,6 +159,7 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 				},
 				theme: {
 					set: async () => undefined,
+					systemAppearance: async (): Promise<"light" | "dark"> => (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"),
 					persistTerminal: async () => undefined,
 					setWindowBackground: async () => undefined,
 					setWindowTranslucent: async () => undefined,
@@ -154,8 +174,33 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					fetch: async () => ({ bytes: new Uint8Array(), mimeType: "image/png" }),
 					save: async () => true,
 				},
+				sessionShareUrls: {
+					remember: async () => undefined,
+					recall: async () => ({}),
+					forget: async () => undefined,
+				},
+				cloudShare: {
+					available: async () => true,
+					inspect: async () => ({ name: "", size: 0, unsupported: false, fingerprint: "" }),
+					list: async () => ({ shares: [], limit: 3, used: 0, unlimited: false, privateLinks: false }),
+					hostLinks: async () => [],
+					publish: async () => ({ status: "cancelled" as const }),
+					cancel: async () => undefined,
+					unpublish: async () => undefined,
+					setAccess: async () => {
+						throw new Error("Sharing is not faked.");
+					},
+					grants: async () => [],
+					invite: async () => [],
+					removeGrant: async () => undefined,
+					onProgress: () => () => undefined,
+				},
+				artifactSnapshot: {
+					request: async () => false,
+				},
 				cloudArtifact: {
 					fetch: async () => new Uint8Array(),
+					openFolder: async () => undefined,
 					onFrameNavigated: () => () => undefined,
 				},
 				daemon: {
@@ -168,8 +213,46 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 						return unsubscribe();
 					},
 				},
-				sideChats: { capture: async () => undefined, confirmClose: async () => undefined, getPendingCloses: async () => [], onPendingClosesChanged: () => () => {} },
+				agentLogin: { request: async () => null },
+				// This emulates the main-owned protocol for renderer tests; HTTP is
+				// still intercepted by each spec's fake daemon, never assumed successful.
+				sideChats: (() => {
+					let revision = 0;
+					const epoch = "fake-daemon";
+					const entries = new Map<string, import("../../src/shared/side-close").SideCloseEntry>();
+					const listeners = new Set<(state: import("../../src/shared/side-close").SideCloseState) => void>();
+					const state = (sessionId: string | null): import("../../src/shared/side-close").SideCloseState => ({
+						protocolVersion: 1, epoch, revision, recovery: "ready", sessionId,
+						sides: [...entries.values()].filter(side => sessionId === null || side.sessionId === sessionId).map(side => ({ ...side })),
+					});
+					const publish = () => { revision++; for (const listener of listeners) listener(state(null)); };
+					return {
+						protocolVersion: 1 as const, mode: "desktop" as const,
+						capture: async () => undefined,
+						getCloseState: async (sessionId: string) => state(sessionId),
+						onCloseStateChanged: (listener: (value: import("../../src/shared/side-close").SideCloseState) => void) => {
+							listeners.add(listener); return () => { listeners.delete(listener); };
+						},
+						requestClose: async (request: import("../../src/shared/side-close").SideCloseRequest) => {
+							const prior = entries.get(request.sideId);
+							if (request.epoch !== epoch || request.expectedVersion !== (prior?.version ?? 0) ||
+								prior?.status === "closed" || prior?.status === "closing") return state(request.sessionId);
+							const entry: import("../../src/shared/side-close").SideCloseEntry = {
+								id: request.sideId, sessionId: request.sessionId, label: request.sideId,
+								version: (prior?.version ?? 0) + 1, operationId: request.requestId, status: "closing",
+							};
+							entries.set(entry.id, entry); publish();
+							try {
+								const response = await fetch(`http://127.0.0.1:${daemonPort}/api/v1/sessions/${encodeURIComponent(request.sessionId)}/conversation/side-chats/${encodeURIComponent(request.sideId)}`,
+									{ method: "DELETE", redirect: "error", signal: AbortSignal.timeout(30_000) });
+								entry.status = response.status === 204 ? "closed" : "unconfirmed";
+							} catch { entry.status = "unconfirmed"; }
+							entry.version++; publish(); return state(request.sessionId);
+						},
+					};
+				})(),
 				editorHandoff: {
+					pathAction: async () => undefined,
 					copyWorkspacePath: async () => undefined,
 					getState: async () => ({
 						targets: [
@@ -187,6 +270,7 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					setPreferredEditor: async (editorId) => editorId,
 					open: async () => ({ id: "cursor" as const, name: "Cursor", kind: "editor" as const }),
 					openArtifacts: async () => ({ id: "file-manager" as const, name: "File Manager", kind: "file_manager" as const }),
+					openArtifactInBrowser: async () => undefined,
 				},
 				telemetry: {
 					getBootstrap: async () => null,
@@ -195,6 +279,8 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					onAnalyticsOptOut: () => () => undefined,
 					setCloudUser: async () => false,
 					getGithubLogin: async () => null,
+					getLifetimeSessions: async () => null,
+					claimFirstOpen: async () => "ineligible" as const,
 					getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
 					setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
 					onPolicy: () => () => false,
@@ -332,12 +418,21 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 				appState: {
 					getMigration: async () => ({ status: "completed" }),
 					setMigration: async () => undefined,
+					getExperimentCohort: async () => null,
+					claimFirstRunExperimentExposure: async () => false,
+					getFirstRunProjectPrompt: async () => "seen",
+					markFirstRunProjectPromptSeen: async () => undefined,
 				},
 				cliLink: {
 					setEnabled: async () => undefined,
 					inspect: async () => ({ ok: false as const, code: "unsupported" as const, message: "unavailable" }),
 					link: async () => ({ ok: false as const, code: "unsupported" as const, message: "unavailable" }),
 					unlink: async () => ({ ok: false as const, code: "unsupported" as const, message: "unavailable" }),
+				},
+				cliShadow: {
+					inspect: async () => ({ kind: "unknown" as const }),
+					replace: async () => ({ ok: false as const, code: "io" as const, message: "Not available in this environment." }),
+					reveal: async () => undefined,
 				},
 				updateSettings: {
 					get: async () => currentUpdateSettings,
@@ -381,9 +476,8 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 				},
 				remotes: {
 					list: async () => [],
-					importAccountHost: async () => undefined,
-					pruneAccountHosts: async () => undefined,
-					issueAccountToken: async () => "",
+					syncAccountHosts: async () => undefined,
+					linkAccountHost: async () => undefined,
 					add: async () => "offline" as const,
 					update: async () => "offline" as const,
 					remove: async () => undefined,
@@ -406,6 +500,9 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					localAuthAvailable: async () => false,
 					onOpenShareLink: () => () => undefined,
 					takePendingShareLink: async () => null,
+					pushFolderToRepository: async () => ({ status: "error" as const, code: "invalid_request" as const, message: "not available in e2e" }),
+					previewFolderUpload: async () => ({ status: "error" as const, code: "invalid_request" as const, message: "not available in e2e" }),
+					takePendingSignIn: async () => null,
 					localRegister: async () => {
 						throw new Error("local auth is unavailable in e2e");
 					},
@@ -416,10 +513,21 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 				},
 				cloudCp: {
 					request: async () => ({ status: 401, headers: {}, body: "" }),
+					requestBinary: async () => ({ status: 401, headers: {}, body: new Uint8Array() }),
+					cancelBinary: () => undefined,
 					openStream: async () => ({ streamId: "stream_test" }),
 					closeStream: () => undefined,
 					onStreamEvent: unsubscribe,
 					agentBrowserUrl: async () => "",
+				},
+				// Nothing serves SSE on the fake daemon port: every open fails as a
+				// network error and the app keeps retrying, as it would in the app.
+				daemonStream: {
+					openStream: async () => {
+						throw new Error("fetch failed");
+					},
+					closeStream: () => undefined,
+					onStreamEvent: unsubscribe,
 				},
 			} satisfies AoBridge;
 			(window as unknown as { __aoFakeUpdates: { setStatus: (status: UpdateStatus) => void } }).__aoFakeUpdates = {
@@ -442,11 +550,12 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 //      REST base URL and opens its SSE streams (the same seam the packaged app
 //      fills). The `browser.*` IPC is driven off a shared in-page state so the
 //      preview surface is controllable.
-//   2. A fake `window.EventSource` — the daemon's CDC (`/api/v1/events`) and
-//      notification (`/api/v1/notifications/stream`) SSE streams. The controller
-//      pushes `session_updated` / `notification_created` frames into it, which is
-//      exactly what drives the renderer's cache-invalidation → refetch path (no
-//      manual refresh), matching the real daemon's behaviour.
+//   2. A fake `window.ao.daemonStream` — the daemon's CDC (`/api/v1/events`) and
+//      notification (`/api/v1/notifications/stream`) SSE streams, which main
+//      relays in the desktop app. The controller pushes `session_updated` /
+//      `notification_created` frames into them, which is exactly what drives the
+//      renderer's cache-invalidation → refetch path (no manual refresh),
+//      matching the real daemon's behaviour.
 //   3. A mutable workspace snapshot read by `useWorkspaceQuery` via
 //      `window.__aoFakeAgent.snapshot()` (dev:web seam). Controller mutations +
 //      an SSE push = the card the renderer repaints.
@@ -478,7 +587,7 @@ export type FakeAgentOptions = {
 	workers?: FakeWorker[];
 	/** Persist the fixture project's disclosure as expanded before the app mounts. */
 	expandProject?: boolean;
-	/** Keep Chromium's EventSource for tests with an actual isolated SSE listener. */
+	/** Relay local streams from a real HTTP SSE listener on `daemonPort`. */
 	nativeEvents?: boolean;
 };
 
@@ -504,7 +613,8 @@ export type FakeAgentController = {
 	setBrowserError: (message: string | null) => void;
 	reconnectEventsWithReplayBacklog: (count: number) => void;
 	replayProgress: () => FakeReplayProgress;
-	closeEventsStream: () => void;
+	/** Drops the CDC stream and refuses its reconnect; resolves once it is CLOSED. */
+	closeEventsStream: () => Promise<void>;
 	/** `openedAt` is the `Date.now()` at which the stream last fired `open`. */
 	eventStreams: () => Array<{ url: string; readyState: number; openedAt: number | null }>;
 	startContinuousWorkspaceEvents: (intervalMs: number, eventsPerTick?: number) => void;
@@ -654,25 +764,30 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				],
 			};
 
-			interface FakeEventSourceLike {
+			type FakeStreamEvent = { type: "chunk"; data: string } | { type: "end" } | { type: "error"; message: string };
+			// A local stream the app opened through the preload `daemonStream`
+			// bridge, as main would hold it. `readyState` is 1 while the daemon side
+			// is open and 2 once it is closed by either end.
+			interface FakeStream {
+				id: string;
 				url: string;
 				readyState: number;
 				openedAt: number | null;
-				onopen: ((ev: unknown) => void) | null;
-				onerror: ((ev: unknown) => void) | null;
-				onmessage: ((ev: unknown) => void) | null;
-				_listeners: Record<string, ((ev: unknown) => void)[]>;
-				close: () => void;
-				_dispatch: (type: string, data?: string) => void;
+				listener?: (event: FakeStreamEvent) => void;
+				sendCursor: boolean;
+				abort?: () => void;
 			}
 
 			const state = {
 				browserError: null as string | null,
-				eventSources: [] as FakeEventSourceLike[],
+				eventSources: [] as FakeStream[],
+				streamSeq: 0,
+				// Refuses the next CDC open: closeEventsStream's failed reconnect.
+				refuseNextCdcOpen: undefined as undefined | (() => void),
 				workspaces: [project],
 				replay: {
 					phase: "idle" as "idle" | "connecting" | "replaying",
-					source: undefined as FakeEventSourceLike | undefined,
+					source: undefined as FakeStream | undefined,
 					remaining: 0,
 					delivered: 0,
 					abandoned: 0,
@@ -700,69 +815,113 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				s.updatedAt = new Date().toISOString();
 			};
 
-			class FakeEventSource implements FakeEventSourceLike {
-				static readonly CONNECTING = 0;
-				static readonly OPEN = 1;
-				static readonly CLOSED = 2;
-				readonly CONNECTING = 0;
-				readonly OPEN = 1;
-				readonly CLOSED = 2;
-				url: string;
-				readyState = 1;
-				openedAt: number | null = null;
-				onopen: ((ev: unknown) => void) | null = null;
-				onerror: ((ev: unknown) => void) | null = null;
-				onmessage: ((ev: unknown) => void) | null = null;
-				_listeners: Record<string, ((ev: unknown) => void)[]> = {};
-				constructor(url: string) {
-					this.url = String(url);
-					state.eventSources.push(this);
-					// event-transport assigns `.onopen` right after construction; fire on
-					// the next tick so it is already wired.
-					setTimeout(() => {
-						if (this.readyState !== 1 || !this.onopen) return;
-						this.openedAt = Date.now();
-						this.onopen({ type: "open" });
-					}, 0);
-				}
-				addEventListener(t: string, cb: (ev: unknown) => void) {
-					(this._listeners[t] ||= []).push(cb);
-				}
-				removeEventListener(t: string, cb: (ev: unknown) => void) {
-					const arr = this._listeners[t];
-					if (!arr) return;
-					const i = arr.indexOf(cb);
-					if (i >= 0) arr.splice(i, 1);
-				}
-				close() {
-					this.readyState = 2;
-				}
-				_dispatch(type: string, data = "") {
-					const ev = { type, data };
-					if (type === "message" && this.onmessage) this.onmessage(ev);
-					for (const cb of this._listeners[type] ?? []) {
-						try {
-							cb(ev);
-						} catch {
-							/* ignore */
+			const isCdc = (path: string) => path.startsWith("/api/v1/events");
+			// The daemon's SSE frame. CDC frames carry the sequence as their id, so
+			// the app's stream resends it as Last-Event-ID when it reconnects.
+			const send = (stream: FakeStream, type: string, data = "") => {
+				const id = isCdc(stream.url) ? `id: ${state.cdcSeq}\n` : "";
+				stream.listener?.({ type: "chunk", data: `${id}event: ${type}\ndata: ${data}\n\n` });
+			};
+			// The daemon drops the connection; the app's stream reconnects on its own.
+			const dropStream = (stream: FakeStream) => {
+				stream.readyState = 2;
+				stream.listener?.({ type: "error", message: "The daemon closed the stream." });
+			};
+			const findStream = (streamId: string) => state.eventSources.find((stream) => stream.id === streamId);
+
+			// With nativeEvents the stream comes from a real HTTP SSE listener on
+			// the daemon port, read with fetch the way main reads it.
+			const openRealStream = async (init: { path: string; lastEventId?: string }) => {
+				const headers: Record<string, string> = { Accept: "text/event-stream" };
+				if (init.lastEventId !== undefined) headers["Last-Event-ID"] = init.lastEventId;
+				const controller = new AbortController();
+				const response = await fetch(`http://127.0.0.1:${daemonPort}${init.path}`, { headers, signal: controller.signal });
+				if (!response.ok || response.body === null) throw new Error(`DAEMON_STREAM_ERROR ${response.status} The stream was refused.`);
+				const stream: FakeStream = {
+					id: `fake-stream-${(state.streamSeq += 1)}`,
+					url: init.path,
+					readyState: 1,
+					openedAt: Date.now(),
+					sendCursor: false,
+					abort: () => controller.abort(),
+				};
+				state.eventSources.push(stream);
+				const reader = response.body.getReader();
+				const decoder = new TextDecoder();
+				setTimeout(async () => {
+					try {
+						for (;;) {
+							const { done, value } = await reader.read();
+							if (done) break;
+							stream.listener?.({ type: "chunk", data: decoder.decode(value, { stream: true }) });
 						}
+						stream.listener?.({ type: "end" });
+					} catch (error) {
+						if (stream.readyState === 1) stream.listener?.({ type: "error", message: String(error) });
 					}
-				}
-			}
-			if (!nativeEvents) (window as unknown as { EventSource: unknown }).EventSource = FakeEventSource;
+					stream.readyState = 2;
+				}, 0);
+				return { streamId: stream.id };
+			};
+
+			const daemonStream = {
+				openStream: async (init: { path: string; lastEventId?: string }) => {
+					if (isCdc(init.path) && state.refuseNextCdcOpen) {
+						const refused = state.refuseNextCdcOpen;
+						state.refuseNextCdcOpen = undefined;
+						setTimeout(refused, 0);
+						throw new Error("DAEMON_STREAM_ERROR 503 The daemon refused the stream.");
+					}
+					if (nativeEvents) return openRealStream(init);
+					const stream: FakeStream = {
+						id: `fake-stream-${(state.streamSeq += 1)}`,
+						url: init.path,
+						readyState: 1,
+						openedAt: Date.now(),
+						// `?after=latest` starts with a cursor frame, as the daemon sends.
+						sendCursor: isCdc(init.path) && init.lastEventId === undefined,
+					};
+					state.eventSources.push(stream);
+					if (isCdc(init.path) && state.replay.phase === "connecting") {
+						// Only the stream's own reconnect resends Last-Event-ID and gets the
+						// gap; a stream the app constructs starts at head.
+						if (init.lastEventId !== undefined) startReplay(stream);
+						else abandonReplay();
+					}
+					return { streamId: stream.id };
+				},
+				closeStream: (streamId: string) => {
+					const stream = findStream(streamId);
+					if (!stream) return;
+					stream.readyState = 2;
+					stream.abort?.();
+				},
+				onStreamEvent: (streamId: string, listener: (event: FakeStreamEvent) => void) => {
+					const stream = findStream(streamId);
+					if (!stream) return () => undefined;
+					stream.listener = listener;
+					if (stream.sendCursor) {
+						stream.sendCursor = false;
+						setTimeout(() => {
+							if (stream.readyState === 1) send(stream, "cursor", "{}");
+						}, 0);
+					}
+					return () => {
+						if (stream.listener === listener) stream.listener = undefined;
+					};
+				},
+			};
 
 			const emit = (match: string, type: string, data?: string) => {
-				for (const es of state.eventSources) {
-					if (!es.url.includes(match)) continue;
-					// Events committed while EventSource reconnects reach it through the
-					// Last-Event-ID replay, after the gap it is still catching up on.
-					if (es === state.replay.source && state.replay.phase !== "idle") {
-						state.replay.deferred.push({ type, data });
-						continue;
-					}
-					// A real EventSource delivers nothing while CONNECTING or CLOSED.
-					if (es.readyState !== 1) continue;
-					es._dispatch(type, data);
+				// Events committed while the CDC stream reconnects reach it through the
+				// Last-Event-ID replay, after the gap it is still catching up on.
+				if (match === "/api/v1/events" && state.replay.phase !== "idle") {
+					state.replay.deferred.push({ type, data });
+					return;
+				}
+				for (const stream of state.eventSources) {
+					if (!stream.url.includes(match) || stream.readyState !== 1) continue;
+					send(stream, type, data);
 				}
 			};
 			const pushWorkspaces = (type = "session_updated") => emit("/api/v1/events", type);
@@ -782,8 +941,6 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					payload: { id: session.id, activity: "active", isTerminated: false },
 					createdAt: nowIso,
 				});
-			// Chromium's EventSource reconnection time; the daemon sends no `retry:`.
-			const BROWSER_RECONNECT_MS = 3_000;
 			// The daemon replays and flushes in 512-event pages (httpd/events.go).
 			const REPLAY_PAGE = 512;
 			// Session events come in runs from the few workers active at a time, not
@@ -803,54 +960,54 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				pressure.stoppedAt = performance.now();
 			};
 
-			// Only EventSource's own reconnect replays a gap: it resends Last-Event-ID,
+			// Only the stream's own reconnect replays a gap: it resends Last-Event-ID,
 			// which overrides `?after=latest`. A stream the app constructs (its retry
 			// after CLOSED, or a daemon/base-URL change) starts at head, so when the
 			// app replaces this stream the rest of the gap is never delivered.
-			const reconnectWithReplay = (source: FakeEventSourceLike, count: number) => {
+			const abandonReplay = () => {
 				const replay = state.replay;
-				if (replay.phase !== "idle") throw new Error("a CDC replay is already in progress");
-				const abandon = () => {
-					replay.abandoned += replay.remaining + replay.deferred.length;
-					replay.remaining = 0;
+				replay.abandoned += replay.remaining + replay.deferred.length;
+				replay.remaining = 0;
+				replay.deferred = [];
+				replay.phase = "idle";
+			};
+			// The gap holds history from before it began, not sessions created since.
+			let gapSessions: Session[] = [];
+			const startReplay = (stream: FakeStream) => {
+				const replay = state.replay;
+				replay.source = stream;
+				replay.phase = "replaying";
+				const drainPage = () => {
+					if (stream.readyState !== 1) return abandonReplay();
+					const frames = Math.min(REPLAY_PAGE, replay.remaining);
+					for (let i = 0; i < frames; i += 1) {
+						send(stream, "session_updated", cdcFrame("session_updated", activeSession(gapSessions, replay.delivered + i)));
+					}
+					replay.remaining -= frames;
+					replay.delivered += frames;
+					if (replay.remaining > 0) {
+						setTimeout(drainPage, 0);
+						return;
+					}
+					// Events committed after the gap began follow it in sequence order.
+					for (const frame of replay.deferred) send(stream, frame.type, frame.data);
 					replay.deferred = [];
 					replay.phase = "idle";
 				};
-				// The gap holds history from before it began, not sessions created since.
-				const gapSessions = [...(project.sessions as Session[])];
+				// The app subscribes as soon as its open resolves, and fires `open`
+				// before the replayed frames arrive.
+				setTimeout(drainPage, 0);
+			};
+			const reconnectWithReplay = (source: FakeStream, count: number) => {
+				const replay = state.replay;
+				if (replay.phase !== "idle") throw new Error("a CDC replay is already in progress");
+				gapSessions = [...(project.sessions as Session[])];
 				replay.phase = "connecting";
 				replay.source = source;
 				replay.remaining = count;
 				replay.delivered = 0;
 				replay.abandoned = 0;
-				source.readyState = 0;
-				source.onerror?.({ type: "error" });
-				setTimeout(() => {
-					if (source.readyState !== 0) return abandon();
-					source.readyState = 1;
-					replay.phase = "replaying";
-					// A real EventSource fires `open` before it delivers replayed frames.
-					source.openedAt = Date.now();
-					source.onopen?.({ type: "open" });
-					const drainPage = () => {
-						if (source.readyState !== 1) return abandon();
-						const frames = Math.min(REPLAY_PAGE, replay.remaining);
-						for (let i = 0; i < frames; i += 1) {
-							source._dispatch("session_updated", cdcFrame("session_updated", activeSession(gapSessions, replay.delivered + i)));
-						}
-						replay.remaining -= frames;
-						replay.delivered += frames;
-						if (replay.remaining > 0) {
-							setTimeout(drainPage, 0);
-							return;
-						}
-						// Events committed after the gap began follow it in sequence order.
-						for (const frame of replay.deferred) source._dispatch(frame.type, frame.data);
-						replay.deferred = [];
-						replay.phase = "idle";
-					};
-					drainPage();
-				}, BROWSER_RECONNECT_MS);
+				dropStream(source);
 			};
 
 			const createWorker = (worker: (typeof workers)[number]) => {
@@ -932,13 +1089,16 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					const { phase, remaining, delivered, abandoned } = state.replay;
 					return { phase, remaining, delivered, abandoned };
 				},
-				// EventSource gave up (a failed reconnect): CLOSED, then `error`.
-				// event-transport schedules its own retry with a fresh stream.
+				// The daemon drops the stream and refuses its reconnect, so it ends
+				// CLOSED and event-transport schedules its own retry with a fresh
+				// stream. Resolves once the reconnect has been refused.
 				closeEventsStream: () => {
 					const source = liveCdcStream();
 					if (!source) throw new Error("no open CDC stream to close");
-					source.readyState = 2;
-					source.onerror?.({ type: "error" });
+					return new Promise<void>((resolve) => {
+						state.refuseNextCdcOpen = resolve;
+						dropStream(source);
+					});
 				},
 				eventStreams: () =>
 					state.eventSources
@@ -956,7 +1116,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					let draining = false;
 					// The daemon keeps sending while rendering blocks the main thread, so
 					// frames come due by elapsed time, not by how often this timer runs.
-					// EventSource dispatches each event as its own task: hand over the
+					// The renderer handles each delivery as its own task: hand over the
 					// backlog one tick's worth at a time and yield between chunks, so fetch
 					// resolution and rendering can run in between, as in production.
 					const drain = () => {
@@ -1032,20 +1192,29 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 						onStatus: () => () => undefined,
 						onCancel: () => () => undefined,
 					},
+					dictation: {
+						start: async () => undefined,
+						stop: async () => undefined,
+						cancel: async () => undefined,
+						onEvent: unsubscribe,
+					},
 					app: {
 						getVersion: async () => version,
 						chooseDirectory: async () => null,
 						checkGitRepository: async () => true,
 						openExternal: async () => undefined,
+						openChromeExtensions: async () => undefined,
 						scanImportFolder: async ({ path }: { path: string }) => ({ path, repos: [] }),
 						checkAncestorRepo: async () => undefined,
 						getRepositoryBranch: async () => undefined,
 						getGitHubLogin: async () => "",
-						getCachedGitHubOwners: async () => [],
+						listGitHubRepos: async () => [],
+		getCachedGitHubOwners: async () => [],
 						refreshGitHubOwners: async () => [],
 						checkGitHubRepositoryAvailability: async () => ({ available: true }),
 						getPathForFile: () => "",
 					onOpenFolderPath: () => () => undefined,
+					onOpenSessionDeepLink: () => () => undefined,
 					onNewSessionShortcut: unsubscribe,
 					onKeyboardShortcutsHelp: unsubscribe,
 					onQuitConfirmRequest: unsubscribe,
@@ -1061,12 +1230,22 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					onNextTabShortcut: unsubscribe,
 					onDocumentEscape: unsubscribe,
 					onShortcut: unsubscribe,
+					reportSessionsShown: () => undefined,
+					setMenuAvailability: () => undefined,
+					onMenuAction: unsubscribe,
 					onScrollPhase: unsubscribe,
+					showPrivacyGuide: async () => undefined,
+					updatePrivacyGuide: async () => false,
+					closePrivacyGuide: async () => undefined,
 				},
 				terminal: {
 					saveDroppedFile: async () => "",
 					setFocused: () => undefined,
 					onFontSizeShortcut: () => () => undefined,
+				},
+				artifactZoom: {
+					setEngaged: () => undefined,
+					onShortcut: () => () => undefined,
 				},
 				window: {
 					getZoomFactor: async () => 1,
@@ -1078,6 +1257,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				},
 				theme: {
 					set: async () => undefined,
+					systemAppearance: async (): Promise<"light" | "dark"> => (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"),
 					persistTerminal: async () => undefined,
 					setWindowBackground: async () => undefined,
 					setWindowTranslucent: async () => undefined,
@@ -1088,8 +1268,33 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					fetch: async () => ({ bytes: new Uint8Array(), mimeType: "image/png" }),
 					save: async () => true,
 				},
+				sessionShareUrls: {
+					remember: async () => undefined,
+					recall: async () => ({}),
+					forget: async () => undefined,
+				},
+				cloudShare: {
+					available: async () => true,
+					inspect: async () => ({ name: "", size: 0, unsupported: false, fingerprint: "" }),
+					list: async () => ({ shares: [], limit: 3, used: 0, unlimited: false, privateLinks: false }),
+					hostLinks: async () => [],
+					publish: async () => ({ status: "cancelled" as const }),
+					cancel: async () => undefined,
+					unpublish: async () => undefined,
+					setAccess: async () => {
+						throw new Error("Sharing is not faked.");
+					},
+					grants: async () => [],
+					invite: async () => [],
+					removeGrant: async () => undefined,
+					onProgress: () => () => undefined,
+				},
+				artifactSnapshot: {
+					request: async () => false,
+				},
 				cloudArtifact: {
 					fetch: async () => new Uint8Array(),
+					openFolder: async () => undefined,
 					onFrameNavigated: () => () => undefined,
 				},
 				daemon: {
@@ -1102,8 +1307,46 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 						return unsubscribe();
 					},
 				},
-				sideChats: { capture: async () => undefined, confirmClose: async () => undefined, getPendingCloses: async () => [], onPendingClosesChanged: () => () => {} },
+				agentLogin: { request: async () => null },
+				// This emulates the main-owned protocol for renderer tests; HTTP is
+				// still intercepted by each spec's fake daemon, never assumed successful.
+				sideChats: (() => {
+					let revision = 0;
+					const epoch = "fake-daemon";
+					const entries = new Map<string, import("../../src/shared/side-close").SideCloseEntry>();
+					const listeners = new Set<(state: import("../../src/shared/side-close").SideCloseState) => void>();
+					const state = (sessionId: string | null): import("../../src/shared/side-close").SideCloseState => ({
+						protocolVersion: 1, epoch, revision, recovery: "ready", sessionId,
+						sides: [...entries.values()].filter(side => sessionId === null || side.sessionId === sessionId).map(side => ({ ...side })),
+					});
+					const publish = () => { revision++; for (const listener of listeners) listener(state(null)); };
+					return {
+						protocolVersion: 1 as const, mode: "desktop" as const,
+						capture: async () => undefined,
+						getCloseState: async (sessionId: string) => state(sessionId),
+						onCloseStateChanged: (listener: (value: import("../../src/shared/side-close").SideCloseState) => void) => {
+							listeners.add(listener); return () => { listeners.delete(listener); };
+						},
+						requestClose: async (request: import("../../src/shared/side-close").SideCloseRequest) => {
+							const prior = entries.get(request.sideId);
+							if (request.epoch !== epoch || request.expectedVersion !== (prior?.version ?? 0) ||
+								prior?.status === "closed" || prior?.status === "closing") return state(request.sessionId);
+							const entry: import("../../src/shared/side-close").SideCloseEntry = {
+								id: request.sideId, sessionId: request.sessionId, label: request.sideId,
+								version: (prior?.version ?? 0) + 1, operationId: request.requestId, status: "closing",
+							};
+							entries.set(entry.id, entry); publish();
+							try {
+								const response = await fetch(`http://127.0.0.1:${daemonPort}/api/v1/sessions/${encodeURIComponent(request.sessionId)}/conversation/side-chats/${encodeURIComponent(request.sideId)}`,
+									{ method: "DELETE", redirect: "error", signal: AbortSignal.timeout(30_000) });
+								entry.status = response.status === 204 ? "closed" : "unconfirmed";
+							} catch { entry.status = "unconfirmed"; }
+							entry.version++; publish(); return state(request.sessionId);
+						},
+					};
+				})(),
 				editorHandoff: {
+					pathAction: async () => undefined,
 					copyWorkspacePath: async () => undefined,
 					getState: async () => ({
 						targets: [
@@ -1121,6 +1364,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					setPreferredEditor: async (editorId) => editorId,
 					open: async () => ({ id: "cursor" as const, name: "Cursor", kind: "editor" as const }),
 					openArtifacts: async () => ({ id: "file-manager" as const, name: "File Manager", kind: "file_manager" as const }),
+					openArtifactInBrowser: async () => undefined,
 				},
 				telemetry: {
 					getBootstrap: async () => null,
@@ -1129,6 +1373,8 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					onAnalyticsOptOut: () => () => undefined,
 					setCloudUser: async () => false,
 					getGithubLogin: async () => null,
+					getLifetimeSessions: async () => null,
+					claimFirstOpen: async () => "ineligible" as const,
 					getPolicy: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
 					setEventsEnabled: async () => ({ eventsEnabled: false, consentGeneration: "e2e", updatedAt: new Date(0).toISOString(), acknowledged: false, consentRenewalRequired: false, state: "applied", environmentVeto: true, durabilitySupported: false, reason: "environment_veto" }),
 					onPolicy: () => () => false,
@@ -1261,12 +1507,17 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					reportSoundFailure: () => undefined,
 				},
 				tray: { setAttentionState: () => undefined, onOpenSession: unsubscribe },
-				appState: { getMigration: async () => ({ status: "completed" }), setMigration: async () => undefined },
+				appState: { getMigration: async () => ({ status: "completed" }), setMigration: async () => undefined, getExperimentCohort: async () => null, claimFirstRunExperimentExposure: async () => false, getFirstRunProjectPrompt: async () => "seen", markFirstRunProjectPromptSeen: async () => undefined },
 				cliLink: {
 					setEnabled: async () => undefined,
 					inspect: async () => ({ ok: false as const, code: "unsupported" as const, message: "unavailable" }),
 					link: async () => ({ ok: false as const, code: "unsupported" as const, message: "unavailable" }),
 					unlink: async () => ({ ok: false as const, code: "unsupported" as const, message: "unavailable" }),
+				},
+				cliShadow: {
+					inspect: async () => ({ kind: "unknown" as const }),
+					replace: async () => ({ ok: false as const, code: "io" as const, message: "Not available in this environment." }),
+					reveal: async () => undefined,
 				},
 				updateSettings: {
 					get: async () => ({
@@ -1307,9 +1558,8 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				},
 				remotes: {
 					list: async () => [],
-					importAccountHost: async () => undefined,
-					pruneAccountHosts: async () => undefined,
-					issueAccountToken: async () => "",
+					syncAccountHosts: async () => undefined,
+					linkAccountHost: async () => undefined,
 					add: async () => "offline" as const,
 					update: async () => "offline" as const,
 					remove: async () => undefined,
@@ -1332,6 +1582,9 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					localAuthAvailable: async () => false,
 					onOpenShareLink: () => () => undefined,
 					takePendingShareLink: async () => null,
+					pushFolderToRepository: async () => ({ status: "error" as const, code: "invalid_request" as const, message: "not available in e2e" }),
+					previewFolderUpload: async () => ({ status: "error" as const, code: "invalid_request" as const, message: "not available in e2e" }),
+					takePendingSignIn: async () => null,
 					localRegister: async () => {
 						throw new Error("local auth is unavailable in e2e");
 					},
@@ -1342,11 +1595,14 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				},
 				cloudCp: {
 					request: async () => ({ status: 401, headers: {}, body: "" }),
+					requestBinary: async () => ({ status: 401, headers: {}, body: new Uint8Array() }),
+					cancelBinary: () => undefined,
 					openStream: async () => ({ streamId: "stream_test" }),
 					closeStream: () => undefined,
 					onStreamEvent: unsubscribe,
 					agentBrowserUrl: async () => "",
 				},
+				daemonStream,
 			} satisfies AoBridge;
 			(window as unknown as { ao: unknown }).ao = ao;
 		},

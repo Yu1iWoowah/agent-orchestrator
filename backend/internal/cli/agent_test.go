@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,7 +12,7 @@ import (
 func TestAgentListEnsuresDisplayReadinessByDefault(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure" {
@@ -41,7 +40,7 @@ func TestAgentListEnsuresDisplayReadinessByDefault(t *testing.T) {
 func TestAgentListRefreshAndStatuses(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		appendPrimaryRequest(&requests, r)
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/refresh" {
@@ -79,7 +78,7 @@ func TestAgentListRefreshAndStatuses(t *testing.T) {
 
 func TestAgentListJSONEmitsRawCatalog(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure" {
 			_, _ = io.WriteString(w, authorizedAgentsJSON("codex"))

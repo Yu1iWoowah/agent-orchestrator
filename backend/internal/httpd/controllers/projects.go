@@ -5,12 +5,18 @@
 package controllers
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+
+	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -29,6 +35,7 @@ func (c *ProjectsController) Register(r chi.Router) {
 	r.Post("/projects", c.add)
 	r.Post("/projects/clone", c.clone)
 	r.Post("/projects/clone/prepare", c.prepareClone)
+	r.Post("/projects/clone/prepare/stream", c.prepareCloneStream)
 	r.Post("/projects/clone/check", c.checkCloneDestination)
 	r.Post("/projects/clone/cleanup", c.cleanupPreparedClone)
 	r.Post("/projects/initialize", c.initialize)
@@ -47,8 +54,7 @@ func (c *ProjectsController) checkCloneDestination(w http.ResponseWriter, r *htt
 		return
 	}
 	var in projectsvc.CloneInput
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+	if !decodeProjectConfigRequest(w, r, &in) {
 		return
 	}
 	result, err := c.Mgr.CheckCloneDestination(r.Context(), in)
@@ -65,8 +71,7 @@ func (c *ProjectsController) prepareClone(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var in projectsvc.CloneInput
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+	if !decodeProjectConfigRequest(w, r, &in) {
 		return
 	}
 	result, err := c.Mgr.PrepareClone(r.Context(), in)
@@ -75,6 +80,60 @@ func (c *ProjectsController) prepareClone(w http.ResponseWriter, r *http.Request
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, result)
+}
+
+// prepareCloneStream runs the same clone as prepareClone and reports each git
+// step as a server-sent event while it runs, so a long clone can show what it
+// is doing. The final event carries the result or the error envelope.
+func (c *ProjectsController) prepareCloneStream(w http.ResponseWriter, r *http.Request) {
+	if c.Mgr == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/projects/clone/prepare/stream")
+		return
+	}
+	var in projectsvc.CloneInput
+	if !decodeProjectConfigRequest(w, r, &in) {
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "SSE_UNSUPPORTED", "Streaming is not supported by this server", nil)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Progress is reported from git's stderr reader; the lock keeps a late
+	// report from interleaving with, or following, the final event.
+	var mu sync.Mutex
+	done := false
+	send := func(event ClonePrepareStreamEvent, final bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if done {
+			return
+		}
+		done = final
+		data, err := json.Marshal(event)
+		if err != nil {
+			return
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+	result, err := c.Mgr.PrepareCloneWithProgress(r.Context(), in, func(progress projectsvc.CloneProgress) {
+		send(ClonePrepareStreamEvent{Progress: &progress}, false)
+	})
+	if err != nil {
+		apiErr := envelope.StreamError(r, err)
+		send(ClonePrepareStreamEvent{Error: &apiErr}, true)
+		return
+	}
+	send(ClonePrepareStreamEvent{Result: &result}, true)
 }
 
 func (c *ProjectsController) cleanupPreparedClone(w http.ResponseWriter, r *http.Request) {
@@ -100,8 +159,7 @@ func (c *ProjectsController) clone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in projectsvc.CloneInput
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+	if !decodeProjectConfigRequest(w, r, &in) {
 		return
 	}
 	p, err := c.Mgr.Clone(r.Context(), in)
@@ -134,8 +192,7 @@ func (c *ProjectsController) add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in projectsvc.AddInput
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+	if !decodeProjectConfigRequest(w, r, &in) {
 		return
 	}
 	p, err := c.Mgr.Add(r.Context(), in)
@@ -191,8 +248,7 @@ func (c *ProjectsController) updateSettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var in projectsvc.UpdateSettingsInput
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+	if !decodeProjectConfigRequest(w, r, &in) {
 		return
 	}
 	p, err := c.Mgr.UpdateSettings(r.Context(), projectID(r), in)
@@ -209,8 +265,7 @@ func (c *ProjectsController) patchSettings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var in PatchProjectSettingsRequest
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+	if !decodeProjectConfigRequest(w, r, &in) {
 		return
 	}
 	p, err := c.Mgr.PatchSettings(r.Context(), projectID(r), in)
@@ -227,8 +282,7 @@ func (c *ProjectsController) setConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in projectsvc.SetConfigInput
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+	if !decodeProjectConfigRequest(w, r, &in) {
 		return
 	}
 	p, err := c.Mgr.SetConfig(r.Context(), projectID(r), in)
@@ -258,6 +312,49 @@ func projectID(r *http.Request) domain.ProjectID {
 
 func decodeJSON(r *http.Request, out any) error {
 	return json.NewDecoder(r.Body).Decode(out)
+}
+
+// removedProjectConfigKeys were published on ProjectConfig and later removed.
+// The OpenAPI shape still lists them as deprecated, so a request carrying one is
+// rejected by name instead of as malformed JSON.
+var removedProjectConfigKeys = []string{"agentAccounts"}
+
+// decodeProjectConfigRequest strictly decodes a body whose config (and, for
+// PATCH, expected.config) objects follow ProjectConfig. It rejects removed keys before
+// any service call, so nothing is checked out, registered, or written.
+func decodeProjectConfigRequest(w http.ResponseWriter, r *http.Request, out any) bool {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return false
+	}
+	var top struct {
+		Config   json.RawMessage `json:"config"`
+		Expected struct {
+			Config json.RawMessage `json:"config"`
+		} `json:"expected"`
+	}
+	if json.Unmarshal(body, &top) == nil {
+		for _, section := range []json.RawMessage{top.Config, top.Expected.Config} {
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(section, &fields) != nil {
+				continue
+			}
+			for _, key := range removedProjectConfigKeys {
+				if _, ok := fields[key]; ok {
+					envelope.WriteError(w, r, apierr.Invalid("INVALID_PROJECT_CONFIG", key+" was removed; set role accounts or the global default instead", nil))
+					return false
+				}
+			}
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(out); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return false
+	}
+	return true
 }
 
 // decodeJSONStrict rejects request bodies that include keys outside the target

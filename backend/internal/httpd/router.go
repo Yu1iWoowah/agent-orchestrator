@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/caller"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
@@ -31,7 +33,11 @@ type ControlDeps struct {
 	ShutdownPreflight      func(context.Context) error
 	ShutdownPreservedSides func() []string
 
-	RequestShutdown func()
+	RequestShutdown      func()
+	RequestAgentShutdown func(appRunID string) bool
+	// IPv6Loopback reports that the daemon also serves [::1] at its port; the
+	// health probes carry it as ipv6Loopback.
+	IPv6Loopback bool
 }
 
 // NewRouterWithControl builds the root router with the standard middleware
@@ -44,8 +50,10 @@ type ControlDeps struct {
 //	RequestID     → attach a request id for correlation
 //	requestLogger → slog-backed access log + 5xx telemetry, carries the request id
 //	recoverer     → turn a handler panic into 500 instead of crashing the daemon
-//	accountOrigin → exact renderer-origin boundary for Codex account management
+//	rendererOrigin → exact renderer-origin boundary for Codex account management
+//	                 and computer use
 //	cors          → CORS allowlist for the Electron renderer / dev origins
+//	surface       → tag the request desktop/mobile/cli for product telemetry
 //
 // The per-request timeout is deliberately not global: it wraps only bounded
 // REST routes, never long-lived terminal streams or health probes.
@@ -56,15 +64,23 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	api := newAPIWithLogger(cfg, deps, log)
 
 	r.Use(middleware.RequestID)
+	var rejectRaw func(string, string)
+	if inline, ok := deps.RCA.(controllers.RCAInlineService); ok {
+		rejectRaw = inline.RejectClaude
+	}
+	r.Use(rcaRawTransportGuardWithReject(rejectRaw))
+	r.Use(caller.Middleware)
 	r.Use(settingsIdentityMiddleware)
 	r.Use(requestLogger(log, deps.Telemetry))
 	r.Use(recoverTelemetry(log, deps.Telemetry))
+	r.Use(rcaOriginMiddleware(cfg.AllowedOrigins))
 	// Credential routes retain their exact renderer-only boundary even for
 	// authenticated LAN callers. Check before CORS can answer a preflight.
-	r.Use(codexAccountOriginMiddleware(cfg.AllowedOrigins))
+	r.Use(rendererOriginMiddleware(cfg.AllowedOrigins))
 	r.Use(mobileControlOriginMiddleware(cfg.AllowedOrigins))
 	r.Use(documentReadOriginMiddleware(cfg.AllowedOrigins))
 	r.Use(corsMiddleware(cfg.AllowedOrigins))
+	r.Use(requestSurfaceMiddleware(cfg.AllowedOrigins))
 	r.Use(previewOriginMiddleware(api.sessions))
 
 	// JSON envelopes for unmatched routes / methods — chi's defaults are
@@ -73,18 +89,35 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	r.NotFound(notFoundJSON)
 	r.MethodNotAllowed(methodNotAllowedJSON)
 
-	mountHealth(r, cfg)
+	mountHealth(r, cfg, control.IPv6Loopback)
 	mountTerminalMux(r, termMgr, log, cfg.AllowedOrigins)
 	mountControl(r, control)
 	mountTelemetry(r, cfg, deps.Telemetry)
+	mountUsageFlush(r, deps.UsageFlush)
 	mountTelemetryIdentity(r, deps.TelemetryIdentity)
 	mountMobile(r, deps.Mobile)
 	mountBrowserLive(r, deps.BrowserLive)
 	mountAwake(r, &controllers.AwakeController{Svc: deps.Awake})
-	mountMobileDevices(r, &controllers.MobileDevicesController{Registry: deps.DeviceRoster, Presence: deps.DeviceLive})
+	mountMobileDevices(r, &controllers.MobileDevicesController{Registry: deps.DeviceRoster, Presence: deps.DeviceLive, Access: deps.DeviceAccess})
 	api.Register(r)
 
 	return r
+}
+
+func mountUsageFlush(r chi.Router, flush func(context.Context)) {
+	if flush == nil {
+		return
+	}
+	r.Post("/internal/telemetry/usage-flush", func(w http.ResponseWriter, req *http.Request) {
+		if !localControlRequest(req) {
+			envelope.WriteJSON(w, http.StatusForbidden, map[string]any{
+				"status": "forbidden", "service": daemonmeta.ServiceName,
+			})
+			return
+		}
+		flush(req.Context())
+		w.WriteHeader(http.StatusNoContent)
+	})
 }
 
 func previewOriginMiddleware(sessions *controllers.SessionsController) func(http.Handler) http.Handler {
@@ -100,12 +133,12 @@ func previewOriginMiddleware(sessions *controllers.SessionsController) func(http
 
 // mountHealth registers the liveness and readiness probes the Electron
 // supervisor polls before letting the renderer connect.
-func mountHealth(r chi.Router, cfg config.Config) {
+func mountHealth(r chi.Router, cfg config.Config, ipv6Loopback bool) {
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ok", cfg))
+		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ok", cfg, ipv6Loopback))
 	})
 	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ready", cfg))
+		envelope.WriteJSON(w, http.StatusOK, daemonProbePayload("ready", cfg, ipv6Loopback))
 	})
 }
 
@@ -125,6 +158,15 @@ func mountControl(r chi.Router, deps ControlDeps) {
 			})
 			return
 		}
+		var in struct {
+			StopAgents bool   `json:"stopAgents"`
+			AppRunID   string `json:"appRunId"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, req.Body, 1024))
+		if err := decoder.Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+			envelope.WriteAPIError(w, req, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid shutdown request", nil)
+			return
+		}
 		if deps.ShutdownPreflight != nil {
 			ctx, cancel := context.WithTimeout(req.Context(), 10*time.Second)
 			err := deps.ShutdownPreflight(ctx)
@@ -136,7 +178,25 @@ func mountControl(r chi.Router, deps ControlDeps) {
 					body["reason"] = "protected_side"
 					body["protectedSide"], body["entry"] = side, "protected_side_chats"
 				}
+				// Name what blocked shutdown (session and fixed reason code only).
+				var blocked *ports.ChatShutdownBlockedError
+				if errors.As(err, &blocked) {
+					if blocked.SessionID != "" {
+						body["blockedSession"] = blocked.SessionID
+					}
+					body["blockedReason"] = blocked.Reason
+				}
 				envelope.WriteJSON(w, http.StatusConflict, body)
+				return
+			}
+		}
+		if in.StopAgents {
+			if deps.RequestAgentShutdown == nil {
+				envelope.WriteAPIError(w, req, http.StatusNotImplemented, "not_implemented", "AGENT_SHUTDOWN_UNAVAILABLE", "Agent shutdown is unavailable", nil)
+				return
+			}
+			if !deps.RequestAgentShutdown(in.AppRunID) {
+				envelope.WriteAPIError(w, req, http.StatusConflict, "conflict", "DAEMON_OWNER_CHANGED", "This desktop no longer owns the daemon", nil)
 				return
 			}
 		}
@@ -186,6 +246,9 @@ func mountMobile(r chi.Router, c *controllers.MobileController) {
 	r.Post("/api/v1/mobile/secure-pairing", c.SecurePairing)
 	r.Post("/api/v1/mobile/keep-awake", c.KeepAwake)
 	r.Post("/api/v1/remote-host/account-token", c.IssueAccountToken)
+	r.Post("/api/v1/remote-host/devices", c.PairDevice)
+	r.Post("/api/v1/mobile/pairing-code", c.NewPairingCode)
+	r.Post("/api/v1/mobile/require-device-credentials", c.RequireDeviceCredentials)
 	r.Post("/api/v1/mobile/browser-control", c.BrowserRemoteAccess)
 }
 
@@ -206,7 +269,7 @@ func mountMobileDevices(r chi.Router, c *controllers.MobileDevicesController) {
 		return
 	}
 	r.Get("/api/v1/mobile/devices", c.List)
-	r.Delete("/api/v1/mobile/devices/{installId}", c.Remove)
+	r.Delete("/api/v1/mobile/devices/{id}", c.Remove)
 }
 
 type cliInvokedRequest struct {
@@ -225,7 +288,7 @@ func mountTelemetry(r chi.Router, cfg config.Config, sink ports.EventSink) {
 	if sink == nil {
 		return
 	}
-	// CLI telemetry is capped to bounded uniques: ao.app.active once per UTC day
+	// CLI telemetry is capped to bounded uniques: ao.cli.active once per UTC day
 	// for user-context CLI activity (matching the renderer
 	// heartbeat) and ao.cli.invoked once per actor type + command path per UTC
 	// day. Scripts and agent sessions invoke read-only commands (status, ls,
@@ -282,7 +345,7 @@ func mountTelemetry(r chi.Router, cfg config.Config, sink ports.EventSink) {
 		if actorType == "user" {
 			if now := time.Now(); cliTelemetry.reserveActive(now) {
 				sink.Emit(req.Context(), ports.TelemetryEvent{
-					Name:       "ao.app.active",
+					Name:       "ao.cli.active",
 					Source:     "cli",
 					OccurredAt: now.UTC(),
 					Level:      ports.TelemetryLevelInfo,
@@ -320,7 +383,7 @@ func mountTelemetry(r chi.Router, cfg config.Config, sink ports.EventSink) {
 		}
 
 		sink.Emit(req.Context(), ports.TelemetryEvent{
-			Name:       "ao.cli.usage_errors",
+			Name:       "ao.usage.cli_usage_errors",
 			Source:     "cli",
 			OccurredAt: time.Now().UTC(),
 			Level:      ports.TelemetryLevelWarn,
@@ -417,14 +480,56 @@ func localControlRequest(r *http.Request) bool {
 	return false
 }
 
+func mountHCGReporting(r chi.Router, svc controllers.HCGReportingService) {
+	r.Group(func(r chi.Router) {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if !localControlRequest(req) {
+					envelope.WriteAPIError(w, req, http.StatusForbidden, "forbidden", "LOCAL_CONTROL_REQUIRED", "Native loopback access is required.", nil)
+					return
+				}
+				if svc == nil {
+					envelope.WriteAPIError(w, req, http.StatusNotImplemented, "not_implemented", "HCG_REPORTING_UNAVAILABLE", "Fixed reporting is unavailable.", nil)
+					return
+				}
+				next.ServeHTTP(w, req)
+			})
+		})
+		controllers.HCGReportingController{Svc: svc}.Register(r)
+	})
+}
+
+func mountHCGDelegation(r chi.Router, svc controllers.HCGDelegationService) {
+	r.Group(func(r chi.Router) {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if !localControlRequest(req) {
+					envelope.WriteAPIError(w, req, http.StatusForbidden, "forbidden", "LOCAL_CONTROL_REQUIRED", "Native loopback access is required.", nil)
+					return
+				}
+				if svc == nil {
+					envelope.WriteAPIError(w, req, http.StatusNotImplemented, "not_implemented", "HCG_DELEGATION_UNAVAILABLE", "Fixed delegation is unavailable.", nil)
+					return
+				}
+				next.ServeHTTP(w, req)
+			})
+		})
+		controllers.HCGDelegationController{Svc: svc}.Register(r)
+	})
+}
+
 // daemonProbePayload is shared by /healthz and /readyz. Dependency
 // initialization happens before the server is constructed, so a listening
 // daemon is ready to answer requests.
-func daemonProbePayload(status string, cfg config.Config) map[string]any {
+//
+// ipv6Loopback says the daemon also serves [::1] at its port, so a *.localhost
+// name the desktop uses for event streams reaches this daemon.
+func daemonProbePayload(status string, cfg config.Config, ipv6Loopback bool) map[string]any {
 	payload := map[string]any{
-		"status":  status,
-		"service": daemonmeta.ServiceName,
-		"pid":     os.Getpid(),
+		"status":       status,
+		"service":      daemonmeta.ServiceName,
+		"pid":          os.Getpid(),
+		"ipv6Loopback": ipv6Loopback,
 	}
 	if exe, err := os.Executable(); err == nil && exe != "" {
 		payload["executablePath"] = exe

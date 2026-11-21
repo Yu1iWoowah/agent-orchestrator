@@ -74,7 +74,7 @@ func settleTUISettingsHandoff(ctx context.Context, q *gen.Queries, op domain.Age
 	if err != nil {
 		return settingsStoreError(err)
 	}
-	if tr.SettingsOperationID != op.ID || tr.SessionID != op.SessionID || !interfaceTransitionToDomain(tr).Active() {
+	if tr.SettingsOperationID != op.ID || tr.SessionID != op.SessionID || !interfaceTransitionQueryToDomain(tr).Active() {
 		return ports.ErrAgentSettingsConflict
 	}
 	next := domain.SessionInterfaceTransitionPhase(phase)

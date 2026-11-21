@@ -21,6 +21,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
+	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
 func TestResetCreditRPCSecretDoesNotReachObservability(t *testing.T) {
@@ -85,7 +86,9 @@ for line in sys.stdin:
 	var captured []error
 	c := &controllers.AgentAccountsController{Svc: svc}
 	router := chi.NewRouter()
-	router.Use(requestLoggerWithCapture(slog.New(slog.NewTextHandler(&accessLogs, nil)), nil, func(_ context.Context, err error, _ map[string]string, _ string) { captured = append(captured, err) }))
+	router.Use(requestLoggerWithCapture(slog.New(slog.NewTextHandler(&accessLogs, nil)), nil, func(_ context.Context, err error, _ map[string]string, _ string, _ telemetrymeta.SafeRoute, _ telemetrymeta.FailureSite) {
+		captured = append(captured, err)
+	}))
 	c.Register(router)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/agents/accounts/"+ids[0]+"/reset-credit", strings.NewReader(`{"idempotencyKey":"fake-reset-once"}`)))

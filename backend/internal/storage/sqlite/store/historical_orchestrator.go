@@ -39,5 +39,5 @@ func (s *Store) LoadHistoricalSessionSnapshotPage(ctx context.Context, session d
 		conv.LatestSequence = nextReset - 1
 	}
 	presentation := conversationHistoryPresentation{activeBranch: branch, editFloorSequence: conv.LatestSequence}
-	return s.loadConversationSnapshotPage(ctx, conv, branch.ID, presentation, beforeSequence, limit)
+	return s.loadConversationSnapshotPage(ctx, conv, branch.ID, presentation, beforeSequence, 0, limit)
 }

@@ -17,7 +17,7 @@ Follow [CONTRIBUTING.md](CONTRIBUTING.md) before choosing an issue or starting w
 From the repo root unless noted:
 
 ```bash
-npm run lint                         # backend go test ./... + golangci-lint v2.13.2
+npm run lint                         # backend go test ./... + golangci-lint v2.14.0
 npm run frontend:typecheck           # frontend TypeScript check
 npm run sqlc                         # regenerate backend/internal/storage/sqlite/gen from queries/schema
 npm run api                          # regenerate OpenAPI spec + frontend TS types (see API contract changes below)
@@ -145,7 +145,7 @@ npm run api:ts       # npx openapi-typescript@7.4.4 backend/internal/httpd/apisp
 **Verify:**
 
 ```bash
-cd backend && go test ./internal/httpd/...    # spec drift + route/spec parity tests (does not cover schema.ts; the api-drift CI job checks it)
+cd backend && go test ./internal/httpd/...    # spec drift + route/spec parity tests (does not cover schema.ts; the codegen-drift CI job checks it)
 ```
 
 Commit `openapi.yaml` and `frontend/src/api/schema.ts` together with the Go changes. CI will regenerate both files and fail if the committed versions are out of date. The CLI hand-mirrored DTOs remain a deliberate manual boundary and are not generated.

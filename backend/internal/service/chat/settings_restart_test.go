@@ -14,15 +14,19 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
-func restartJournalController(t *testing.T, h *harness, validator *journalValidator, provider ports.ChatConversation) *chatsvc.Controller {
+func restartJournalController(t *testing.T, h *harness, validator ports.ChatAgentSettingsValidator, provider ports.ChatConversation) *chatsvc.Controller {
 	t.Helper()
 	if err := h.svc.Stop(t.Context(), testSession); err != nil {
 		t.Fatal(err)
 	}
+	session, found, err := h.st.GetSession(t.Context(), testSession)
+	if err != nil || !found {
+		t.Fatalf("restart session: found=%v, err=%v", found, err)
+	}
 	var sequence atomic.Int64
 	svc := chatsvc.New(chatsvc.Options{Store: h.st, Sessions: h.st, Reader: fullSnapshotReader(h.st), PageReader: boundedSnapshotReader(h.st), Drivers: fakeRegistry{driver: fakeDriver{conv: provider}}, Activity: h.activity, Log: slog.New(slog.DiscardHandler), Now: h.now, NewID: func() string { return fmt.Sprintf("restart-%d", sequence.Add(1)) }})
 	svc.SetAgentSettingsValidator(validator)
-	controller, err := svc.Start(t.Context(), chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(), ProviderConversationID: provider.ProviderConversationID()})
+	controller, err := svc.Start(t.Context(), chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: session.Harness, WorkspacePath: t.TempDir(), ProviderConversationID: provider.ProviderConversationID()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +147,7 @@ func TestSettingsColdReplayUsesNewProviderBindingPreference(t *testing.T) {
 	settings := conversation.Settings
 	settings.Model = string(current.Model)
 	settings.ReasoningEffort = string(current.Effort)
-	if err := h.st.CommitProviderSwitch(t.Context(), record, branch, "switched", settings, domain.ConversationActivity{ID: "switch-activity", Kind: "ao_action", Status: "completed", Summary: "fake switch"}); err != nil {
+	if err := h.st.CommitProviderSwitch(t.Context(), record, branch, "switched", settings, domain.ConversationActivity{ID: "switch-activity", Kind: "ao_action", Status: "completed", Summary: "fake switch"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	controller := restartJournalController(t, h, validator, provider)

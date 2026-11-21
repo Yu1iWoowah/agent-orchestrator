@@ -10,7 +10,7 @@ import {
 
 describe("shared UI locale schema", () => {
 	it("accepts only supported locale identifiers", () => {
-		expect(APP_LOCALES).toEqual(["en", "zh-CN", "zh-TW", "ja", "ko", "es", "fr", "de", "pt-BR"]);
+		expect(APP_LOCALES).toEqual(["en", "zh-CN", "zh-TW", "ja", "ko", "es", "fr", "de", "pt-BR", "ru", "tr"]);
 		expect(coerceLocale("en")).toBe("en");
 		expect(coerceLocale("zh-CN")).toBe("zh-CN");
 		expect(coerceLocale("zh-TW")).toBe("zh-TW");
@@ -20,6 +20,8 @@ describe("shared UI locale schema", () => {
 		expect(coerceLocale("fr")).toBe("fr");
 		expect(coerceLocale("de")).toBe("de");
 		expect(coerceLocale("pt-BR")).toBe("pt-BR");
+		expect(coerceLocale("ru")).toBe("ru");
+		expect(coerceLocale("tr")).toBe("tr");
 		expect(coerceLocale("zh")).toBe(DEFAULT_LOCALE);
 		expect(coerceLocale("pt")).toBe(DEFAULT_LOCALE);
 		expect(coerceLocale({ locale: "zh-CN" })).toBe(DEFAULT_LOCALE);
@@ -30,6 +32,7 @@ describe("shared UI locale schema", () => {
 		expect(coerceUiSettings({ locale: "zh-TW" })).toEqual({ ...DEFAULT_UI_SETTINGS, locale: "zh-TW" });
 		expect(coerceUiSettings({ locale: "ja" })).toEqual({ ...DEFAULT_UI_SETTINGS, locale: "ja" });
 		expect(coerceUiSettings({ locale: "pt-BR" })).toEqual({ ...DEFAULT_UI_SETTINGS, locale: "pt-BR" });
+		expect(coerceUiSettings({ locale: "tr" })).toEqual({ ...DEFAULT_UI_SETTINGS, locale: "tr" });
 		expect(coerceUiSettings({ locale: "pt" })).toEqual(DEFAULT_UI_SETTINGS);
 		expect(coerceUiSettings(null)).toEqual(DEFAULT_UI_SETTINGS);
 	});

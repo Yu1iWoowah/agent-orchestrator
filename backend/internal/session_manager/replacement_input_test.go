@@ -200,6 +200,12 @@ func TestReplacementReleasedInputFailsClosedWhenSourceDisappears(t *testing.T) {
 // Intake tests need only durable facts and fake pane/runtime boundaries. Native
 // transcript parsing and stop/resume producers belong to 3C, not this fixture.
 type replacementInputTUIStore struct{ *replacementFenceStore }
+
+func (s *replacementInputTUIStore) SemanticDeliveryAccepted(_ context.Context, id domain.SessionID, launchID, deliveryID string) (bool, error) {
+	record := s.sessions[id]
+	return record.Metadata.RuntimeLaunchID == launchID && semanticMessageAccepted(record, deliveryID), nil
+}
+
 type replacementInputTUIFixture struct {
 	manager   *Manager
 	store     *replacementInputTUIStore

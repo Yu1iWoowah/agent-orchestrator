@@ -147,7 +147,9 @@ func (r ChatDeliveryReceipt) Validate() error {
 	if r.ProgressSequence < 0 {
 		return ErrInvalidChatJournal
 	}
-	if r.ExecutionSettled && r.Disposition != ChatDeliveryAccepted && r.Disposition != ChatDeliveryNotSent {
+	// The only unknown settlement is the daemon's legacy receipt for a host that
+	// answered without a record after every member turn completed.
+	if r.ExecutionSettled && r.Disposition != ChatDeliveryAccepted && r.Disposition != ChatDeliveryNotSent && (r.Disposition != ChatDeliveryUnknown || r.Source != "incomplete") {
 		return ErrInvalidChatJournal
 	}
 	if !journalID(r.AttemptID) || r.ObservedAt.IsZero() || !slices.Contains([]string{"provider_response", "provider_event", "not_forwarded", "local_not_forwarded", "incomplete"}, r.Source) || !slices.Contains([]string{"", "running", "approval", "tool", "background"}, r.Progress) {

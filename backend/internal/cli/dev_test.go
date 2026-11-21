@@ -24,7 +24,7 @@ type devImportCapture struct {
 func devImportServer(t *testing.T, status int, report devimport.Report) (*httptest.Server, *devImportCapture) {
 	t.Helper()
 	capture := &devImportCapture{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capture.method = r.Method
 		capture.path = r.URL.Path
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/dev/import-projects" {
@@ -151,7 +151,7 @@ func TestDevImportProjectsJSON(t *testing.T) {
 func TestDevImportProjectsDaemonError(t *testing.T) {
 	cfg := setConfigEnv(t)
 	sourceDir := filepath.Join(t.TempDir(), "source")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = io.WriteString(w, `{"message":"open source store: file does not exist","code":"INTERNAL"}`)

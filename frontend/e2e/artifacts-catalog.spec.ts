@@ -133,6 +133,7 @@ test("@P0 gallery paginates all sources, searches past the old cap and opens the
 	expect(state.reads).toHaveLength(0);
 	await expect(page.locator("main iframe, main img")).toHaveCount(0);
 	await expect(page.getByText(/missing-worker: This document is unavailable/)).toBeVisible();
+	await page.getByRole("button", { name: "Search artifacts", exact: true }).click();
 	await page.getByRole("searchbox", { name: "Search artifacts" }).fill("file-1104");
 	await expect(page.getByText("worker/file-1104.md", { exact: true })).toBeVisible();
 	await page.getByRole("searchbox").fill("");
@@ -191,9 +192,10 @@ test("@P0 Worker deletion confirms, refreshes catalog and removes legacy and v2 
 	const state = await setup(page, "delete");
 	await expect(page.getByText("1 files loaded", { exact: true })).toBeVisible();
 	await expect(page.getByRole("button", { name: "Artifacts", exact: true })).toHaveText("Artifacts1");
-	const pinned = page.getByRole("region", { name: "Pinned", exact: true });
+	const pinned = page.locator("main li").filter({ has: page.getByText("worker/file-0.md", { exact: true }) });
 	await expect(pinned).toBeVisible();
 	await pinned.getByRole("button", { name: /More actions/ }).click();
+	await expect(page.getByRole("menuitem", { name: "Unpin artifact", exact: true })).toBeVisible();
 	await page.getByRole("menuitem", { name: "Delete artifact", exact: true }).click();
 	const dialog = page.getByRole("dialog");
 	await expect(dialog).toBeVisible();
@@ -201,6 +203,7 @@ test("@P0 Worker deletion confirms, refreshes catalog and removes legacy and v2 
 	await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 	expect(state.deleteCount()).toBe(0);
 	await pinned.getByRole("button", { name: /More actions/ }).click();
+	await expect(page.getByRole("menuitem", { name: "Unpin artifact", exact: true })).toBeVisible();
 	await page.getByRole("menuitem", { name: "Delete artifact", exact: true }).click();
 	await dialog.getByRole("button", { name: "Delete artifact", exact: true }).click();
 	await expect(page.getByText("0 files loaded", { exact: true })).toBeVisible();

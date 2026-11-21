@@ -24,7 +24,7 @@ var expectedUsageTableColumns = map[string][]string{
 		"failure_count", "anomaly_count", "next_retry_at", "last_error_code", "updated_at",
 	},
 	"model_usage_events": {
-		"id", "binding_id", "usage_source_id", "provider_id", "billing_provider_id", "model_id",
+		"id", "binding_id", "usage_source_id", "execution_source_id", "provider_id", "billing_provider_id", "model_id",
 		"usage_measurement_kind", "input_tokens", "cached_input_tokens",
 		"uncached_input_tokens", "output_tokens", "provider_usage_json",
 		"source_event_key", "created_at",
@@ -33,7 +33,7 @@ var expectedUsageTableColumns = map[string][]string{
 		// 0116 appends: ALTER TABLE has no way to place a column mid-row, and a
 		// second full rebuild to move it beside billing_provider_id would cost
 		// more than the adjacency is worth.
-		"billing_provider_source",
+		"billing_provider_source", "service_tier", "provider_message_id",
 	},
 }
 
@@ -726,7 +726,7 @@ func TestMigrateAllowsEveryShippedHarness(t *testing.T) {
 }
 
 func TestCodewhaleHarnessMigrationDownRestoresConstraint(t *testing.T) {
-	db := openMigratedTestDB(t)
+	db := openMigratedDatabaseCopy(t, 193)
 	if _, err := db.Exec(`
 INSERT INTO projects (id, path, registered_at, config)
 VALUES ('codewhale-project', '/repo/codewhale', ?, '{}');

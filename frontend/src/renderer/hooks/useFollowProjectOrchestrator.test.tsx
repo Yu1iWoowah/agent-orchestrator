@@ -2,10 +2,11 @@ import { renderHook } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { useFollowProjectOrchestrator } from "./useFollowProjectOrchestrator";
+import type { QuestionRef } from "../lib/decision-target";
 
 const route = vi.hoisted(() => ({
 	params: { projectId: "project", sessionId: "old", hostId: undefined as string | undefined },
-	search: { followOrchestrator: true as boolean | undefined },
+	search: { followOrchestrator: true as boolean | undefined, question: undefined as QuestionRef | undefined },
 	navigate: vi.fn(),
 }));
 vi.mock("@tanstack/react-router", () => ({
@@ -21,7 +22,7 @@ function workspace(sessions: WorkspaceSession[], hostId?: string): WorkspaceSumm
 }
 beforeEach(() => {
 	route.params = { projectId: "project", sessionId: "old", hostId: undefined };
-	route.search = { followOrchestrator: true };
+	route.search = { followOrchestrator: true, question: undefined };
 	route.navigate.mockClear();
 });
 it("keeps the old transcript during kill/spawn and follows the new orchestrator without a click", () => {
@@ -61,4 +62,11 @@ it("scopes following to the owning host when project IDs collide", () => {
 	route.params.hostId = "host-b";
 	renderHook(() => useFollowProjectOrchestrator([workspace([session("local")])], [workspace([session("wrong")], "host-a"), workspace([session("remote")], "host-b")]));
 	expect(route.navigate).toHaveBeenCalledWith({ to: "/host/$hostId/project/$projectId/session/$sessionId", params: { hostId: "host-b", projectId: "project", sessionId: "remote" }, search: { followOrchestrator: true }, replace: true });
+});
+
+it("leaves a selected question to its readiness-gated routing without discarding the source reference", () => {
+	route.search.question = { hostId: "local", projectId: "project", originSessionId: "worker", questionId: "ask-worker" };
+	renderHook(() => useFollowProjectOrchestrator([workspace([session("old", true), session("new")])], []));
+	expect(route.navigate).not.toHaveBeenCalled();
+	expect(route.search.question.originSessionId).toBe("worker");
 });

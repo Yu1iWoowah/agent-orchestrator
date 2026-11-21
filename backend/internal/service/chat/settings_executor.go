@@ -134,6 +134,10 @@ func (c *Controller) qualifySettingsRead(ctx context.Context, op domain.AgentSet
 	}
 	readCtx, cancel := c.deadlineContext(ctx, 10*time.Second)
 	defer cancel()
+	if observer, ok := c.conv.(ports.ChatAgentSettingsEffortObserver); ok && c.harness == domain.HarnessClaudeCode {
+		receipt := domain.AgentSettingsObservation{Owner: c.settingsObservationOwner, EffortOptions: observer.AgentSettingsEffortOptions()}
+		readCtx = ports.WithAgentSettingsObservation(readCtx, receipt)
+	}
 	proof, err := validator.ValidateAgentSettings(readCtx, op, owner, restoring)
 	if err != nil {
 		return proof, err
@@ -337,7 +341,16 @@ func (c *Controller) executionStillQualified(ctx context.Context, journal agentS
 // reconcileAgentSettingsLocked runs only with sendMu. blocked means durable
 // unfinished work still fences dispatch, including errors or unknown liveness.
 func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, error) {
-	return c.runSettingsAttemptLocked(ctx, false, c.reconcileAgentSettingsWorkLocked)
+	blocked, err := c.runSettingsAttemptLocked(ctx, false, c.reconcileAgentSettingsWorkLocked)
+	if (blocked || err != nil) && c.codexSettingsReadWaiting(c.settingsAttempt) && c.settingsRetryDelayLocked() > 0 {
+		c.mu.Lock()
+		scheduled := c.settingsRecheckQueued
+		c.mu.Unlock()
+		if !scheduled {
+			c.queueSettingsRecheck()
+		}
+	}
+	return blocked, err
 }
 
 func (c *Controller) reconcileAgentSettingsWorkLocked(ctx context.Context) (bool, error) {
@@ -417,7 +430,7 @@ func (c *Controller) reconcileAgentSettingsWorkLocked(ctx context.Context) (bool
 		return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorStorage, err)
 	}
 	op = verified
-	if err := c.qualifySettingsEvidenceLocked(ctx, &op.Target); err != nil {
+	if err := c.qualifySettingsEvidenceLocked(ctx, &op.Target, plan); err != nil {
 		return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorValidation, err)
 	}
 	if err := c.executionStillQualified(ctx, journal, op); err != nil {

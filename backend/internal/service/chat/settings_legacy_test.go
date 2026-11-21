@@ -30,6 +30,58 @@ func TestLegacySettingsAndTypedControlShareRevisionAndFrozenTurn(t *testing.T) {
 	}
 }
 
+func TestClaudeInheritedEffortRoundTripWithoutCatalogDefault(t *testing.T) {
+	h, conv, _, _ := journalHarnessForHarness(t, domain.HarnessClaudeCode)
+	conv.effortOptions = &domain.AgentSettingsEffortOptions{
+		ObservedAt: h.now(), Model: "native-model", Permission: "default", Efforts: []string{"high"}, ResetSelector: "default",
+	}
+	reader := agentsettings.New(h.st, h.now)
+	reader.SetObservationSource(h.svc)
+	control := agentsettings.NewControl(reader, h.st, agentsettings.NewAuthorizer(h.st, nil, h.now), h.svc, h.now)
+	h.svc.SetAgentSettingsValidator(control)
+
+	for _, tc := range []struct {
+		key      string
+		effort   domain.AgentEffortSelection
+		revision int64
+	}{
+		{key: "set-high", effort: "high", revision: 0},
+		{key: "reset-to-provider-default", revision: 1},
+	} {
+		op, err := control.Change(t.Context(), agentsettings.Caller{}, testSession, agentsettings.Change{
+			ExpectedRevision: &tc.revision, IdempotencyKey: tc.key, Settings: domain.AgentSettingsPatch{Effort: &tc.effort},
+		})
+		if err != nil {
+			t.Fatalf("%s admission: %v", tc.key, err)
+		}
+		h.awaitSnapshot(t, func(store.ConversationSnapshot) bool {
+			saved, err := h.st.AgentSettingsOperation(t.Context(), testSession, op.ID)
+			return err == nil && saved.Phase == domain.AgentSettingsApplied
+		})
+		current, err := h.st.SessionAgentSettings(t.Context(), testSession)
+		if err != nil || current.Settings.Model != "" || current.Settings.Effort != tc.effort || current.Revision != tc.revision+1 {
+			t.Fatalf("%s persisted settings: %+v, %v", tc.key, current, err)
+		}
+	}
+
+	source := domain.AgentSettings{Effort: "high", FastMode: domain.AgentFastDefault}
+	target := domain.AgentSettings{FastMode: domain.AgentFastDefault}
+	provider := &journalConversation{fakeConversation: newFakeConversation(), effortOptions: conv.effortOptions}
+	provider.quiet.Store(true)
+	replacement := struct {
+		setterOnlySettingsConversation
+		ports.ChatAgentSettingsEffortObserver
+	}{
+		setterOnlySettingsConversation:  setterOnlySettingsConversation{ChatConversation: provider, staged: provider, host: provider, source: source, target: target, resetSupported: true},
+		ChatAgentSettingsEffortObserver: provider,
+	}
+	controller := restartJournalController(t, h, control, replacement)
+	turn, err := controller.Send(t.Context(), ports.ChatUserMessage{Text: "after reopening with provider default"})
+	if err != nil || turn.State != domain.TurnStateRunning || len(provider.sentTexts()) != 1 || provider.stepCount() != 4 {
+		t.Fatalf("cold replay did not restore the inherited effort before dispatch: %+v, %v", turn, err)
+	}
+}
+
 func TestLegacyBusyPickerProjectsAndCoalescesLocalChoices(t *testing.T) {
 	for _, agentHarness := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode} {
 		for _, check := range []string{"projection", "merge", "concurrent", "reset", "invalid"} {
@@ -62,7 +114,7 @@ func TestLegacyBusyPickerProjectsAndCoalescesLocalChoices(t *testing.T) {
 					for _, paged := range []bool{false, true} {
 						var snapshot chatsvc.Snapshot
 						if paged {
-							snapshot, err = h.svc.SnapshotPage(t.Context(), testSession, 0, 10)
+							snapshot, err = h.svc.SnapshotPage(t.Context(), testSession, 0, 0, 10)
 						} else {
 							snapshot, err = h.svc.Snapshot(t.Context(), testSession)
 						}
@@ -218,6 +270,7 @@ func legacySettingsAndTypedControl(t *testing.T, agentHarness domain.AgentHarnes
 	for _, entry := range []string{"turn_settings", "config_options", "direct_settings", "effort", "fast_on", "fast_off", "fast_off_after_on"} {
 		t.Run(entry, func(t *testing.T) {
 			h, conv, _, _ := journalHarnessForHarness(t, agentHarness)
+			conv.effortOptions = &domain.AgentSettingsEffortOptions{ObservedAt: h.now(), Model: "default", Permission: "default", Efforts: []string{"high"}}
 			catalog := ports.AgentModelCatalog{AgentID: string(agentHarness), Models: []ports.AgentModelInfo{{ID: "new-model", IsDefault: true, Efforts: []string{"high"}, SupportsFast: true}}}
 			raw, _ := json.Marshal(catalog)
 			if err := h.st.UpsertAgentModelCatalog(t.Context(), ports.CachedAgentModelCatalog{AgentID: string(agentHarness), CatalogJSON: string(raw), InputFingerprint: "live-inputs", LastSuccessAt: h.now(), FetchedAt: h.now()}); err != nil {
@@ -225,6 +278,7 @@ func legacySettingsAndTypedControl(t *testing.T, agentHarness domain.AgentHarnes
 			}
 			reader := agentsettings.New(h.st, h.now)
 			reader.SetCatalogFingerprintSource(legacyCatalogInputs{})
+			reader.SetObservationSource(h.svc)
 			control := agentsettings.NewControl(reader, h.st, agentsettings.NewAuthorizer(h.st, nil, h.now), h.svc, h.now)
 			h.svc.SetAgentSettingsMutator(control)
 			h.svc.SetAgentSettingsValidator(control)

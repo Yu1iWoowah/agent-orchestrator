@@ -47,12 +47,27 @@ func TestSilenceBudgetUsesNativeProgressTime(t *testing.T) {
 	if saved.NextCheckAt == nil || !saved.NextCheckAt.Equal(eventAt.Add(30*time.Second)) {
 		t.Fatalf("deadline did not follow native event: %+v", saved)
 	}
+	// The reachable host still owns this started execution: silence past the
+	// budget rechecks in 30 seconds instead of opening a question.
+	for len(conv.queryCount) > 0 {
+		<-conv.queryCount
+	}
 	clock.awaitTimer(t, time.Second)
 	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(time.Second) })
-	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
-		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, saved.ID)
-		return e == nil && a.AttentionID != "" && a.LastProgressAt.Equal(eventAt)
-	})
+	// Acceptance A4 observes two minutes of silence, checked at every recheck.
+	for silence := 30 * time.Second; silence <= 2*time.Minute; silence += 30 * time.Second {
+		if key := <-conv.queryCount; key != a.ID {
+			t.Fatal(key)
+		}
+		clock.awaitTimer(t, 30*time.Second)
+		silent, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
+		if err != nil || silent.AttentionID != "" || silent.BlockedSince != nil || !silent.LastProgressAt.Equal(eventAt) || clock.Now().Sub(eventAt) != silence {
+			t.Fatalf("after %s silence a started execution opened a question or refreshed progress: %+v %v", clock.Now().Sub(eventAt), silent, err)
+		}
+		if silence < 2*time.Minute {
+			h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+		}
+	}
 	if saved.Disposition != domain.ChatDeliveryAccepted {
 		t.Fatal("accepted changed")
 	}
@@ -89,17 +104,23 @@ func TestNativeApprovalWaitKeepsEventTimeAndRecoversSilence(t *testing.T) {
 	if err != nil || waiting.AttentionID != "" || !waiting.LastProgressAt.Equal(eventAt) {
 		t.Fatalf("native wait invented activity or attention: %+v %v", waiting, err)
 	}
-	// Once the host no longer qualifies that wait, an unchanged historical event
-	// cannot retain its later state-check deadline or hide the expired silence.
+	// Once the host no longer qualifies that wait, the unchanged historical event
+	// keeps its time; the reachable started execution rechecks in 30 seconds
+	// instead of opening a question for silence alone.
 	conv.mu.Lock()
 	r = conv.deliveryReceipts[a.ID]
 	r.Progress = "running"
 	conv.deliveryReceipts[a.ID] = r
 	conv.mu.Unlock()
 	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(time.Second) })
+	recheck := clock.Now().Add(30 * time.Second)
 	conv.events <- ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady}
 	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
 		saved, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
-		return e == nil && saved.AttentionID != "" && saved.LastProgressAt.Equal(eventAt)
+		return e == nil && saved.Receipt.Progress == "running" && saved.NextCheckAt != nil && saved.NextCheckAt.Equal(recheck)
 	})
+	saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
+	if err != nil || saved.AttentionID != "" || saved.BlockedSince != nil || !saved.LastProgressAt.Equal(eventAt) {
+		t.Fatalf("silent started execution opened a question or refreshed progress: %+v %v", saved, err)
+	}
 }

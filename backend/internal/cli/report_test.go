@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -65,7 +64,7 @@ func TestReportModesAndBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			var got reportAPIRequest
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/api/v1/reports" {
 					_ = json.NewDecoder(r.Body).Decode(&got)
 				}
@@ -88,7 +87,7 @@ func TestReportModesAndBoundaries(t *testing.T) {
 func TestReportPreservesAPIEnvelopeAsRuntimeError(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "worker-1")
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, `{"message":"bad report","code":"INVALID_REPORT","requestId":"req-7"}`)
 	}))

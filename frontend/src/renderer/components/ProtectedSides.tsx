@@ -7,7 +7,7 @@ import { Button } from "./ui/button";
 import { SettingsSection } from "./settings/SettingsSection";
 import { SideCompactionNotice } from "./chat/SideCompactionNotice";
 
-export function ProtectedSides() {
+export function ProtectedSides({ titleHidden = false }: { titleHidden?: boolean }) {
 	const { t } = useTranslation();
 	const client = useQueryClient();
 	const [closeId, setCloseId] = useState<string>();
@@ -25,7 +25,7 @@ export function ProtectedSides() {
 		await client.invalidateQueries({ queryKey });
 	} });
 	return (
-		<SettingsSection title={t("protectedSides.title")} sectionId="protectedSides">
+		<SettingsSection title={t("protectedSides.title")} sectionId="protectedSides" titleHidden={titleHidden}>
 			<p className="mb-4 text-sm text-muted-foreground">{t("protectedSides.description")}</p>
 			{ sides.isPending ? <p>{t("protectedSides.loading")}</p> : sides.isError ? <p role="alert">{apiErrorMessage(sides.error)}</p> : sides.data.length === 0 ? <p className="text-sm text-muted-foreground">{t("protectedSides.empty")}</p> : (
 				<ul className="divide-y divide-border">

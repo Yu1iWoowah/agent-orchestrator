@@ -115,7 +115,7 @@ func (f *fakeStore) ClearAllNotifications(context.Context) (int64, error) {
 func TestListAddsTargetsAndReturnsNextCursor(t *testing.T) {
 	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
 	st := &fakeStore{rows: []domain.NotificationRecord{
-		{ID: "n3", SessionID: "mer-1", ProjectID: "mer", Type: domain.NotificationNeedsInput, Title: "needs", Status: domain.NotificationUnread, CreatedAt: now},
+		{ID: "n3", SessionID: "mer-1", ProjectID: "mer", SourceKey: "attention:question:ask_worker:2", Type: domain.NotificationNeedsInput, Title: "needs", Status: domain.NotificationUnread, CreatedAt: now},
 		{ID: "n2", SessionID: "mer-1", ProjectID: "mer", PRURL: "https://github.com/o/r/pull/1", Type: domain.NotificationReadyToMerge, Title: "ready", Status: domain.NotificationUnread, CreatedAt: now.Add(-time.Minute)},
 		{ID: "n1", SessionID: "mer-1", ProjectID: "mer", Type: domain.NotificationNeedsInput, Title: "older", Status: domain.NotificationRead, CreatedAt: now.Add(-2 * time.Minute)},
 	}, unreadCount: 2}
@@ -124,7 +124,7 @@ func TestListAddsTargetsAndReturnsNextCursor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(got.Notifications) != 2 || got.Notifications[0].Target.Kind != TargetSession ||
+	if len(got.Notifications) != 2 || got.Notifications[0].Target.Kind != "agent_question" ||
 		got.Notifications[1].Target.Kind != TargetPR || got.Notifications[1].Target.PRURL == "" {
 		t.Fatalf("targets = %+v", got)
 	}

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -288,6 +289,37 @@ func TestLaunchEnvOverridesCredentialEnv(t *testing.T) {
 	}
 }
 
+// TestClaudeDeviceIdentitySeesSavedSetupToken pins that the computer's own
+// account is checked with the setup token AO gives its sessions: on a computer
+// with no native Claude login that token is the only sign-in, and reading the
+// account as signed out would refuse every new Claude session.
+func TestClaudeDeviceIdentitySeesSavedSetupToken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell script as the CLI")
+	}
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	bin := filepath.Join(t.TempDir(), "claude")
+	write(t, bin, "#!/bin/sh\nif [ -n \"$CLAUDE_CODE_OAUTH_TOKEN\" ]; then printf '{\"loggedIn\":true,\"authMethod\":\"oauth_token\"}'; else printf '{\"loggedIn\":false,\"authMethod\":\"none\"}'; fi\n")
+	if err := os.Chmod(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c := &Claude{
+		Binary: func(context.Context) (string, error) { return bin, nil },
+		DeviceEnv: func(context.Context) map[string]string {
+			return map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-saved"}
+		},
+	}
+	device, err := c.Identity(context.Background(), "")
+	if err != nil || !device.SignedIn {
+		t.Fatalf("device identity = %+v, %v, want signed in with the saved token", device, err)
+	}
+	// An account folder signs in with its own login only.
+	account, err := c.Identity(context.Background(), t.TempDir())
+	if err != nil || account.LoggedIn {
+		t.Fatalf("account identity = %+v, %v, want the folder's own (signed-out) login", account, err)
+	}
+}
+
 // TestClaudeIdentityCountsSubscriptionLogins pins which `claude auth status`
 // reports are signed in: a claude.ai login, and a CLAUDE_CODE_OAUTH_TOKEN login
 // (the long-lived subscription token from `claude setup-token`), which carries
@@ -303,19 +335,19 @@ func TestClaudeIdentityCountsSubscriptionLogins(t *testing.T) {
 	}
 	c := &Claude{Binary: func(context.Context) (string, error) { return bin, nil }}
 	for _, tc := range []struct {
-		name, status       string
-		signedIn, loggedIn bool
-		email              string
+		name, status        string
+		signedIn, loggedIn  bool
+		email, org, orgName string
 	}{
-		{"claude.ai", `{"loggedIn":true,"authMethod":"claude.ai","email":"a@example.com","subscriptionType":"max"}`, true, true, "a@example.com"},
-		{"token", `{"loggedIn":true,"authMethod":"oauth_token"}`, true, true, ""},
+		{"claude.ai", `{"loggedIn":true,"authMethod":"claude.ai","email":"a@example.com","subscriptionType":"max","orgId":"org-1","orgName":"Team"}`, true, true, "a@example.com", "org-1", "Team"},
+		{"token", `{"loggedIn":true,"authMethod":"oauth_token"}`, true, true, "", "", ""},
 		// Not a subscription, but the CLI can launch with it.
-		{"api key", `{"loggedIn":true,"authMethod":"api_key"}`, false, true, ""},
-		{"signed out", `{"loggedIn":false,"authMethod":"none"}`, false, false, ""},
+		{"api key", `{"loggedIn":true,"authMethod":"api_key"}`, false, true, "", "", ""},
+		{"signed out", `{"loggedIn":false,"authMethod":"none"}`, false, false, "", "", ""},
 	} {
 		t.Setenv("FAKE_CLAUDE_STATUS", tc.status)
 		got, err := c.Identity(context.Background(), "")
-		if err != nil || got.SignedIn != tc.signedIn || got.LoggedIn != tc.loggedIn || got.Email != tc.email {
+		if err != nil || got.SignedIn != tc.signedIn || got.LoggedIn != tc.loggedIn || got.Email != tc.email || got.OrgID != tc.org || got.OrgName != tc.orgName {
 			t.Fatalf("%s: identity = %+v, %v", tc.name, got, err)
 		}
 	}
@@ -356,6 +388,31 @@ func TestCodexManagedProbesUseFileStoreWithoutChangingDevicePolicy(t *testing.T)
 	}
 }
 
+type revokedAccountClient struct{ ports.CodexAccountClient }
+
+func (revokedAccountClient) Read(context.Context, bool) (ports.CodexAccountObservation, error) {
+	return ports.CodexAccountObservation{}, ports.ErrCodexOAuthTokenRevoked
+}
+func (revokedAccountClient) Close() error { return nil }
+
+type revokedAccountFactory struct{}
+
+func (revokedAccountFactory) Open(context.Context, ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+	return revokedAccountClient{}, nil
+}
+func (revokedAccountFactory) Capabilities(context.Context) domain.CodexAccountCapabilities {
+	return domain.CodexAccountCapabilities{}
+}
+
+// A login Codex says the provider revoked is reported as such, not as an
+// unknown failure.
+func TestCodexIdentityReportsARevokedLogin(t *testing.T) {
+	c := &Codex{Accounts: revokedAccountFactory{}, DeviceHome: "/fake-device"}
+	if _, err := c.Identity(context.Background(), "/fake-managed"); !errors.Is(err, ports.ErrAgentAccountLoginRevoked) {
+		t.Fatalf("identity error = %v", err)
+	}
+}
+
 func TestManagedCodexAccountIsLinuxOnly(t *testing.T) {
 	for _, platform := range []string{"linux", "darwin", "windows"} {
 		for _, home := range []string{"", "/fake-device", "/fake-managed"} {
@@ -364,5 +421,25 @@ func TestManagedCodexAccountIsLinuxOnly(t *testing.T) {
 				t.Errorf("managedCodexAccount(%q, %q) = %v, want %v", platform, home, got, want)
 			}
 		}
+	}
+}
+
+// TestClaudeSlowCheckReportsTheDeadline: a CLI killed at the deadline says
+// "signal: killed"; the check reports the deadline, so the app can say the CLI
+// was slow rather than that it failed.
+func TestClaudeSlowCheckReportsTheDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell script as the CLI")
+	}
+	bin := filepath.Join(t.TempDir(), "claude")
+	write(t, bin, "#!/bin/sh\nexec sleep 10\n")
+	if err := os.Chmod(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c := &Claude{Binary: func(context.Context) (string, error) { return bin, nil }}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, err := c.Identity(ctx, t.TempDir()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("slow identity check = %v, want the deadline", err)
 	}
 }

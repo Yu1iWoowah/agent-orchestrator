@@ -14,27 +14,26 @@ import (
 
 func TestResolveAccountPrecedenceAndInvalidReferences(t *testing.T) {
 	for _, tc := range []struct {
-		name, explicit, role, project, global, want, source string
-		err                                                 error
+		name, explicit, role, global, want, source string
+		err                                        error
 	}{
-		{"explicit wins", "explicit", "role", "project", "global", "explicit", "explicit", nil},
-		{"role wins", "", "role", "project", "global", "role", "role", nil},
-		{"project wins", "", "", "project", "global", "project", "project", nil},
-		{"global wins", "", "", "", "global", "global", "global", nil},
-		{"legacy device only when unset", "", "", "", "", "device-claude", "device", nil},
-		{"explicit absent", "gone", "role", "project", "global", "", "", ports.ErrAgentAccountUnknown},
-		{"role absent", "", "gone", "project", "global", "", "", ports.ErrAgentAccountUnknown},
-		{"project absent", "", "", "gone", "global", "", "", ports.ErrAgentAccountUnknown},
-		{"global absent", "", "", "", "gone", "", "", ports.ErrAgentAccountUnknown},
-		{"explicit wrong provider", "other", "role", "project", "global", "", "", ports.ErrAgentAccountProviderMismatch},
-		{"role retired", "", "retired", "project", "global", "", "", ports.ErrAgentAccountUnknown},
-		{"global signed out no fallback", "", "", "", "signed-out", "", "", ports.ErrAgentAccountSignedOut},
+		{"explicit wins", "explicit", "role", "global", "explicit", "explicit", nil},
+		{"role wins", "", "role", "global", "role", "role", nil},
+		{"no role uses global, never a project default", "", "", "global", "global", "global", nil},
+		{"legacy device only when unset", "", "", "", "device-claude", "device", nil},
+		{"explicit absent", "gone", "role", "global", "", "", ports.ErrAgentAccountUnknown},
+		{"role absent", "", "gone", "global", "", "", ports.ErrAgentAccountUnknown},
+		{"global absent", "", "", "gone", "", "", ports.ErrAgentAccountUnknown},
+		{"explicit wrong provider", "other", "role", "global", "", "", ports.ErrAgentAccountProviderMismatch},
+		{"worker role wrong provider never falls back", "", "other", "global", "", "", ports.ErrAgentAccountProviderMismatch},
+		{"role retired", "", "retired", "global", "", "", ports.ErrAgentAccountUnknown},
+		{"global signed out no fallback", "", "", "signed-out", "", "", ports.ErrAgentAccountSignedOut},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "accounts")
 			st := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
 			cli := &fakeClaude{signedInAs: map[string]string{"": "device@example.test"}}
-			for _, id := range []string{"explicit", "role", "project", "global", "retired", "signed-out", "other"} {
+			for _, id := range []string{"explicit", "role", "global", "retired", "signed-out", "other"} {
 				home := filepath.Join(root, "claude", id)
 				if err := os.MkdirAll(home, 0700); err != nil {
 					t.Fatal(err)
@@ -56,11 +55,20 @@ func TestResolveAccountPrecedenceAndInvalidReferences(t *testing.T) {
 				st.defaults[domain.AgentAccountProviderClaude] = tc.global
 			}
 			svc := New(st, []ports.AgentAccountProviderCLI{cli, &evidenceCodex{fakeClaude: &fakeClaude{}}}, root, nil, nil)
-			cfg := domain.ProjectConfig{AgentAccounts: map[domain.AgentAccountProvider]string{domain.AgentAccountProviderClaude: tc.project}, Worker: domain.RoleOverride{AgentAccountID: tc.role}}
-			svc.read(context.Background(), st.accounts[5]) // previously observed signed-out account
+			cfg := domain.ProjectConfig{Worker: domain.RoleOverride{AgentAccountID: tc.role}}
+			svc.read(context.Background(), st.accounts[4]) // previously observed signed-out account
 			got, err := svc.ResolveAccount(context.Background(), ports.AgentAccountResolutionRequest{Harness: domain.HarnessClaudeCode, Role: domain.AgentAccountRoleWorker, ProjectConfig: cfg, AccountID: tc.explicit})
 			if !errors.Is(err, tc.err) {
 				t.Fatalf("error=%v want %v", err, tc.err)
+			}
+			var mismatch *ports.WorkerRoleAccountMismatchError
+			qualifiedMismatch := errors.As(err, &mismatch)
+			if tc.role == "other" {
+				if !qualifiedMismatch || mismatch.AccountID != "other" || mismatch.Harness != domain.HarnessClaudeCode {
+					t.Fatalf("worker account mismatch lost actionable details: %v", err)
+				}
+			} else if qualifiedMismatch {
+				t.Fatalf("misreported %v as a worker role mismatch", err)
 			}
 			if tc.err == nil && (got.AccountID != tc.want || string(got.Source) != tc.source) {
 				t.Fatalf("resolution=%+v want %s/%s", got, tc.want, tc.source)

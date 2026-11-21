@@ -13,6 +13,43 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+const addDeletedSessionAccountUsage = `-- name: AddDeletedSessionAccountUsage :exec
+INSERT INTO deleted_session_account_usage (
+    account_id, day, model_id, input_tokens, cached_input_tokens, output_tokens, estimated_cost_nanos
+) VALUES (
+    ?1, ?2, ?3, ?4,
+    ?5, ?6, ?7
+)
+ON CONFLICT (account_id, day, model_id) DO UPDATE SET
+    input_tokens = input_tokens + excluded.input_tokens,
+    cached_input_tokens = cached_input_tokens + excluded.cached_input_tokens,
+    output_tokens = output_tokens + excluded.output_tokens,
+    estimated_cost_nanos = estimated_cost_nanos + excluded.estimated_cost_nanos
+`
+
+type AddDeletedSessionAccountUsageParams struct {
+	AccountID          string
+	Day                string
+	ModelID            string
+	InputTokens        int64
+	CachedInputTokens  int64
+	OutputTokens       int64
+	EstimatedCostNanos int64
+}
+
+func (q *Queries) AddDeletedSessionAccountUsage(ctx context.Context, arg AddDeletedSessionAccountUsageParams) error {
+	_, err := q.db.ExecContext(ctx, addDeletedSessionAccountUsage,
+		arg.AccountID,
+		arg.Day,
+		arg.ModelID,
+		arg.InputTokens,
+		arg.CachedInputTokens,
+		arg.OutputTokens,
+		arg.EstimatedCostNanos,
+	)
+	return err
+}
+
 const agentAccountUsageSince = `-- name: AgentAccountUsageSince :many
 SELECT
     CAST(COALESCE(
@@ -37,9 +74,15 @@ FROM model_usage_events e
 JOIN usage_bindings b ON b.id = e.binding_id
 WHERE e.created_at >= ?1
   AND b.harness IN ('claude-code', 'codex')
+  AND (CAST(?2 AS TEXT) = '' OR b.session_id = CAST(?2 AS TEXT))
 GROUP BY 1, 2, 3
 ORDER BY 2, 1, 3
 `
+
+type AgentAccountUsageSinceParams struct {
+	Since     sql.NullTime
+	SessionID string
+}
 
 type AgentAccountUsageSinceRow struct {
 	AccountID          string
@@ -53,9 +96,11 @@ type AgentAccountUsageSinceRow struct {
 
 // Each usage event counts for the account its session used when the event
 // happened; an event older than the session's first binding counts for that
-// first account. Days are UTC calendar days.
-func (q *Queries) AgentAccountUsageSince(ctx context.Context, since sql.NullTime) ([]AgentAccountUsageSinceRow, error) {
-	rows, err := q.db.QueryContext(ctx, agentAccountUsageSince, since)
+// first account. Days are UTC calendar days. A non-empty session_id limits the
+// sum to that session's events (folded into deleted_session_account_usage
+// before the session is deleted).
+func (q *Queries) AgentAccountUsageSince(ctx context.Context, arg AgentAccountUsageSinceParams) ([]AgentAccountUsageSinceRow, error) {
+	rows, err := q.db.QueryContext(ctx, agentAccountUsageSince, arg.Since, arg.SessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -245,6 +290,66 @@ func (q *Queries) DeleteAgentAccountDefaultFor(ctx context.Context, accountID st
 	return err
 }
 
+const deleteProvisionalProviderSwitchAccount = `-- name: DeleteProvisionalProviderSwitchAccount :exec
+DELETE FROM session_agent_accounts
+WHERE session_id = ? AND provider = ? AND account_id = ? AND bound_at = ?
+`
+
+type DeleteProvisionalProviderSwitchAccountParams struct {
+	SessionID string
+	Provider  string
+	AccountID string
+	BoundAt   time.Time
+}
+
+func (q *Queries) DeleteProvisionalProviderSwitchAccount(ctx context.Context, arg DeleteProvisionalProviderSwitchAccountParams) error {
+	_, err := q.db.ExecContext(ctx, deleteProvisionalProviderSwitchAccount,
+		arg.SessionID,
+		arg.Provider,
+		arg.AccountID,
+		arg.BoundAt,
+	)
+	return err
+}
+
+const deletedSessionAccountUsageSince = `-- name: DeletedSessionAccountUsageSince :many
+SELECT account_id, day, model_id, input_tokens, cached_input_tokens, output_tokens, estimated_cost_nanos
+FROM deleted_session_account_usage
+WHERE day >= CAST(?1 AS TEXT)
+ORDER BY day, account_id, model_id
+`
+
+func (q *Queries) DeletedSessionAccountUsageSince(ctx context.Context, sinceDay string) ([]DeletedSessionAccountUsage, error) {
+	rows, err := q.db.QueryContext(ctx, deletedSessionAccountUsageSince, sinceDay)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeletedSessionAccountUsage{}
+	for rows.Next() {
+		var i DeletedSessionAccountUsage
+		if err := rows.Scan(
+			&i.AccountID,
+			&i.Day,
+			&i.ModelID,
+			&i.InputTokens,
+			&i.CachedInputTokens,
+			&i.OutputTokens,
+			&i.EstimatedCostNanos,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const disableAgentAccount = `-- name: DisableAgentAccount :exec
 UPDATE agent_accounts SET disabled_at=?,lifecycle_operation_id=? WHERE id=?
 `
@@ -305,12 +410,25 @@ func (q *Queries) GetAgentAccountOperation(ctx context.Context, id string) (Agen
 }
 
 const getOpenReviewerAccountUse = `-- name: GetOpenReviewerAccountUse :one
-SELECT r.id AS review_id,r.session_id,r.harness
+SELECT review_id, session_id, harness FROM (
+SELECT r.id AS review_id,r.session_id,r.harness,r.created_at
 FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id
-WHERE a.account_id=? AND r.is_archived=0
+WHERE a.account_id=?1 AND r.is_archived=0
   AND (r.reviewer_activity_state<>'exited'
-       OR EXISTS(SELECT 1 FROM review_run AS pass WHERE pass.review_id=r.id AND pass.status='running'))
-ORDER BY r.created_at,r.id,a.provider LIMIT 1
+       OR EXISTS (
+           SELECT 1 FROM review_run AS pass WHERE pass.review_id=r.id
+           AND (pass.status IN ('launching','running','cancelling')
+                OR (pass.status='queued' AND pass.launch_id=r.reviewer_launch_id
+                    AND pass.launch_id<>'' AND pass.launching_at IS NOT NULL)
+                OR (pass.status='failed' AND pass.failure_reason IN ('never_started','timed_out','cancel_unconfirmed')
+                    AND pass.launch_id=r.reviewer_launch_id AND pass.launch_id<>'' AND r.reviewer_handle_id<>''))
+       ))
+UNION
+SELECT s.review_id, s.session_id, s.harness, CAST('' AS TIMESTAMP)
+FROM reviewer_stop_accounts AS a JOIN reviewer_stop_receipts AS s USING (review_id, launch_id)
+WHERE a.account_id=?1
+)
+ORDER BY created_at, review_id LIMIT 1
 `
 
 type GetOpenReviewerAccountUseRow struct {
@@ -447,9 +565,29 @@ WHERE a.account_id=?1
 UNION ALL
 SELECT 'reviewer', CAST(COALESCE(s.project_id,'') AS TEXT), s.id, s.display_name, r.id, r.pr_url, r.harness, '',
        CAST(r.is_archived=0 AND (r.reviewer_activity_state<>'exited'
-         OR EXISTS(SELECT 1 FROM review_run AS pass WHERE pass.review_id=r.id AND pass.status='running')) AS INTEGER)
+         OR EXISTS (
+           SELECT 1 FROM review_run AS pass WHERE pass.review_id=r.id
+           AND (pass.status IN ('launching','running','cancelling')
+                OR (pass.status='queued' AND pass.launch_id=r.reviewer_launch_id
+                    AND pass.launch_id<>'' AND pass.launching_at IS NOT NULL)
+                OR (pass.status='failed' AND pass.failure_reason IN ('never_started','timed_out','cancel_unconfirmed')
+                    AND pass.launch_id=r.reviewer_launch_id AND pass.launch_id<>'' AND r.reviewer_handle_id<>''))
+       )) AS INTEGER)
 FROM reviewer_agent_accounts AS a JOIN review AS r ON r.id=a.review_id JOIN sessions AS s ON s.id=r.session_id
 WHERE a.account_id=?1
+  AND NOT EXISTS (
+    SELECT 1 FROM reviewer_stop_accounts AS stop
+    WHERE stop.account_id=a.account_id AND stop.review_id=r.id
+  )
+UNION ALL
+SELECT 'reviewer', CAST(COALESCE(s.project_id,'') AS TEXT), s.session_id,
+       CAST(COALESCE(worker.display_name,'') AS TEXT), s.review_id,
+       CAST(COALESCE(r.pr_url,'') AS TEXT), s.harness, '', 1
+FROM reviewer_stop_accounts AS a JOIN reviewer_stop_receipts AS s USING (review_id, launch_id)
+LEFT JOIN sessions AS worker ON worker.id=s.session_id
+LEFT JOIN review AS r ON r.id=s.review_id
+WHERE a.account_id=?1
+GROUP BY s.review_id
 UNION ALL
 SELECT 'transition', CAST(COALESCE(s.project_id,'') AS TEXT), s.id, s.display_name, '', '', s.harness, t.id, 1
 FROM session_interface_transitions AS t JOIN sessions AS s ON s.id=t.session_id
@@ -474,8 +612,9 @@ type ListAgentAccountUsageOwnersRow struct {
 }
 
 // Current bindings are owners; older receipts remain historical attribution.
-// A running pass owns its profile before native activity replaces an old exited
-// observation; the launch lease may return before the caller commits its handle.
+// Launching and cancelling passes own their profile before native activity
+// confirms the new state. A queued pass needs an exact launch reservation.
+// Failed passes whose exact runtime still needs cleanup retain ownership.
 // Transition targets are owners before a binding is committed. No profile path
 // or provider output is part of this local-only projection.
 // A committed target is owned by its current session binding, never by a

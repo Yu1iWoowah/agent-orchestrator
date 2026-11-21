@@ -3,6 +3,7 @@ package controllers_test
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -384,4 +385,94 @@ func TestNotificationsAPI_StreamWithoutPublisherIs501(t *testing.T) {
 	srv := newNotificationStreamTestServer(t, &fakeNotificationService{}, nil)
 	body, status, _ := doRequest(t, srv, "GET", "/api/v1/notifications/stream", "")
 	assertErrorCode(t, body, status, http.StatusNotImplemented, "NOT_IMPLEMENTED")
+}
+
+type questionNotificationStore struct {
+	notificationsvc.Store
+	record domain.NotificationRecord
+}
+
+func (s *questionNotificationStore) ListNotifications(context.Context, notificationsvc.ListStatus, time.Time, string, int) ([]domain.NotificationRecord, error) {
+	return []domain.NotificationRecord{s.record}, nil
+}
+
+func (s *questionNotificationStore) CountUnreadNotifications(context.Context) (int64, error) {
+	return 1, nil
+}
+
+func (s *questionNotificationStore) CountUnresolvedNotifications(context.Context) (int64, error) {
+	return 1, nil
+}
+
+func TestNotificationsAPI_QuestionReferenceMatchesHTTPAndSSE(t *testing.T) {
+	type target struct {
+		Kind       string `json:"kind"`
+		SessionID  string `json:"sessionId"`
+		QuestionID string `json:"questionId"`
+		PRURL      string `json:"prUrl"`
+	}
+	for _, tc := range []struct {
+		name, sourceKey, prURL string
+		want                   target
+	}{
+		{"question", "attention:question:ask_worker:2", "", target{Kind: "agent_question", SessionID: "mer-worker", QuestionID: "ask_worker"}},
+		{"provider", "attention:provider:activity-1:2", "", target{Kind: "session", SessionID: "mer-worker"}},
+		{"pr", "", "https://github.com/o/r/pull/1", target{Kind: "pr", SessionID: "mer-worker", PRURL: "https://github.com/o/r/pull/1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := domain.NotificationRecord{ID: "ntf_1", SessionID: "mer-worker", ProjectID: "mer", SourceKey: tc.sourceKey, PRURL: tc.prURL, Type: domain.NotificationNeedsInput, Title: "input", Status: domain.NotificationUnread, CreatedAt: time.Now()}
+			service := notificationsvc.New(notificationsvc.Deps{Store: &questionNotificationStore{record: rec}})
+			stream := &fakeNotificationStream{ch: make(chan domain.NotificationEvent, 1)}
+			srv := newNotificationStreamTestServer(t, service, stream)
+			body, status, _ := doRequest(t, srv, "GET", "/api/v1/notifications", "")
+			if status != http.StatusOK {
+				t.Fatalf("HTTP %d: %s", status, body)
+			}
+			var page struct {
+				Notifications []struct {
+					Target target `json:"target"`
+				} `json:"notifications"`
+			}
+			mustJSON(t, body, &page)
+			if len(page.Notifications) != 1 || page.Notifications[0].Target != tc.want {
+				t.Fatalf("HTTP target = %+v; want %+v", page.Notifications, tc.want)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/notifications/stream?projectId=mer", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			stream.ch <- domain.NotificationEvent{Kind: domain.NotificationCreated, Record: rec}
+			reader := bufio.NewReader(resp.Body)
+			for {
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.TrimSpace(line) != "event: notification_created" {
+					continue
+				}
+				data, err := reader.ReadString('\n')
+				if err != nil {
+					t.Fatal(err)
+				}
+				var notification struct {
+					Target target `json:"target"`
+				}
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(data, "data: ")), &notification); err != nil {
+					t.Fatal(err)
+				}
+				if notification.Target != tc.want {
+					t.Fatalf("SSE target = %+v; want %+v", notification.Target, tc.want)
+				}
+				break
+			}
+		})
+	}
 }

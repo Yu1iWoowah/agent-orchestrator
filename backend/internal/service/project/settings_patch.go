@@ -31,12 +31,14 @@ type settingsConflict struct {
 
 // PatchSettings compares and writes under the same admission gate as spawn.
 func (m *Service) PatchSettings(ctx context.Context, id domain.ProjectID, in PatchSettingsInput) (Project, error) {
+	m.configMu.Lock()
+	defer m.configMu.Unlock()
 	if err := validateProjectID(id); err != nil {
 		return Project{}, err
 	}
 	for key := range in.Config {
 		switch key {
-		case "defaultBranch", "sessionPrefix", "agentAccounts", "worker", "orchestrator", "reviewers", "autoReview", "workersRequestReview", "trackerIntake", "env", "postCreate", "preRemove":
+		case "hcgDelegation", "defaultBranch", "sessionPrefix", "worker", "orchestrator", "reviewers", "autoReview", "workersRequestReview", "trackerIntake", "env", "postCreate", "preRemove":
 		default:
 			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", "Setting cannot be patched: "+key, nil)
 		}
@@ -47,10 +49,12 @@ func (m *Service) PatchSettings(ctx context.Context, id domain.ProjectID, in Pat
 		}
 	}
 	var row domain.ProjectRecord
+	var previousConfig domain.ProjectConfig
 	write := func(locked context.Context) error {
 		var ok bool
 		var err error
 		row, ok, err = m.store.MutateProjectSettings(locked, string(id), func(current domain.ProjectRecord) (domain.ProjectRecord, error) {
+			previousConfig = current.Config
 			return mergeProjectSettings(locked, current, in)
 		})
 		if err != nil {
@@ -74,6 +78,7 @@ func (m *Service) PatchSettings(ctx context.Context, id domain.ProjectID, in Pat
 	if err != nil {
 		return Project{}, err
 	}
+	m.notifyReportingPolicyChanged(id, previousConfig, row.Config)
 	return m.projectFromRow(ctx, row), nil
 }
 

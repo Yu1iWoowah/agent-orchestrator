@@ -1,9 +1,10 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { InvalidateQueryFilters, QueryClient } from "@tanstack/react-query";
 import { getApiBaseUrl, hasTrustedApiBaseUrl, subscribeApiBaseUrl } from "./api-client";
 import { baseUrlForHost, subscribeConnectedHosts } from "./host-clients";
 import { sessionUiKey } from "./hosts";
 import { probeRemoteSse } from "./remote-sse-probe";
 import { computeSseRetryDelayMs } from "./sse-backoff";
+import { hasDaemonEventStreams, openDaemonEventSource, type DaemonEventSource } from "./daemon-event-source";
 
 const INVALIDATE_DEBOUNCE_MS = 150;
 const EVENTSOURCE_CLOSED = 2;
@@ -29,7 +30,7 @@ type WorkspaceStream = {
 	 */
 	retries: number;
 	lastVersion?: string;
-	source?: EventSource;
+	source?: DaemonEventSource;
 	poll?: ReturnType<typeof setInterval>;
 	stopRemote?: () => void;
 	sourceBaseUrl?: string;
@@ -118,6 +119,22 @@ function createWorkspaceStream(sessionId: string, queryClient: QueryClient, host
 				});
 		}, 2000);
 	};
+	const awaitingRead = new Set<string>();
+	const refreshRemote = (queryKey: string[]) => {
+		const refresh = (filters: InvalidateQueryFilters) => {
+			void queryClient.invalidateQueries(filters, { cancelRefetch: false });
+		};
+		const inFlight = queryClient.getQueryCache().findAll({ queryKey, fetchStatus: "fetching" });
+		refresh({ queryKey, predicate: (query) => query.state.fetchStatus !== "fetching" });
+		for (const query of inFlight) {
+			if (awaitingRead.has(query.queryHash)) continue;
+			awaitingRead.add(query.queryHash);
+			void Promise.allSettled([query.promise]).then(() => {
+				awaitingRead.delete(query.queryHash);
+				if (!stream.disposed) refresh({ queryKey: query.queryKey, exact: true });
+			});
+		}
+	};
 	const scheduleInvalidation = (names: readonly string[]) => {
 		if (names.includes("session-workspace-file")) scheduleAnnotations();
 		for (const name of names) stream.pendingInvalidations.add(name);
@@ -129,7 +146,9 @@ function createWorkspaceStream(sessionId: string, queryClient: QueryClient, host
 			const pending = [...stream.pendingInvalidations];
 			stream.pendingInvalidations.clear();
 			for (const name of pending) {
-				void queryClient.invalidateQueries({ queryKey: queryPrefix(hostId && name === "workspace-file-paths" ? "remote-workspace-file-paths" : name) });
+				const queryKey = queryPrefix(hostId && name === "workspace-file-paths" ? "remote-workspace-file-paths" : name);
+				if (hostId) refreshRemote(queryKey);
+				else void queryClient.invalidateQueries({ queryKey });
 			}
 		}, INVALIDATE_DEBOUNCE_MS);
 	};
@@ -195,25 +214,43 @@ function createWorkspaceStream(sessionId: string, queryClient: QueryClient, host
 			setWorkspaceFileConnectionState(key, "connecting");
 		}
 		if (hostId) {
-			if (stream.sourceBaseUrl === baseUrl) return;
+			if (stream.phase !== "idle") return;
 			stream.sourceBaseUrl = baseUrl;
+			stream.phase = "connecting";
+			const generation = ++stream.generation;
 			invalidate();
 			stream.poll = setInterval(invalidate, 2_000);
-			setWorkspaceFileConnectionState(key, "connected");
+			if (stream.failures === 0) setWorkspaceFileConnectionState(key, "connected");
+			const stopPolling = () => {
+				if (stream.poll !== undefined) clearInterval(stream.poll);
+				stream.poll = undefined;
+			};
 			stream.stopRemote = probeRemoteSse(
 				`${baseUrl.replace(/\/+$/, "")}/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace/events`,
 				["workspace_changed"],
 				invalidate,
 				() => {
-					if (stream.poll !== undefined) clearInterval(stream.poll);
-					stream.poll = undefined;
+					stopPolling();
+					stream.phase = "open";
+					stream.failures = 0;
+					stream.retries = 0;
+					setWorkspaceFileConnectionState(key, "connected");
 					invalidate();
 				},
-				invalidate,
+				() => {
+					stopPolling();
+					stream.stopRemote = undefined;
+					stream.failures += 1;
+					setWorkspaceFileConnectionState(key, stream.failures >= 3 ? "degraded" : "connecting");
+					invalidate();
+					scheduleRetry(generation);
+				},
 			);
 			return;
 		}
-		if (typeof EventSource === "undefined") {
+		// Without the desktop preload (browser preview, dev:web) no stream opens;
+		// "degraded" keeps the file queries polling.
+		if (!hasDaemonEventStreams()) {
 			setWorkspaceFileConnectionState(key, "degraded");
 			return;
 		}
@@ -223,9 +260,7 @@ function createWorkspaceStream(sessionId: string, queryClient: QueryClient, host
 		stream.phase = "connecting";
 		const generation = ++stream.generation;
 		try {
-			const source = new EventSource(
-				`${baseUrl.replace(/\/+$/, "")}/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace/events`,
-			);
+			const source = openDaemonEventSource(`/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace/events`)!;
 			stream.source = source;
 			source.onopen = () => {
 				if (stream.disposed || generation !== stream.generation || stream.source !== source) return;

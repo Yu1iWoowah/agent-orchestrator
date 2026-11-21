@@ -4,7 +4,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -24,7 +23,7 @@ func TestA10GuardianCLIValidationAndPurgeConfirmation(t *testing.T) {
 func TestA8A10GuardianCLIWhitelistRequestAndErrors(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var calls []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			_, _ = io.WriteString(w, `{"status":"ok"}`)
 			return

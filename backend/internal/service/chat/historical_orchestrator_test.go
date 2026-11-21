@@ -67,7 +67,7 @@ func TestRetiredOrchestratorSnapshotKeepsItsOwnTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := svc.SnapshotPage(ctx, oldID, 0, 2)
+	snapshot, err := svc.SnapshotPage(ctx, oldID, 0, 0, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestRetiredOrchestratorSnapshotKeepsItsOwnTranscript(t *testing.T) {
 	if snapshot.Messages[0].Text != "old prompt 1" || snapshot.Messages[1].Text != "old prompt 2" || !snapshot.HasMoreBefore {
 		t.Fatalf("old page = %+v", snapshot)
 	}
-	older, err := svc.SnapshotPage(ctx, oldID, snapshot.OldestSequence, 2)
+	older, err := svc.SnapshotPage(ctx, oldID, snapshot.OldestSequence, 0, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestRetiredOrchestratorSnapshotKeepsItsOwnTranscript(t *testing.T) {
 	if err != nil || len(whole.Messages) != 3 {
 		t.Fatalf("full historical snapshot: messages=%d err=%v", len(whole.Messages), err)
 	}
-	current, err := svc.SnapshotPage(ctx, fresh.ID, 0, 10)
+	current, err := svc.SnapshotPage(ctx, fresh.ID, 0, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestRetiredOrchestratorSnapshotOmitsAdoptedSuccessorLiveTurn(t *testing.T) 
 				if full {
 					snapshot, err = svc.Snapshot(ctx, oldID)
 				} else {
-					snapshot, err = svc.SnapshotPage(ctx, oldID, 0, 10)
+					snapshot, err = svc.SnapshotPage(ctx, oldID, 0, 0, 10)
 				}
 				if err != nil {
 					t.Fatal(err)
@@ -216,7 +216,7 @@ func TestRetiredOrchestratorSnapshotOmitsAdoptedSuccessorLiveTurn(t *testing.T) 
 					t.Errorf("full=%t historical turns must contain only the source's completed turn: %+v", full, snapshot.Turns)
 				}
 			}
-			live, err := svc.SnapshotPage(ctx, fresh.ID, 0, 10)
+			live, err := svc.SnapshotPage(ctx, fresh.ID, 0, 0, 10)
 			if err != nil || len(live.Turns) != 1 || live.Turns[0].ID != "successor-turn" || live.Turns[0].State != state {
 				t.Fatalf("successor live turn changed: turns=%+v err=%v", live.Turns, err)
 			}

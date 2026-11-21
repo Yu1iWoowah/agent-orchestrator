@@ -94,6 +94,45 @@ func TestAccountReadMapsExplicitSignedOutAndNotApplicable(t *testing.T) {
 	}
 }
 
+// Only Codex's answer for a refresh token the provider revoked reads as
+// revoked; every other failure is returned as it came. "has expired" is a
+// known gap and deliberately not asserted either way.
+func TestAccountReadRecognizesOnlyARevokedRefreshToken(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		reply   rpcError
+		revoked bool
+	}{
+		{"revoked", rpcError{Code: -32603, Message: "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again."}, true},
+		{"generic unauthorized", rpcError{Code: -32603, Message: "unexpected status 401 Unauthorized"}, false},
+		{"refresh failed", rpcError{Code: -32603, Message: "Your access token could not be refreshed. Please try again."}, false},
+		{"already used", rpcError{Code: -32603, Message: "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			serverReads, clientWrites := io.Pipe()
+			clientReads, serverWrites := io.Pipe()
+			factory := NewAccountFactory(fakePlugin{bin: "codex"}, nil)
+			factory.spawn = func(context.Context, string, string, []string, []string) (*process, error) {
+				return &process{stdin: clientWrites, stdout: clientReads, stop: func() error { return serverWrites.Close() }}, nil
+			}
+			go serveAccountTestProtocol(serverReads, serverWrites, map[string]any{"initialize": map[string]any{}, codexproto.MethodAccountRead: test.reply})
+			client, err := factory.Open(context.Background(), ports.CodexAccountContext{Home: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			_, err = client.Read(context.Background(), false)
+			var reply *rpcError
+			if errors.Is(err, ports.ErrCodexOAuthTokenRevoked) != test.revoked || !test.revoked && (!errors.As(err, &reply) || reply.Message != test.reply.Message) {
+				t.Fatalf("read error = %v", err)
+			}
+		})
+	}
+	if isRevokedRefreshTokenError(errors.New("start app-server: refresh token was revoked")) {
+		t.Fatal("a failure that is not Codex's answer read as revoked")
+	}
+}
+
 func TestAccountFactoryDeviceDetectionDoesNotOverrideCredentialStore(t *testing.T) {
 	serverReads, clientWrites := io.Pipe()
 	clientReads, serverWrites := io.Pipe()

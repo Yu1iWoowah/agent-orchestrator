@@ -11,6 +11,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
 // errCapture is a request-scoped slot WriteError records the raw service error
@@ -24,8 +25,10 @@ type errCapture struct{ captured CapturedError }
 // decides which layer owns the Sentry report.
 type CapturedError struct {
 	Err            error
+	Code           string
 	ReportingOwner ownership.Owner
 	Fields         map[string]any
+	FailureSite    telemetrymeta.FailureSite
 }
 
 type errCaptureKey struct{}
@@ -48,6 +51,7 @@ func WithErrorCapture(r *http.Request) (*http.Request, func() CapturedError) {
 func captureError(r *http.Request, err error) {
 	if c, ok := r.Context().Value(errCaptureKey{}).(*errCapture); ok {
 		c.captured.Err = err
+		c.captured.FailureSite = telemetrymeta.CurrentFailureSite()
 		c.captured.ReportingOwner = ownership.OwnerOf(err)
 	}
 }
@@ -94,18 +98,30 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 
 // WriteAPIError emits the locked envelope for any non-2xx response.
 func WriteAPIError(w http.ResponseWriter, r *http.Request, status int, kind, code, message string, details map[string]any) {
+	if status >= http.StatusInternalServerError {
+		if c, ok := r.Context().Value(errCaptureKey{}).(*errCapture); ok {
+			c.captured.Code = code
+			if c.captured.FailureSite.String() == "" {
+				c.captured.FailureSite = telemetrymeta.CurrentFailureSite()
+			}
+		}
+	}
 	writeAPIError(w, r, status, kind, code, message, details, "")
 }
 
 func writeAPIError(w http.ResponseWriter, r *http.Request, status int, kind, code, message string, details map[string]any, reportingOwner ownership.Owner) {
-	WriteJSON(w, status, APIError{
+	WriteJSON(w, status, newAPIError(r, kind, code, message, details, reportingOwner))
+}
+
+func newAPIError(r *http.Request, kind, code, message string, details map[string]any, reportingOwner ownership.Owner) APIError {
+	return APIError{
 		Error:          kind,
 		Code:           code,
 		Message:        message,
 		RequestID:      middleware.GetReqID(r.Context()),
 		Details:        details,
 		ReportingOwner: reportingOwner,
-	})
+	}
 }
 
 // WriteError is the single path from any service error to the wire envelope. It
@@ -113,22 +129,42 @@ func writeAPIError(w http.ResponseWriter, r *http.Request, status int, kind, cod
 // back to a 500 for any other error so internal details never leak. This is the
 // only place an apierr.Kind is translated into an HTTP status and wire word.
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
+	status, body := errorEnvelope(r, err)
+	WriteJSON(w, status, body)
+}
+
+// StreamError is WriteError for a stream that has already sent its 200
+// status line: it records the failure the same way and returns the envelope
+// for the stream to send as its last event.
+func StreamError(r *http.Request, err error) APIError {
+	_, body := errorEnvelope(r, err)
+	return body
+}
+
+func errorEnvelope(r *http.Request, err error) (int, APIError) {
 	captureError(r, err)
-	reportingOwner := ownership.OwnerOf(err)
+	status, body := Describe(err)
+	body.RequestID = middleware.GetReqID(r.Context())
+	body.ReportingOwner = ownership.OwnerOf(err)
+	return status, body
+}
+
+// Describe renders err as the status and envelope WriteError would answer,
+// without a request: a background operation reports its failure in the same
+// shape a request that ran it inline would have.
+func Describe(err error) (int, APIError) {
 	var e *apierr.Error
 	if errors.As(err, &e) {
 		status, kind := httpStatus(e.Kind)
-		writeAPIError(w, r, status, kind, e.Code, e.Message, e.Details, reportingOwner)
-		return
+		return status, APIError{Error: kind, Code: e.Code, Message: e.Message, Details: e.Details}
 	}
 	// A transient failure (the database was momentarily busy/locked, or a
 	// server-side deadline elapsed) is retryable, not a server fault. Map it to
 	// 503 with a stable code so it is not counted or alerted as an
 	// INTERNAL_ERROR 500 and so clients can back off and retry.
 	if isTransient(err) {
-		writeAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "SERVICE_UNAVAILABLE",
-			"The service is momentarily unavailable, please retry.", nil, reportingOwner)
-		return
+		return http.StatusServiceUnavailable, APIError{Error: "unavailable", Code: "SERVICE_UNAVAILABLE",
+			Message: "The service is momentarily unavailable, please retry."}
 	}
 	// A project whose source repository has been deleted from disk turns any
 	// subsequent filesystem/git operation that reaches it into a raw,
@@ -138,15 +174,25 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	// the same sentinel (ports.ErrWorkspaceRepoUnavailable) with %w, so
 	// errors.Is matches it through any wrapping.
 	if errors.Is(err, ports.ErrWorkspaceRepoUnavailable) {
-		writeAPIError(w, r, http.StatusNotFound, "not_found", "PROJECT_FOLDER_MISSING",
-			"Project repository is missing from disk", nil, reportingOwner)
-		return
+		return http.StatusNotFound, APIError{Error: "not_found", Code: "PROJECT_FOLDER_MISSING",
+			Message: "Project repository is missing from disk"}
 	}
 	if errors.Is(err, ports.ErrAgentSettingsConflict) {
-		writeAPIError(w, r, http.StatusConflict, "conflict", "AGENT_SETTINGS_CONFLICT", "Settings changed or another session operation is active", nil, reportingOwner)
+		return http.StatusConflict, APIError{Error: "conflict", Code: "AGENT_SETTINGS_CONFLICT", Message: "Settings changed or another session operation is active"}
+	}
+	return http.StatusInternalServerError, APIError{Error: "internal", Code: "INTERNAL_ERROR", Message: "Internal server error"}
+
+}
+
+// WriteErrorWithCode gives an unclassified failure a stable operation code.
+// Classified failures retain their existing status and client envelope.
+func WriteErrorWithCode(w http.ResponseWriter, r *http.Request, err error, code, message string) {
+	var typed *apierr.Error
+	if errors.As(err, &typed) || isTransient(err) || errors.Is(err, ports.ErrWorkspaceRepoUnavailable) || errors.Is(err, ports.ErrAgentSettingsConflict) {
+		WriteError(w, r, err)
 		return
 	}
-	writeAPIError(w, r, http.StatusInternalServerError, "internal", "INTERNAL_ERROR", "Internal server error", nil, reportingOwner)
+	WriteError(w, r, apierr.InternalCause(code, message, err))
 }
 
 // SQLite primary result codes for a busy/locked database. Extended codes (e.g.

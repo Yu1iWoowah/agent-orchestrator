@@ -118,6 +118,85 @@ func TestLiveOwnerRefusesRemoveAndReloginWithoutChangingAccount(t *testing.T) {
 	}
 }
 
+// Only a confirmed sign-out lets a held account sign in again: any login, an
+// API key included, or a probe that fails or times out still refuses.
+func TestReloginStillRefusesLiveOwnersUnlessSignedOut(t *testing.T) {
+	for _, state := range []string{"signed-in", "api-key", "probe-failed"} {
+		t.Run(state, func(t *testing.T) {
+			ctx := context.Background()
+			root := filepath.Join(t.TempDir(), "accounts")
+			provider := &fakeClaude{signedInAs: map[string]string{}, apiKey: map[string]bool{}, failing: map[string]bool{}}
+			st := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
+			svc := New(st, []ports.AgentAccountProviderCLI{provider}, root, fakeTerminals{}, nil)
+			login, err := svc.StartLogin(ctx, domain.AgentAccountProviderClaude)
+			if err != nil {
+				t.Fatal(err)
+			}
+			home := filepath.Join(root, "claude", login.OperationID)
+			provider.signedInAs[home] = "fake@example.test"
+			if _, _, err := svc.VerifyLogin(ctx, login.OperationID); err != nil {
+				t.Fatal(err)
+			}
+			switch state {
+			case "api-key":
+				delete(provider.signedInAs, home)
+				provider.apiKey[home] = true
+			case "probe-failed":
+				delete(provider.signedInAs, home)
+				provider.failing[home] = true
+			}
+			svc.SetUsageOwners(func(context.Context, string) ([]domain.AgentAccountUsageOwner, error) {
+				return []domain.AgentAccountUsageOwner{{Kind: "reviewer", ReviewID: "review-1", Harness: domain.HarnessClaudeCode, Blocking: true}}, nil
+			})
+			_, err = svc.StartSignInAgain(ctx, login.OperationID)
+			var use *ports.AgentAccountInUseError
+			if !errors.As(err, &use) || len(st.operations) != 1 {
+				t.Fatalf("live owner was not refused before effects: %v operations=%d", err, len(st.operations))
+			}
+			a, err := svc.find(ctx, login.OperationID)
+			if err != nil || a.DisabledAt != nil || a.RetiredAt != nil || a.Email != "fake@example.test" {
+				t.Fatalf("refused relogin changed account: %+v %v", a, err)
+			}
+		})
+	}
+}
+
+func TestReloginNamesOnlyActualLaunchContention(t *testing.T) {
+	ctx := t.Context()
+	root := filepath.Join(t.TempDir(), "accounts")
+	provider := &fakeClaude{signedInAs: map[string]string{}}
+	st := &memStore{defaults: map[domain.AgentAccountProvider]string{}, bindings: map[domain.SessionID]string{}}
+	svc := New(st, []ports.AgentAccountProviderCLI{provider}, root, fakeTerminals{}, nil)
+	login, err := svc.StartLogin(ctx, domain.AgentAccountProviderClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.signedInAs[filepath.Join(root, "claude", login.OperationID)] = "fake@example.test"
+	if _, _, err := svc.VerifyLogin(ctx, login.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		kind string
+		lock func(context.Context, ...string) (func(), error)
+	}{
+		{"profile_operation", svc.AcquireAccountUses},
+		{"launch_in_progress", svc.AcquireAccountLaunchUses},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			release, err := tc.lock(ctx, login.OperationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			_, err = svc.StartSignInAgain(ctx, login.OperationID)
+			var inUse *ports.AgentAccountInUseError
+			if !errors.As(err, &inUse) || inUse.Contention != tc.kind || inUse.AccountID != login.OperationID || len(st.operations) != 1 {
+				t.Fatalf("wrong contention attribution or changed login state: %v", err)
+			}
+		})
+	}
+}
+
 func TestContainedHandoffRejectsExternalHistoryBeforeEffects(t *testing.T) {
 	ctx := context.Background()
 	root := filepath.Join(t.TempDir(), "accounts")

@@ -83,6 +83,11 @@ func (p SessionInterfaceTransitionPhase) Terminal() bool {
 	}
 }
 
+// SessionInterfaceTransitionDegradedIdentityReset marks a handoff that gave up
+// its strict native-history transfer and started the target fresh because the
+// installed harness adapter never declared a compatible TUI+Chat identity pair.
+const SessionInterfaceTransitionDegradedIdentityReset = "identity-reset"
+
 // SessionInterfaceTransition is the durable controller-handoff record, for a
 // move between interfaces or between provider accounts. The session row (and
 // its account binding) remains the authority for what is committed; this row
@@ -108,12 +113,18 @@ type SessionInterfaceTransition struct {
 	TargetRuntimeLaunchID string                        `json:"-"`
 	TargetRuntimeHandleID string                        `json:"-"`
 	TargetRuntimeState    AccountTransitionRuntimeState `json:"-"`
-	ErrorCode             string                        `json:"errorCode,omitempty"`
-	ErrorDetail           string                        `json:"errorDetail,omitempty"`
-	CreatedAt             time.Time                     `json:"createdAt"`
-	UpdatedAt             time.Time                     `json:"updatedAt"`
-	CompletedAt           time.Time                     `json:"completedAt,omitempty"`
-	NoticeAcknowledgedAt  time.Time                     `json:"noticeAcknowledgedAt,omitempty"`
+	// DegradedKind records a handoff that completed by starting the target
+	// fresh instead of transferring native history. "identity-reset" marks a
+	// harness whose installed adapter never declared a compatible TUI+Chat
+	// identity pair, so the target conversation intentionally starts empty and
+	// the native history stays with the source interface.
+	DegradedKind         string    `json:"degradedKind,omitempty"`
+	ErrorCode            string    `json:"errorCode,omitempty"`
+	ErrorDetail          string    `json:"errorDetail,omitempty"`
+	CreatedAt            time.Time `json:"createdAt"`
+	UpdatedAt            time.Time `json:"updatedAt"`
+	CompletedAt          time.Time `json:"completedAt,omitempty"`
+	NoticeAcknowledgedAt time.Time `json:"noticeAcknowledgedAt,omitempty"`
 }
 
 // AccountTransitionRuntimeState records evidence about a tentative native writer.
@@ -135,6 +146,21 @@ func (t SessionInterfaceTransition) Active() bool {
 
 // AccountMove reports a handoff to another provider account in the same mode.
 func (t SessionInterfaceTransition) AccountMove() bool { return t.TargetAccountID != "" }
+
+// AccountMoveAwaitsTarget reports an account move whose old agent stopped and whose new one has not taken over.
+func (t SessionInterfaceTransition) AccountMoveAwaitsTarget() bool {
+	if !t.AccountMove() {
+		return false
+	}
+	switch t.Phase {
+	case SessionInterfaceTransitionSourceStopped,
+		SessionInterfaceTransitionTargetStarting,
+		SessionInterfaceTransitionActivating:
+		return true
+	default:
+		return false
+	}
+}
 
 // SessionInterfaceTransitionMessage is an automation/lifecycle message held
 // while neither controller is allowed to accept work.

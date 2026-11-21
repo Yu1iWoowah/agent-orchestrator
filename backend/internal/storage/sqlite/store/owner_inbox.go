@@ -175,7 +175,6 @@ func (c *OwnerInboxCore) CompareAndSwapOwner(ctx context.Context, previous int64
 func (c *OwnerInboxCore) AcceptReport(ctx context.Context, intent domain.InboxReportIntent) (domain.InboxReceipt, error) {
 	r := intent.Report
 	r.Outputs = append([]domain.ReportOutput{}, r.Outputs...)
-	r.SessionDisplayName = ""
 	if intent.Key == "" || r.DeliveryState != domain.ReportPending {
 		return domain.InboxReceipt{}, domain.ErrInvalidReport
 	}

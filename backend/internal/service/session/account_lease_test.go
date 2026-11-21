@@ -31,7 +31,8 @@ func TestAccountLeaseConflictsRemainRetryableOnSpawnAndResume(t *testing.T) {
 				if operation == "spawn" {
 					_, _, _, err = svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode})
 				} else {
-					_, err = svc.ResumeAgent(context.Background(), "mer-1")
+					st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+					err = resumeAgentFailure(t, svc, "mer-1")
 				}
 				var got *apierr.Error
 				if !errors.As(err, &got) || got.Kind != apierr.KindConflict || got.Code != category.code || got.Details["retryable"] != true {

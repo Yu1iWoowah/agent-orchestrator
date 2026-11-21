@@ -1,7 +1,8 @@
 import type { ProjectCatalogResult } from "./artifact-catalog";
 import type { components } from "../../api/schema";
 import type { DocumentConnection } from "./document-read";
-import { artifactKey, groupArtifactsByProject, type ArtifactGroup, type ArtifactRow } from "./artifacts";
+import type { HostShareLink } from "../../shared/cloud-share";
+import { artifactKey, groupArtifactsByProject, withHostShareLinks, type ArtifactGroup, type ArtifactRow } from "./artifacts";
 import { STANDALONE_WORKSPACE_ID, type WorkspaceSummary } from "../types/workspace";
 
 export type CatalogItem = components["schemas"]["DocumentCatalogItem"];
@@ -69,17 +70,18 @@ export function catalogArtifactGroup(
 			.sort(newestGalleryFirst),
 	};
 }
-/** Cloud and Scratchpad retain their existing file/read paths, never a local project catalog. */
+/** Cloud, remote and Scratchpad artifacts use their session file routes. */
 export function legacyGalleryGroups(
 	workspaces: readonly WorkspaceSummary[],
 	connection: DocumentConnection,
+	hostShareLinks: readonly HostShareLink[] = [],
 ): GalleryGroup[] {
-	return groupArtifactsByProject(
+	return withHostShareLinks(groupArtifactsByProject(
 		workspaces.filter(
-			(workspace) => !workspace.hostId && (workspace.kind === "cloud" || workspace.id === STANDALONE_WORKSPACE_ID),
+			(workspace) => workspace.hostId || workspace.kind === "cloud" || workspace.id === STANDALONE_WORKSPACE_ID,
 		),
-	).map((group) => {
-		const source: DocumentConnection = group.cloud
+	), hostShareLinks).map((group) => {
+		const source: DocumentConnection = group.hostId ? { kind: "remote", identity: group.hostId } : group.cloud
 			? {
 					kind: "cloud",
 					identity:
@@ -94,6 +96,25 @@ export function legacyGalleryGroups(
 		};
 	});
 }
+export function withKeptGalleryGroups(
+	groups: readonly GalleryGroup[],
+	connection: DocumentConnection,
+	kept: readonly ArtifactGroup[],
+): GalleryGroup[] {
+	const keptKeys = new Set(kept.flatMap((group) => group.rows.map(artifactKey)));
+	const byGroup = new Map(groups.map((group) => [group.id, {
+		...group,
+		rows: group.rows.filter((row) => row.connection.kind !== "local" || !keptKeys.has(galleryLegacyKey(row) ?? "")),
+	}]));
+	for (const group of kept) {
+		const id = groupKey(connection, group.id);
+		const existing = byGroup.get(id);
+		const rows = group.rows.map((row) => ({ ...row, connection }));
+		byGroup.set(id, { ...(existing ?? group), id, rows: [...(existing?.rows ?? []), ...rows].sort(newestGalleryFirst) });
+	}
+	return [...byGroup.values()];
+}
+
 export function filterGalleryGroups(
 	groups: readonly GalleryGroup[],
 	filters: GalleryFilters,
@@ -107,7 +128,7 @@ export function filterGalleryGroups(
 			rows: group.rows.filter((row) => {
 				const catalog = isCatalogArtifact(row);
 				const source = catalog ? row.source : "worker";
-				const archived = catalog && row.archived;
+				const archived = row.archived;
 				if (filters.source !== "all" && source !== filters.source) return false;
 				if ((filters.archive === "archive" && !archived) || (filters.archive === "current" && archived)) return false;
 				const owner = catalog ? (row.target.kind === "artifact" ? row.target.sessionId : "") : row.sessionId;

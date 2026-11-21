@@ -189,7 +189,7 @@ func TestRollbackDiscardsTheTurnAndEverythingAfterIt(t *testing.T) {
 	second := completeTurn(t, h, "second", "provider-turn-2")
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 4 })
 
-	discarded, err := h.svc.Rollback(ctx, testSession, second)
+	discarded, err := h.svc.Rollback(ctx, testSession, second, "")
 	if err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestRollbackRemovesLaterLegacyCompactionState(t *testing.T) {
 		t.Fatalf("mark compacted: %v", err)
 	}
 
-	if _, err := h.svc.Rollback(ctx, testSession, second); err != nil {
+	if _, err := h.svc.Rollback(ctx, testSession, second, ""); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
 	snapshot, err := h.st.LoadConversationSnapshot(ctx, h.ctrl.ConversationID())
@@ -276,7 +276,7 @@ func TestRollbackIsRefusedWhileATurnIsRunning(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	_, err := h.svc.Rollback(ctx, testSession, turnID)
+	_, err := h.svc.Rollback(ctx, testSession, turnID, "")
 	if !errors.Is(err, chatsvc.ErrTurnRunning) {
 		t.Fatalf("err = %v, want ErrTurnRunning", err)
 	}
@@ -304,7 +304,7 @@ func TestRollbackReportsAnUnsupportedDriver(t *testing.T) {
 	turnID := completeTurn(t, h, "first", "provider-turn-1")
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
 
-	_, err := h.svc.Rollback(ctx, testSession, turnID)
+	_, err := h.svc.Rollback(ctx, testSession, turnID, "")
 	if !errors.Is(err, chatsvc.ErrRollbackUnsupported) {
 		t.Fatalf("err = %v, want ErrRollbackUnsupported", err)
 	}
@@ -337,7 +337,7 @@ func TestRollbackRefusesATurnTheProviderNeverAccepted(t *testing.T) {
 		t.Fatalf("second send state = %q, want queued", queued.State)
 	}
 
-	_, err = h.svc.Rollback(ctx, testSession, queued.ID)
+	_, err = h.svc.Rollback(ctx, testSession, queued.ID, "")
 	// It is refused, though which refusal depends on whether the running turn is
 	// noticed first; both are honest and neither is a 500.
 	if !errors.Is(err, chatsvc.ErrTurnNotRollbackable) && !errors.Is(err, chatsvc.ErrTurnRunning) {
@@ -350,7 +350,7 @@ func TestRollbackReportsAnUnknownTurn(t *testing.T) {
 	recorder := newHistoryRecorder()
 	h := newHarnessWithConversation(t, recorder)
 
-	_, err := h.svc.Rollback(context.Background(), testSession, "turn-that-never-was")
+	_, err := h.svc.Rollback(context.Background(), testSession, "turn-that-never-was", "")
 	if !errors.Is(err, domain.ErrNoConversationTurn) {
 		t.Fatalf("err = %v, want domain.ErrNoConversationTurn", err)
 	}
@@ -367,7 +367,7 @@ func TestRollbackClassifiesAProviderRefusal(t *testing.T) {
 	turnID := completeTurn(t, h, "first", "provider-turn-1")
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
 
-	_, err := h.svc.Rollback(ctx, testSession, turnID)
+	_, err := h.svc.Rollback(ctx, testSession, turnID, "")
 	if !errors.Is(err, chatsvc.ErrProviderRefused) {
 		t.Fatalf("err = %v, want ErrProviderRefused", err)
 	}
@@ -2958,7 +2958,7 @@ func TestProviderBoundaryRejectsSourceProviderBranchAndEdit(t *testing.T) {
 	if startCalls != 1 {
 		t.Fatalf("driver starts = %d, want source-provider edit rejected before target driver", startCalls)
 	}
-	if _, err := svc.Rollback(ctx, testSession, "source-turn"); !errors.Is(err, chatsvc.ErrTurnProviderMismatch) {
+	if _, err := svc.Rollback(ctx, testSession, "source-turn", ""); !errors.Is(err, chatsvc.ErrTurnProviderMismatch) {
 		t.Fatalf("source-provider rollback error = %v, want ErrTurnProviderMismatch", err)
 	}
 	target.mu.Lock()

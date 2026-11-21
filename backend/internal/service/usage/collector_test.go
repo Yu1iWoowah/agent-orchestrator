@@ -1,9 +1,12 @@
 package usage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -591,6 +594,65 @@ func TestCollectorReactivateSessionRejectsStaleLaunch(t *testing.T) {
 	}
 }
 
+func TestCollectorReactivateSessionWaitsForLockAndHonorsCancellation(t *testing.T) {
+	store := collectorTestStore(t)
+	session := collectorTestSession(t, store, domain.HarnessCodex, "native-contended", false)
+	session.Metadata.RuntimeLaunchID = "launch-current"
+	mustNoError(t, store.UpdateSession(context.Background(), session))
+	collector := NewCollector(store, SourceRoots{}, nil)
+
+	t.Run("waits and reports completion", func(t *testing.T) {
+		mustNoError(t, collector.mu.Acquire(context.Background(), 1))
+		done := make(chan error, 1)
+		go func() {
+			done <- collector.ReactivateSession(context.Background(), session.ID, "launch-current")
+		}()
+		select {
+		case err := <-done:
+			collector.mu.Release(1)
+			t.Fatalf("reactivation returned before serialized work ran: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		collector.mu.Release(1)
+		mustNoError(t, <-done)
+	})
+
+	t.Run("canceled waiter returns context error", func(t *testing.T) {
+		mustNoError(t, collector.mu.Acquire(context.Background(), 1))
+		defer collector.mu.Release(1)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := collector.ReactivateSession(ctx, session.ID, "launch-current"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("ReactivateSession error = %v, want context.Canceled", err)
+		}
+	})
+}
+
+func TestCollectorFinalizeSessionHonorsCancellationWhileWaitingForLock(t *testing.T) {
+	store := collectorTestStore(t)
+	session := collectorTestSession(t, store, domain.HarnessCodex, "native-contended", false)
+	collector := NewCollector(store, SourceRoots{}, nil)
+	mustNoError(t, collector.mu.Acquire(context.Background(), 1))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- collector.FinalizeSession(ctx, session.ID, "", session.Revision)
+	}()
+	select {
+	case err := <-done:
+		collector.mu.Release(1)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("FinalizeSession error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		collector.mu.Release(1)
+		<-done
+		t.Fatal("FinalizeSession did not observe cancellation while waiting for collector lock")
+	}
+}
+
 func TestCollectorHookLifecycleTransitions(t *testing.T) {
 	complete, active := domain.UsageSourceComplete, domain.UsageSourceActive
 	tests := []struct {
@@ -761,7 +823,6 @@ func TestCollectorCurrentActivityReactivatesBindingDuringReaperFinalization(t *t
 		t.Fatalf("binding during finalization=%s, want finalizing", during.State)
 	}
 
-	activityApplied := make(chan struct{})
 	hookDone := make(chan error, 1)
 	go func() {
 		err := manager.ApplyActivitySignal(context.Background(), session.ID, ports.ActivitySignal{
@@ -772,7 +833,6 @@ func TestCollectorCurrentActivityReactivatesBindingDuringReaperFinalization(t *t
 			AgentSessionID: "native-race",
 			LaunchID:       "launch-current",
 		})
-		close(activityApplied)
 		if err == nil {
 			err = collector.RecordHook(context.Background(), session.ID, HookSignal{
 				Event:           "post-tool-use",
@@ -782,10 +842,19 @@ func TestCollectorCurrentActivityReactivatesBindingDuringReaperFinalization(t *t
 		}
 		hookDone <- err
 	}()
-	select {
-	case <-activityApplied:
-	case <-time.After(2 * time.Second):
-		t.Fatal("current activity did not persist while finalizer was blocked")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		persisted, ok, err := store.GetSession(context.Background(), session.ID)
+		if err != nil || !ok {
+			t.Fatalf("session during contention ok=%v err=%v", ok, err)
+		}
+		if persisted.Activity.State == domain.ActivityActive {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("current activity did not persist while finalizer was blocked")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	close(release)
 	mustNoError(t, <-reaperDone)
@@ -854,7 +923,7 @@ func TestCollectorRejectsPathOutsideProviderRootAndSymlinkEscape(t *testing.T) {
 	store := collectorTestStore(t)
 	session := collectorTestSession(t, store, domain.HarnessClaudeCode, "claude-1", false)
 	base := t.TempDir()
-	root := filepath.Join(base, "projects")
+	root := filepath.Join(base, "agent-accounts", "history", "claude", "projects")
 	outside := filepath.Join(base, "outside.jsonl")
 	mustNoError(t, os.MkdirAll(root, 0o700))
 	mustNoError(t, os.WriteFile(outside, []byte("{}\n"), 0o600))
@@ -1469,6 +1538,36 @@ func TestCollectorDiscoveryLimitRotatesPendingBindings(t *testing.T) {
 	if len(firstSources) != 0 || len(secondSources) != 1 {
 		t.Fatalf("first/second sources=%+v/%+v", firstSources, secondSources)
 	}
+
+	// The cursor is now past the last binding, so the next bounded pass has to
+	// wrap to the start to reach the first binding's newly written rollout.
+	firstPath := filepath.Join(root, "2026", "07", "28", "rollout-native-first.jsonl")
+	writeUsageFixture(t, firstPath, codexSessionMetaFixture(t, "native-first", ""))
+	mustNoError(t, collector.ReconcileSources(context.Background(), 1), "wrapped reconcile")
+	firstSources, _ = store.ListUsageSourcesForBinding(context.Background(), firstBindings[0].ID)
+	if len(firstSources) != 1 {
+		t.Fatalf("bounded discovery did not wrap to the first binding: sources=%+v", firstSources)
+	}
+}
+
+func TestCollectorReconcileLeavesUnchangedBindingsAlone(t *testing.T) {
+	store := collectorTestStore(t)
+	collectorTestSession(t, store, domain.HarnessCodex, "native-missing", false)
+	collector := NewCollector(store, SourceRoots{CodexSessions: filepath.Join(t.TempDir(), "sessions")}, nil)
+	ctx := context.Background()
+	mustNoError(t, collector.BackfillActive(ctx), "backfill")
+	mustNoError(t, collector.ReconcileSources(ctx, 0), "first reconcile")
+
+	seq, err := store.LatestSeq(ctx)
+	mustNoError(t, err)
+	for range 3 {
+		mustNoError(t, collector.ReconcileSources(ctx, 0), "repeat reconcile")
+	}
+	after, err := store.LatestSeq(ctx)
+	mustNoError(t, err)
+	if after != seq {
+		t.Fatalf("change_log advanced from %d to %d with nothing discovered", seq, after)
+	}
 }
 
 func TestCollectorResumeReactivatesAllLatestCodexSources(t *testing.T) {
@@ -1855,14 +1954,182 @@ func TestDiscoverCodexPathRequiresConfiguredRoots(t *testing.T) {
 	}
 }
 
-func TestDefaultSourceRootsIncludesManagedKimiHome(t *testing.T) {
+func TestCollectorDiscoversAccountHistory(t *testing.T) {
+	const nativeID = "account-native-1"
+	for _, source := range []struct {
+		name    string
+		harness domain.AgentHarness
+		relPath string
+	}{
+		{"claude", domain.HarnessClaudeCode, "claude/projects/project/" + nativeID + ".jsonl"},
+		{"codex sessions", domain.HarnessCodex, "codex/sessions/2026/11/08/rollout-" + nativeID + ".jsonl"},
+		{"codex archived", domain.HarnessCodex, "codex/archived_sessions/rollout-" + nativeID + ".jsonl"},
+	} {
+		for _, reconcile := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reconcile=%t", source.name, reconcile), func(t *testing.T) {
+				ctx := context.Background()
+				stateDir := t.TempDir()
+				dataDir := t.TempDir()
+				t.Setenv("HOME", t.TempDir())
+				t.Setenv("CLAUDE_CONFIG_DIR", "")
+				t.Setenv("CODEX_HOME", "")
+				roots, err := DefaultSourceRoots(ctx, dataDir, stateDir)
+				mustNoError(t, err)
+				path := filepath.Join(stateDir, "agent-accounts", "history", filepath.FromSlash(source.relPath))
+				content := "{}\n"
+				if source.harness == domain.HarnessCodex {
+					content = codexSessionMetaFixture(t, nativeID, "")
+				}
+				writeUsageFixture(t, path, content)
+				store := collectorTestStore(t)
+				session := collectorTestSession(t, store, source.harness, nativeID, false)
+				collector := NewCollector(store, roots, nil)
+				found, err := collector.discoverPath(ctx, source.harness, nativeID, session.ID, "")
+				mustNoError(t, err)
+				if found != path {
+					t.Fatalf("discovered %q, want account history %q", found, path)
+				}
+				if reconcile {
+					seedCollectorUsageBinding(t, store, session, nativeID, domain.UsageBindingActive,
+						time.Now().UTC(), domain.UsageErrorSourceDiscoveryPending)
+					mustNoError(t, collector.ReconcileSources(ctx, 8))
+				} else {
+					signal := HookSignal{Event: "session-start", NativeSessionID: nativeID}
+					if source.harness == domain.HarnessClaudeCode {
+						signal.TranscriptPath = path
+					}
+					mustNoError(t, collector.RecordHook(ctx, session.ID, signal))
+				}
+				binding, ok, err := store.GetUsageBinding(ctx, session.ID, source.harness, nativeID)
+				mustNoError(t, err)
+				wantError := ""
+				if source.name == "codex archived" {
+					wantError = domain.UsageErrorSourceDiscoveryPending
+				}
+				if !ok || binding.State != domain.UsageBindingActive || binding.LastErrorCode != wantError {
+					t.Fatalf("binding=%+v, want active with error %q", binding, wantError)
+				}
+				sources, err := store.ListUsageSourcesForBinding(ctx, binding.ID)
+				mustNoError(t, err)
+				resolved, err := filepath.EvalSymlinks(path)
+				mustNoError(t, err)
+				if len(sources) != 1 || sources[0].ArtifactPath != resolved {
+					t.Fatalf("sources=%+v, want registered account history", sources)
+				}
+			})
+		}
+	}
+}
+
+func TestCollectorRejectsAccountHistoryRootSymlinkEscape(t *testing.T) {
+	for _, name := range []string{"claude", "sessions", "archived"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			stateDir := t.TempDir()
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("CLAUDE_CONFIG_DIR", "")
+			t.Setenv("CODEX_HOME", "")
+			roots, err := DefaultSourceRoots(ctx, t.TempDir(), stateDir)
+			mustNoError(t, err)
+			const nativeID = "account-root-escape"
+			harness, root := domain.HarnessCodex, roots.AccountCodexSessions
+			relPath := filepath.Join("2026", "11", "08", "rollout-"+nativeID+".jsonl")
+			content := codexSessionMetaFixture(t, nativeID, "")
+			switch name {
+			case "claude":
+				harness, root = domain.HarnessClaudeCode, roots.AccountClaudeProjects
+				relPath, content = filepath.Join("project", nativeID+".jsonl"), "{}\n"
+			case "archived":
+				root, relPath = roots.AccountCodexArchived, "rollout-"+nativeID+".jsonl"
+			}
+			outside := t.TempDir()
+			writeUsageFixture(t, filepath.Join(outside, relPath), content)
+			mustNoError(t, os.MkdirAll(filepath.Dir(root), 0o700))
+			if err := os.Symlink(outside, root); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			store := collectorTestStore(t)
+			session := collectorTestSession(t, store, harness, nativeID, false)
+			collector := NewCollector(store, roots, nil)
+			var logs bytes.Buffer
+			collector.logger = slog.New(slog.NewTextHandler(&logs, nil))
+			path := filepath.Join(root, relPath)
+			if _, _, _, err := collector.validateSourcePath(ctx, harness, "", path); err == nil {
+				t.Error("accepted account history root outside StateDir")
+			}
+			found, err := collector.discoverPath(ctx, harness, nativeID, "", "")
+			mustNoError(t, err)
+			if found != "" {
+				t.Error("discovered account history outside StateDir")
+			}
+			if err := collector.RecordHook(ctx, session.ID, HookSignal{
+				Event: "session-start", NativeSessionID: nativeID, TranscriptPath: path,
+			}); err == nil {
+				t.Error("hook accepted account history root outside StateDir")
+			}
+			if !strings.Contains(logs.String(), "usage account history root rejected") || strings.Contains(logs.String(), outside) {
+				t.Fatalf("missing or unredacted root rejection log: %s", logs.String())
+			}
+			bindings, err := store.ListUsageBindingsForSession(ctx, session.ID)
+			mustNoError(t, err)
+			for _, binding := range bindings {
+				sources, err := store.ListUsageSourcesForBinding(ctx, binding.ID)
+				mustNoError(t, err)
+				if len(sources) != 0 {
+					t.Fatal("registered an external source through account history root")
+				}
+			}
+		})
+	}
+}
+
+func TestAccountRootBoundaryBeforeHistoryCreation(t *testing.T) {
+	for _, mode := range []string{"missing", "dangling root", "escaping ancestor", "entire StateDir"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			stateDir := t.TempDir()
+			t.Setenv("HOME", t.TempDir())
+			roots, err := DefaultSourceRoots(ctx, t.TempDir(), stateDir)
+			mustNoError(t, err)
+			root := roots.AccountClaudeProjects
+			var link, target string
+			switch mode {
+			case "dangling root":
+				link, target = root, filepath.Join(t.TempDir(), "missing")
+			case "escaping ancestor":
+				link, target = filepath.Join(stateDir, "agent-accounts"), t.TempDir()
+			case "entire StateDir":
+				link, target = root, stateDir
+			}
+			if link != "" {
+				mustNoError(t, os.MkdirAll(filepath.Dir(link), 0o700))
+				if err := os.Symlink(target, link); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			}
+			err = roots.ValidateAccountRoot(ctx, root)
+			if (err == nil) != (mode == "missing") {
+				t.Fatalf("root validation = %v for %s", err, mode)
+			}
+		})
+	}
+}
+
+func TestDefaultSourceRootsIncludesManagedHistoryAndKimiHome(t *testing.T) {
 	home := t.TempDir()
 	dataDir := filepath.Join(home, ".ao", "data")
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
 
-	got, err := DefaultSourceRoots(context.Background(), dataDir)
+	stateDir := t.TempDir()
+	got, err := DefaultSourceRoots(context.Background(), dataDir, stateDir)
 	mustNoError(t, err)
+	history := filepath.Join(stateDir, "agent-accounts", "history")
+	if got.AccountClaudeProjects != filepath.Join(history, "claude", "projects") ||
+		got.AccountCodexSessions != filepath.Join(history, "codex", "sessions") ||
+		got.AccountCodexArchived != filepath.Join(history, "codex", "archived_sessions") {
+		t.Fatalf("account roots do not follow StateDir: %+v", got)
+	}
 	if got.KimiHome != filepath.Join(dataDir, "kimi") {
 		t.Fatalf("Kimi home = %q, want %q", got.KimiHome, filepath.Join(dataDir, "kimi"))
 	}
@@ -1872,14 +2139,14 @@ func TestDefaultSourceRootsFollowsClaudeConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	got, err := DefaultSourceRoots(context.Background(), "")
+	got, err := DefaultSourceRoots(context.Background(), "", "")
 	mustNoError(t, err)
 	if want := filepath.Join(home, ".claude", "projects"); got.ClaudeProjects != want {
 		t.Fatalf("Claude projects = %q, want %q", got.ClaudeProjects, want)
 	}
 	custom := filepath.Join(home, "claude-config")
 	t.Setenv("CLAUDE_CONFIG_DIR", custom)
-	got, err = DefaultSourceRoots(context.Background(), "")
+	got, err = DefaultSourceRoots(context.Background(), "", "")
 	mustNoError(t, err)
 	if want := filepath.Join(custom, "projects"); got.ClaudeProjects != want {
 		t.Fatalf("Claude projects with CLAUDE_CONFIG_DIR = %q, want %q", got.ClaudeProjects, want)
@@ -2032,6 +2299,17 @@ func TestSourceKindForHarness(t *testing.T) {
 		{harness: domain.HarnessClaudeCode, want: domain.UsageSourceClaudeMain, ok: true},
 		{harness: domain.HarnessCodex, want: domain.UsageSourceCodexRollout, ok: true},
 		{harness: domain.HarnessKimi, want: domain.UsageSourceKimiWire, ok: true},
+		{harness: domain.HarnessPi, want: domain.UsageSourcePiSession, ok: true},
+		{harness: domain.HarnessQwen, want: domain.UsageSourceQwenMonthly, ok: true},
+		{harness: domain.HarnessOMP, want: domain.UsageSourceOMPSession, ok: true},
+		{harness: domain.HarnessKimchi, want: domain.UsageSourceKimchiSession, ok: true},
+		{harness: domain.HarnessGoose, want: domain.UsageSourceGooseLedger, ok: true},
+		{harness: domain.HarnessOpenCode, want: domain.UsageSourceOpenCodeDB, ok: true},
+		{harness: domain.HarnessKilocode, want: domain.UsageSourceKiloDB, ok: true},
+		{harness: domain.HarnessPrimeAgent, want: domain.UsageSourcePrimeAgentSession, ok: true},
+		{harness: domain.HarnessGrok, want: domain.UsageSourceGrokUsage, ok: true},
+		{harness: domain.HarnessDeepSeek, want: domain.UsageSourceDeepSeekSession, ok: true},
+		{harness: domain.HarnessAgy, want: domain.UsageSourceAgyConversation, ok: true},
 		{harness: domain.HarnessAider, ok: false},
 	}
 	for _, tt := range tests {
@@ -2047,10 +2325,29 @@ func TestDiscoverClaudePathRejectsGlobMetadata(t *testing.T) {
 	writeUsageFixture(t, filepath.Join(root, "project", "native-session.jsonl"), "{}\n")
 	collector := NewCollector(collectorTestStore(t), SourceRoots{ClaudeProjects: root}, nil)
 
-	path, err := collector.discoverPath(context.Background(), domain.HarnessClaudeCode, "*")
+	path, err := collector.discoverPath(context.Background(), domain.HarnessClaudeCode, "*", "", "")
 	mustNoError(t, err)
 	if path != "" {
 		t.Fatalf("invalid Claude native ID discovered %q", path)
+	}
+}
+
+func TestDiscoverClaudePathReadsTheWorkspaceProjectDirectory(t *testing.T) {
+	root, workspace := t.TempDir(), t.TempDir()
+	resolved, err := filepath.EvalSymlinks(workspace)
+	mustNoError(t, err)
+	want := filepath.Join(root, claudeProjectDirName(resolved), "native-session.jsonl")
+	writeUsageFixture(t, want, "{}\n")
+	other := filepath.Join(root, "other-project", "native-session.jsonl")
+	writeUsageFixture(t, other, "{}\n")
+	later := time.Now().Add(time.Hour)
+	mustNoError(t, os.Chtimes(other, later, later))
+	collector := NewCollector(collectorTestStore(t), SourceRoots{ClaudeProjects: root}, nil)
+
+	path, err := collector.discoverPath(context.Background(), domain.HarnessClaudeCode, "native-session", "", workspace)
+	mustNoError(t, err)
+	if path != want {
+		t.Fatalf("discoverPath = %q, want %q", path, want)
 	}
 }
 
@@ -2079,6 +2376,101 @@ func TestReconcileCodexRootAcceptsScalarSourceMetadata(t *testing.T) {
 	sources, err := store.ListUsageSourcesForBinding(context.Background(), binding.ID)
 	if err != nil || len(sources) != 1 {
 		t.Fatalf("sources = %+v, err=%v; want one registered rollout", sources, err)
+	}
+}
+
+func TestReconcileSettlesFinalizingBindingWhoseTranscriptNeverAppears(t *testing.T) {
+	store := collectorTestStore(t)
+	now := time.Now().UTC()
+	staleSession := collectorTestSession(t, store, domain.HarnessClaudeCode, "native-gone", true)
+	seedCollectorUsageBinding(
+		t, store, staleSession, "native-gone", domain.UsageBindingFinalizing,
+		now.Add(-2*time.Hour), domain.UsageErrorSourceDiscoveryPending,
+	)
+	recentSession := collectorTestSession(t, store, domain.HarnessClaudeCode, "native-late", true)
+	seedCollectorUsageBinding(
+		t, store, recentSession, "native-late", domain.UsageBindingFinalizing,
+		now.Add(-5*time.Minute), domain.UsageErrorSourceDiscoveryPending,
+	)
+
+	collector := NewCollector(store, SourceRoots{ClaudeProjects: t.TempDir()}, nil)
+	mustNoError(t, collector.ReconcileSources(context.Background(), 8), "reconcile missing transcripts")
+
+	stale, ok, err := store.GetUsageBinding(context.Background(), staleSession.ID, staleSession.Harness, "native-gone")
+	if err != nil || !ok {
+		t.Fatalf("get stale binding: ok=%v err=%v", ok, err)
+	}
+	if stale.State != domain.UsageBindingPartial || stale.LastErrorCode != domain.UsageErrorArtifactMissing {
+		t.Fatalf("stale binding = %s/%s, want partial/artifact_missing", stale.State, stale.LastErrorCode)
+	}
+	recent, ok, err := store.GetUsageBinding(context.Background(), recentSession.ID, recentSession.Harness, "native-late")
+	if err != nil || !ok {
+		t.Fatalf("get recent binding: ok=%v err=%v", ok, err)
+	}
+	if recent.State != domain.UsageBindingFinalizing || recent.LastErrorCode != domain.UsageErrorSourceDiscoveryPending {
+		t.Fatalf("recent binding = %s/%s, want finalizing/source_discovery_pending", recent.State, recent.LastErrorCode)
+	}
+}
+
+func TestReconcileKeepsFinalizingBindingWithUnreadSource(t *testing.T) {
+	store := collectorTestStore(t)
+	now := time.Now().UTC()
+	session := collectorTestSession(t, store, domain.HarnessClaudeCode, "native-unread", true)
+	binding := seedCollectorUsageBinding(
+		t, store, session, "native-unread", domain.UsageBindingFinalizing,
+		now.Add(-2*time.Hour), domain.UsageErrorSourceDiscoveryPending,
+	)
+	source, err := store.InsertUsageSource(context.Background(), domain.UsageSourceRecord{
+		BindingID:       binding.ID,
+		Kind:            domain.UsageSourceClaudeSubagent,
+		NativeSessionID: "native-unread",
+		SubagentID:      "child",
+		ArtifactPath:    filepath.Join(t.TempDir(), "subagents", "agent-child.jsonl"),
+		FileIdentity:    "dev:child",
+		State:           domain.UsageSourcePending,
+		UpdatedAt:       now,
+	})
+	mustNoError(t, err)
+	collector := NewCollector(store, SourceRoots{ClaudeProjects: t.TempDir()}, nil)
+
+	mustNoError(t, collector.ReconcileSources(context.Background(), 8), "reconcile with unread child")
+	got, _, err := store.GetUsageBinding(context.Background(), session.ID, session.Harness, "native-unread")
+	mustNoError(t, err)
+	if got.State != domain.UsageBindingFinalizing {
+		t.Fatalf("binding state = %s, want finalizing while a source is unread", got.State)
+	}
+
+	_, err = store.MarkUsageSourceState(context.Background(), source.ID, domain.UsageSourceComplete, "", nil, now)
+	mustNoError(t, err)
+	mustNoError(t, collector.ReconcileSources(context.Background(), 8), "reconcile after child read")
+	got, _, err = store.GetUsageBinding(context.Background(), session.ID, session.Harness, "native-unread")
+	mustNoError(t, err)
+	if got.State != domain.UsageBindingPartial || got.LastErrorCode != domain.UsageErrorArtifactMissing {
+		t.Fatalf("binding = %s/%s, want partial/artifact_missing once every source is read", got.State, got.LastErrorCode)
+	}
+}
+
+func TestResumedSessionReactivatesBindingSettledForMissingTranscript(t *testing.T) {
+	store := collectorTestStore(t)
+	now := time.Now().UTC()
+	session := collectorTestSession(t, store, domain.HarnessClaudeCode, "native-resumed", false)
+	seedCollectorUsageBinding(
+		t, store, session, "native-resumed", domain.UsageBindingFinalizing,
+		now.Add(-2*time.Hour), domain.UsageErrorSourceDiscoveryPending,
+	)
+	collector := NewCollector(store, SourceRoots{ClaudeProjects: t.TempDir()}, nil)
+	mustNoError(t, collector.ReconcileSources(context.Background(), 8), "reconcile missing transcript")
+	settled, _, err := store.GetUsageBinding(context.Background(), session.ID, session.Harness, "native-resumed")
+	mustNoError(t, err)
+	if settled.State != domain.UsageBindingPartial {
+		t.Fatalf("binding state = %s, want partial before resume", settled.State)
+	}
+
+	mustNoError(t, collector.ReactivateSession(context.Background(), session.ID, session.Metadata.RuntimeLaunchID), "resume")
+	resumed, _, err := store.GetUsageBinding(context.Background(), session.ID, session.Harness, "native-resumed")
+	mustNoError(t, err)
+	if resumed.State != domain.UsageBindingActive || resumed.LastErrorCode != "" {
+		t.Fatalf("resumed binding = %s/%s, want active with no error", resumed.State, resumed.LastErrorCode)
 	}
 }
 
@@ -2266,5 +2658,31 @@ func mustNoError(t testing.TB, err error, context ...string) {
 			t.Fatalf("%s: %v", context[0], err)
 		}
 		t.Fatal(err)
+	}
+}
+
+func TestCollectorUnlimitedPassIncludesEarlierBinding(t *testing.T) {
+	ctx := context.Background()
+	store := collectorTestStore(t)
+	first := collectorTestSession(t, store, domain.HarnessCodex, "native-review-first", false)
+	collectorTestSession(t, store, domain.HarnessCodex, "native-review-second", false)
+	root := filepath.Join(t.TempDir(), "sessions")
+	collector := NewCollector(store, SourceRoots{CodexSessions: root}, nil)
+	mustNoError(t, collector.BackfillActive(ctx), "backfill")
+	// Establish a bounded-pass cursor past the first pending binding.
+	mustNoError(t, collector.ReconcileSources(ctx, 1), "bounded pass")
+	path := filepath.Join(root, "2026", "11", "05", "rollout-native-review-first.jsonl")
+	writeUsageFixture(t, path, codexSessionMetaFixture(t, "native-review-first", ""))
+	// Negative limit promises all eligible bindings, including the first one.
+	mustNoError(t, collector.ReconcileSources(ctx, -1), "unlimited pass")
+	bindings, err := store.ListUsageBindingsForSession(ctx, first.ID)
+	mustNoError(t, err)
+	if len(bindings) != 1 {
+		t.Fatalf("bindings=%d", len(bindings))
+	}
+	sources, err := store.ListUsageSourcesForBinding(ctx, bindings[0].ID)
+	mustNoError(t, err)
+	if len(sources) != 1 {
+		t.Fatalf("unlimited pass skipped the earlier binding: sources=%d want=1", len(sources))
 	}
 }

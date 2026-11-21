@@ -79,6 +79,22 @@ async function editModel() {
 	return dialog;
 }
 
+async function editClaudeEffort() {
+	server = agentSettingsSnapshot({
+		settings: agentSettingsSelection({ model: "", effort: "" }),
+		currentModelEfforts: ["high"],
+		capabilities: { ...server.capabilities, models: [] },
+		pending: undefined,
+	});
+	showSession({ provider: "claude-code" });
+	await userEvent.click(screen.getByRole("button", { name: "Agent settings" }));
+	await userEvent.click(await screen.findByRole("button", { name: "Edit agent settings" }));
+	const dialog = await screen.findByRole("dialog", { name: "Change agent settings" });
+	await userEvent.click(within(dialog).getByRole("button", { name: /^Effort/ }));
+	await userEvent.click(await screen.findByRole("menuitem", { name: "high" }));
+	return dialog;
+}
+
 function showSettingsSurfaces() {
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
 	clients.push(client);
@@ -91,6 +107,33 @@ function showSettingsSurfaces() {
 }
 
 describe("Session agent settings intent", () => {
+	it("submits only effort from the live Claude model choices when the catalog has no default", async () => {
+		const dialog = await editClaudeEffort();
+		await userEvent.click(within(dialog).getByRole("button", { name: "Apply settings" }));
+		expect(patchMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/agent-settings", expect.objectContaining({
+			body: expect.objectContaining({ settings: { effort: "high" } }),
+		}));
+	});
+	it.each([
+		{
+			reasonCode: "observation_owner_mismatch",
+			message: "The live effort options belong to a different attachment. Confirm the running account or select a verified model.",
+		},
+		{
+			reasonCode: "effort_permission_unverified",
+			message: "The provider has not confirmed its permission mode. Wait for live settings evidence or select a verified model.",
+		},
+	])("shows the actionable effort refusal for $reasonCode", async ({ reasonCode, message }) => {
+		patchMock.mockResolvedValueOnce({
+			error: { code: "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE", message, requestId: "effort-request", details: { reasonCode } },
+			response: new Response(null, { status: 503 }),
+		});
+		const dialog = await editClaudeEffort();
+		await userEvent.click(within(dialog).getByRole("button", { name: "Apply settings" }));
+		const alert = await within(dialog).findByRole("alert");
+		expect(alert).toHaveTextContent(message);
+		expect(alert).toHaveTextContent("effort-request");
+	});
 	it("restores the confirmed composer projection when cancellation is read before its CDC", async () => {
 		server = agentSettingsSnapshot();
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -360,7 +403,7 @@ describe("Session agent settings intent", () => {
 			await waitFor(() => expect(client.getMutationCache().find({ mutationKey: terminateSessionMutationKey })?.state.status).toBe("success"));
 			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/kill", expect.objectContaining({ params: { path: { sessionId: "sess-1" } }, body: undefined }));
 			expect(client.getQueryData(workspaceQueryKey)).toEqual([expect.objectContaining({ sessions: [expect.objectContaining({ id: "sess-1", isTerminated: true })] })]);
-			expect(captureRendererEventMock).toHaveBeenCalledWith("ao.renderer.session_kill_succeeded", { project_id: "ws-1" });
+			expect(captureRendererEventMock).toHaveBeenCalledWith("ao.sessions.killed", { project_id: "ws-1" });
 		} finally {
 			await act(async () => { await appI18n.changeLanguage("en"); });
 		}
@@ -378,7 +421,7 @@ describe("Session agent settings intent", () => {
 		await userEvent.click(within(dialog).getByRole("button", { name: "Archive session" }));
 		expect(await within(dialog).findByRole("alert")).toHaveTextContent("Writer is still unconfirmed");
 		expect(client.getQueryData(workspaceQueryKey)).toEqual(workspaces);
-		expect(captureRendererEventMock).toHaveBeenCalledWith("ao.renderer.session_kill_failed", { project_id: "ws-1" });
+		expect(captureRendererEventMock).toHaveBeenCalledWith("ao.sessions.kill_failed", { project_id: "ws-1" });
 		await userEvent.click(within(dialog).getByRole("button", { name: "Archive session" }));
 		await waitFor(() => expect(client.getMutationCache().findAll({ mutationKey: terminateSessionMutationKey }).at(-1)?.state.status).toBe("success"));
 		expect(postMock).toHaveBeenCalledTimes(2);

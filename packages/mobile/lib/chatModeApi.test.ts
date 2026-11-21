@@ -5,7 +5,7 @@ vi.mock("expo-secure-store", () => ({ getItemAsync: vi.fn(), setItemAsync: vi.fn
 vi.mock("expo/fetch", () => ({ fetch: vi.fn() }));
 
 import { fetch as expoFetch } from "expo/fetch";
-import { ApiError, apiRequest, delegateTask, getAgentModels, getArchivedSessions, getPreview, getSessions, getSettings, launchOrchestrator, mobileReachablePreviewURL, pinSession, renameSession, restoreSession, resumeSessionAgent, setSessionAutoInjectCI, setSessionAutoInjectReview, setSessionAutoReview, spawnSession, unpinSession, resetArchivePagingProbes } from "./api";
+import { ApiError, apiRequest, delegateTask, getAgentModels, getArchivedSessions, getPreview, getSessions, getSettings, launchOrchestrator, mobileReachablePreviewURL, pinSession, renameSession, restoreSession, RESUME_WAIT_LIMIT_MS, resumeSessionAgent, setSessionAutoInjectCI, setSessionAutoInjectReview, setSessionAutoReview, spawnSession, unpinSession, resetArchivePagingProbes } from "./api";
 import * as chatApi from "./chat/api";
 import { UNREACHABLE_ACTION_COPY, UnreachableError, userFacingError } from "./connectionError";
 import type { ServerConfig } from "./config";
@@ -370,6 +370,55 @@ describe("mobile Chat API boundaries", () => {
 		const [url, init] = vi.mocked(fetch).mock.calls[0];
 		expect(url).toBe("http://ao.test:3011/api/v1/sessions/chat-1/resume-agent");
 		expect(init?.method).toBe("POST");
+		// An older daemon answers 200 after resuming inline; nothing to follow.
+		expect(fetch).toHaveBeenCalledTimes(1);
+	});
+
+	describe("following a resume the daemon finishes in the background", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+		const accepted = () => response({ ok: true, sessionId: "chat-1" }, 202);
+		const status = (state: string, extra: object = {}) => response({ sessionId: "chat-1", state, ...extra });
+
+		it("resolves once the background resume succeeds", async () => {
+			vi.mocked(fetch)
+				.mockResolvedValueOnce(accepted())
+				.mockResolvedValueOnce(status("running"))
+				.mockResolvedValueOnce(status("succeeded", { resumeMode: "native" }));
+			const resumed = resumeSessionAgent(cfg, "chat-1");
+			await vi.advanceTimersByTimeAsync(2_000);
+			await expect(resumed).resolves.toBeUndefined();
+			const [url, init] = vi.mocked(fetch).mock.calls[2];
+			expect(url).toBe("http://ao.test:3011/api/v1/sessions/chat-1/resume-agent");
+			expect(init?.method).toBeUndefined();
+		});
+
+		it("throws the daemon's error when the background resume fails", async () => {
+			vi.mocked(fetch)
+				.mockResolvedValueOnce(accepted())
+				.mockResolvedValueOnce(status("failed", { error: { status: 409, code: "AGENT_ACCOUNT_IN_USE", message: "The account is being used by another operation. Wait for it to finish, then retry." } }));
+			const resumed = resumeSessionAgent(cfg, "chat-1");
+			const failed = expect(resumed).rejects.toMatchObject({ name: "ApiError", status: 409, code: "AGENT_ACCOUNT_IN_USE" });
+			await vi.advanceTimersByTimeAsync(1_000);
+			await failed;
+			await resumed.catch((cause) => {
+				expect(cause).toBeInstanceOf(ApiError);
+				expect(userFacingError(cause)).toBe("The account is being used by another operation. Wait for it to finish, then retry.");
+			});
+		});
+
+		it("gives up after the wait limit", async () => {
+			vi.mocked(fetch).mockResolvedValueOnce(accepted());
+			vi.mocked(fetch).mockImplementation(async () => status("running"));
+			const resumed = resumeSessionAgent(cfg, "chat-1");
+			const timedOut = expect(resumed).rejects.toThrow("did not finish resuming within 150 seconds");
+			await vi.advanceTimersByTimeAsync(RESUME_WAIT_LIMIT_MS + 2_000);
+			await timedOut;
+		});
 	});
 
 	it("keeps terminated-session restoration as a distinct lifecycle operation", async () => {

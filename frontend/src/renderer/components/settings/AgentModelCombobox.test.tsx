@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useUiStore } from "../../stores/ui-store";
 import { AgentModelCombobox, buildModelSearchIndex, searchModelIndex } from "./AgentModelCombobox";
 
 function renderCombobox(
@@ -26,6 +27,21 @@ function renderCombobox(
 
 describe("AgentModelCombobox", () => {
 	beforeEach(() => window.localStorage.clear());
+
+	it("pins a catalog default only when the caller offers an explicit inherit action", async () => {
+		const inherit = vi.fn();
+		const { onChange } = renderCombobox([{ id: "model-default", label: "Model Default", isDefault: true }], {
+			pinCatalogDefault: true,
+			onUseDefault: inherit,
+		});
+		const picker = screen.getByRole("button", { name: "Worker model" });
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Model Default/ }));
+		expect(onChange).toHaveBeenCalledExactlyOnceWith("model-default");
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Use project or agent default/ }));
+		expect(inherit).toHaveBeenCalledTimes(1);
+	});
 
 	it("shows resolved effort beside the model and keeps effort in the menu", async () => {
 		function Picker() {
@@ -64,6 +80,40 @@ describe("AgentModelCombobox", () => {
 		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
 		expect(picker).toHaveTextContent("Plain");
 		expect(picker).toHaveTextContent("Low");
+	});
+
+	it("disables a model the installed CLI is too old for and explains the fix", async () => {
+		const { onChange } = renderCombobox([
+			{ id: "claude-sonnet-5-5", label: "Sonnet 5.5" },
+			{
+				id: "claude-opus-5-5",
+				label: "Opus 5.5",
+				requiresVersion: "2.1.280",
+				unavailableReason: "Requires Claude Code 2.1.280 or newer (installed: 2.1.239). Run `claude update`, then try again.",
+			},
+		], { compact: true });
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		const gated = screen.getByRole("menuitem", { name: /Opus 5\.5/ });
+		expect(gated).toHaveAttribute("aria-disabled", "true");
+		expect(gated).toHaveTextContent("Requires Claude Code 2.1.280 or newer");
+		await userEvent.click(gated);
+		expect(onChange).not.toHaveBeenCalled();
+		await userEvent.click(screen.getByRole("menuitem", { name: "Sonnet 5.5" }));
+		expect(onChange).toHaveBeenCalledWith("claude-sonnet-5-5");
+	});
+
+	it("offers Update Claude Code under a model that needs a newer CLI", async () => {
+		const openGlobalSettings = vi.spyOn(useUiStore.getState(), "openGlobalSettings").mockImplementation(() => undefined);
+		useUiStore.setState({ openGlobalSettings });
+		renderCombobox([
+			{ id: "claude-sonnet-5-5", label: "Sonnet 5.5" },
+			{ id: "claude-opus-5-5", label: "Opus 5.5", requiresVersion: "2.1.280", unavailableReason: "Requires Claude Code 2.1.280 or newer." },
+		], { compact: true, agentId: "claude-code", hostId: "remote-host" });
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		expect(screen.getByRole("menuitem", { name: /Opus 5\.5/ })).toHaveAttribute("aria-disabled", "true");
+		expect(screen.getAllByRole("menuitem", { name: "Update Claude Code" })).toHaveLength(1);
+		await userEvent.click(screen.getByRole("menuitem", { name: "Update Claude Code" }));
+		expect(openGlobalSettings).toHaveBeenCalledWith("harness", expect.objectContaining({ hostId: "remote-host", focusAgentId: "claude-code", harnessView: "local", preserveProject: true }));
 	});
 
 	it("closes only the effort submenu on Escape", async () => {

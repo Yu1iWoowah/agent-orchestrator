@@ -15,7 +15,8 @@ import { useSessionAttentionFrame } from "./SessionAttentionContent";
 import { useAttentionSelection } from "../../hooks/useSessionAttention";
 import type { ConversationActivity } from "../../types/conversation";
 import { DecisionDialog } from "./DecisionDialog";
-import { decisionTargetKey, type DecisionTarget } from "../../lib/decision-target";
+import { decisionTargetKey, type DecisionSelection } from "../../lib/decision-target";
+import { useProjectQuestionRouting } from "../ProjectQuestionRouting";
 import { conversationFrameSessionKey } from "../../stores/conversation-frame-store";
 
 export interface AttentionSourceSelection {
@@ -32,6 +33,8 @@ export function SessionConversationFrames({
 	sessionId,
 	hostId,
 	sourceAgent,
+	projectId,
+	isOrchestrator,
 	surfaceRef,
 	composerRef,
 	activeBranchId,
@@ -42,6 +45,8 @@ export function SessionConversationFrames({
 	sessionId: string;
 	hostId?: string;
 	sourceAgent?: string;
+	projectId?: string;
+	isOrchestrator?: boolean;
 	surfaceRef: RefObject<HTMLElement | null>;
 	composerRef: RefObject<HTMLElement | null>;
 	activeBranchId?: string;
@@ -50,6 +55,7 @@ export function SessionConversationFrames({
 	onAttentionSourceFocus?: (activity: ConversationActivity) => boolean;
 }) {
 	const { t } = useTranslation();
+	const routing = useProjectQuestionRouting();
 	const bounds = useConversationFrameSafeRect(surfaceRef, composerRef);
 	const plan = useSessionPlan(sessionId, hostId);
 	const selection = useAttentionSelection(
@@ -60,12 +66,12 @@ export function SessionConversationFrames({
 	);
 	const scope = JSON.stringify([hostId ?? null, sessionId, activeBranchId ?? null]);
 	const currentScope = useRef(scope); currentScope.current = scope;
-	const [decision, setDecision] = useState<{ scope: string; target: DecisionTarget }>();
+	const [decision, setDecision] = useState<DecisionSelection & { scope: string }>();
 	const returnTo = useRef<{ scope: string; trigger: HTMLButtonElement; targetKey: string; resume?: () => void } | undefined>(undefined);
 	useEffect(() => { setDecision(undefined); returnTo.current = undefined; }, [scope]);
-	const openDecision = useCallback((target: DecisionTarget, trigger: HTMLButtonElement, resume?: () => void) => {
-		returnTo.current = { scope, trigger, targetKey: decisionTargetKey(target), resume };
-		setDecision({ scope, target });
+	const openDecision = useCallback((selection: DecisionSelection, trigger: HTMLButtonElement, resume?: () => void) => {
+		returnTo.current = { scope, trigger, targetKey: decisionTargetKey(selection.target), resume };
+		setDecision({ scope, ...selection });
 	}, [scope]);
 	const restoreFocus = useCallback((resumeSheet = true) => {
 		const saved = returnTo.current;
@@ -83,12 +89,15 @@ export function SessionConversationFrames({
 	const locateOriginal = useCallback((id: string) => {
 		if (scope !== currentScope.current) return;
 		returnTo.current = undefined;
+		if (projectId && decision && decision.sessionId !== sessionId) { routing?.openOriginal(projectId, decision.sessionId, hostId); return; }
 		onLocateAttention?.(id);
 		if (onAttentionSourceChange) selection.locate(id);
-	}, [scope, onLocateAttention, onAttentionSourceChange, selection.locate]);
+	}, [scope, onLocateAttention, onAttentionSourceChange, selection.locate, decision, routing, projectId, sessionId, hostId]);
 	const attention = useSessionAttentionFrame({
 		sessionId,
 		hostId,
+		projectId,
+		isOrchestrator,
 		branchId: activeBranchId,
 		onOpen: openDecision,
 		locatingId: selection.loading ? selection.selectedId : undefined,
@@ -244,7 +253,10 @@ export function SessionConversationFrames({
 				{ kind: "plan", title: t("plan.title"), summary, content },
 			]}
 		/>
-		<DecisionDialog target={decision?.scope === scope ? decision.target : undefined} sessionId={sessionId} hostId={hostId} sourceAgent={sourceAgent} bounds={bounds} onClose={() => setDecision(undefined)} onLocate={locateOriginal} onRestoreFocus={restoreFocus} />
+		<DecisionDialog target={decision?.scope === scope ? decision.target : undefined} sessionId={decision?.sessionId ?? sessionId} hostId={hostId}
+			sourceAgent={decision?.sessionId === sessionId ? sourceAgent : undefined} projectId={decision?.projectId ?? projectId}
+			editable={!(decision?.projectId ?? projectId) || decision?.target.kind !== "agent_question"}
+			bounds={bounds} onClose={() => setDecision(undefined)} onLocate={locateOriginal} onRestoreFocus={restoreFocus} />
 	</>;
 }
 

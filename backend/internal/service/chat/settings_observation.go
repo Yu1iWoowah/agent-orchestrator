@@ -38,7 +38,8 @@ func (c *Controller) observationOwner(account string) domain.AgentSettingsOwner 
 // dispatch as well as before publication. The account was captured before the
 // replacement provider started, never derived from a later binding.
 func (s *Service) newObservedBranchController(id domain.SessionID, source *Controller, conversation domain.ConversationRecord, generation string, provider ports.ChatConversation, account string) *Controller {
-	c := newController(id, source.owner(), conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged, s.reader)
+	c := newController(id, source.owner(), conversation, generation, source.harness, source.workspacePath, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.recheckAccount, s.prChanged, s.onCodexCapacityChanged, s.reader)
+	c.artifactDir = source.artifactDir
 	c.settingsObservationOwner = c.observationOwner(account)
 	s.configureAgentSettingsController(c)
 	return c
@@ -92,6 +93,9 @@ func (s *Service) ObserveAgentSettings(ctx context.Context, id domain.SessionID)
 	}
 	if observer, ok := c.conv.(ports.ChatAgentSettingsObserver); ok {
 		result.Effective = observer.AgentSettingsObservation()
+	}
+	if observer, ok := c.conv.(ports.ChatAgentSettingsEffortObserver); ok && c.harness == domain.HarnessClaudeCode {
+		result.EffortOptions = observer.AgentSettingsEffortOptions()
 	}
 	if c.conv.ProviderConversationID() != result.Owner.ProviderConversationID {
 		return domain.AgentSettingsObservation{}, ports.ErrAgentSettingsConflict

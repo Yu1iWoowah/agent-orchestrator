@@ -18,6 +18,9 @@ import (
 // yet exist (tracker/SCM per-project config) are intentionally absent and land in
 // focused follow-up PRs alongside the code that reads them.
 type ProjectConfig struct {
+	RCA                   RCAConfig                   `json:"rca,omitempty,omitzero"`
+	HCGDelegation         HCGDelegationConfig         `json:"hcgDelegation,omitempty,omitzero"`
+	HCGReporting          HCGReportingConfig          `json:"hcgReporting,omitempty,omitzero"`
 	GuardianObservability GuardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`
 	OrchestratorHandoff   OrchestratorHandoffConfig   `json:"orchestratorHandoff,omitempty,omitzero"`
 	// AgentSettingsPolicy gates managed orchestrators; local manual calls remain
@@ -53,10 +56,9 @@ type ProjectConfig struct {
 	// OrchestratorRules are project-specific standing instructions for
 	// orchestrator sessions.
 	OrchestratorRules string `json:"orchestratorRules,omitempty"`
-
-	// AgentAccounts contains local-only opaque provider account references.
-	// Cloud/sync/export projections must omit these installation-specific IDs.
-	AgentAccounts map[AgentAccountProvider]string `json:"agentAccounts,omitempty"`
+	// OrchestratorRulesFile is a repo-relative Markdown/text file whose contents
+	// are appended to OrchestratorRules for orchestrator sessions.
+	OrchestratorRulesFile string `json:"orchestratorRulesFile,omitempty"`
 
 	// AgentConfig is the default agent config for the project.
 	AgentConfig AgentConfig `json:"agentConfig,omitempty"`
@@ -177,9 +179,56 @@ func (c ProjectConfig) DefaultWorkerReviewer() (ReviewerHarness, AgentConfig) {
 
 // RoleOverride overrides the harness and/or agent config for a session role.
 type RoleOverride struct {
-	AgentAccountID string       `json:"agentAccountId,omitempty"`
-	Harness        AgentHarness `json:"agent,omitempty"`
-	AgentConfig    AgentConfig  `json:"agentConfig,omitempty"`
+	HCGDelegation  HCGDelegationToggle `json:"hcgDelegation,omitempty,omitzero"`
+	HCGReporting   HCGReportingConfig  `json:"hcgReporting,omitempty,omitzero"`
+	AgentAccountID string              `json:"agentAccountId,omitempty"`
+	Harness        AgentHarness        `json:"agent,omitempty"`
+	AgentConfig    AgentConfig         `json:"agentConfig,omitempty"`
+	RCA            RCAConfig           `json:"rca,omitempty,omitzero"`
+}
+
+// HCGReportingConfig uses nil for inheritance; false is an explicit opt-out.
+type HCGReportingConfig struct {
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// RCAConfig is opt-in recorded-content policy; nil inherits and false revokes.
+type RCAConfig struct {
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// RCAPolicySnapshot holds only the named project and role RCA parents.
+type RCAPolicySnapshot struct{ Project, Worker, Orchestrator *bool }
+
+// RCAPolicySnapshot returns detached RCA policy inputs.
+func (c ProjectConfig) RCAPolicySnapshot() RCAPolicySnapshot {
+	copyBool := func(v *bool) *bool {
+		if v == nil {
+			return nil
+		}
+		b := *v
+		return &b
+	}
+	return RCAPolicySnapshot{Project: copyBool(c.RCA.Enabled), Worker: copyBool(c.Worker.RCA.Enabled), Orchestrator: copyBool(c.Orchestrator.RCA.Enabled)}
+}
+
+// HCGReportingPolicySnapshot excludes every unrelated setting and credential.
+type HCGReportingPolicySnapshot struct {
+	Project      *bool `json:"project"`
+	Worker       *bool `json:"worker"`
+	Orchestrator *bool `json:"orchestrator"`
+}
+
+// ReportingPolicySnapshot copies the fixed reporting inputs for a committed config.
+func (c ProjectConfig) ReportingPolicySnapshot() HCGReportingPolicySnapshot {
+	copyBool := func(p *bool) *bool {
+		if p == nil {
+			return nil
+		}
+		v := *p
+		return &v
+	}
+	return HCGReportingPolicySnapshot{copyBool(c.HCGReporting.Enabled), copyBool(c.Worker.HCGReporting.Enabled), copyBool(c.Orchestrator.HCGReporting.Enabled)}
 }
 
 const (
@@ -231,6 +280,9 @@ func (c ProjectConfig) IsZero() bool {
 // Validate rejects values outside the typed vocabulary so a bad config is
 // refused when it is set (CLI/API) rather than surfacing at spawn.
 func (c ProjectConfig) Validate() error {
+	if err := c.HCGDelegation.Validate(); err != nil {
+		return fmt.Errorf("hcgDelegation: %w", err)
+	}
 	if c.AgentSettingsPolicy != nil {
 		if err := c.AgentSettingsPolicy.Validate(); err != nil {
 			return err
@@ -288,6 +340,9 @@ func (c ProjectConfig) Validate() error {
 	}
 	if err := validateRepoRelative(c.AgentRulesFile); err != nil {
 		return fmt.Errorf("agentRulesFile %q: %w", c.AgentRulesFile, err)
+	}
+	if err := validateRepoRelative(c.OrchestratorRulesFile); err != nil {
+		return fmt.Errorf("orchestratorRulesFile %q: %w", c.OrchestratorRulesFile, err)
 	}
 	for i, rv := range c.Reviewers {
 		if !rv.Harness.IsKnown() {

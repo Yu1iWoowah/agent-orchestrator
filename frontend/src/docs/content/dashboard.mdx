@@ -50,6 +50,20 @@ Terminal UI sessions keep the selected agent's native terminal experience availa
 
 Use the terminal for native prompts and interactive tools. Use Orchestrator's message controls for routine follow-ups so lifecycle reactions can apply the correct delivery policy.
 
+## Answer project questions
+
+In the current orchestrator's Chat, open **Awaiting you** to see the project's pending user questions, including worker questions. In Terminal UI, use **Open project attention** in the session's top bar.
+
+The project list, notification center, and desktop notifications open the same question at the current orchestrator. Worker and former orchestrator views keep the source record and link to that entry. Standalone questions stay in their own session.
+
+Each question shows its original session, harness, report when present, and version. Your answer goes to that original session. An authorization answer keeps the displayed action, scope, and limits. A queued answer is saved but has not yet been delivered.
+
+If complete project data confirms that no orchestrator is active, you can answer a valid, open question in the project view. When an orchestrator appears, the same question and draft follow it. Loading, failed, or incomplete data pauses submission until the current orchestrator can be determined. An expired source question cannot be answered or restored through this entry.
+
+Provider approvals and input requests show a summary. Choose **Go to original request** to use the provider's original form. Answering an AO authorization question does not approve a provider tool request.
+
+**History** shows the current session's history, not the whole project's history. Use the original source link or its read-only history to inspect a worker's previous answer.
+
 ## Switch interfaces
 
 Supported sessions show **Switch to chat UI** or **Switch to terminal UI**. Which action appears depends on the agent, the current interface, and whether it is working. Orchestrator keeps the same session and worktree and replaces one controller at a time.
@@ -101,7 +115,7 @@ Project settings configure worker and orchestrator roles without changing the re
 
 GitHub and GitLab provide pull-request and issue data. **Cues** belong to a project. Create a Cue to save an agent instruction or shell command. An agent Cue sends a prompt to an eligible session or starts a worker. A blocked session cannot accept an ordinary prompt. A command Cue runs the exact command in a fresh local terminal; it does not ask an agent to interpret it.
 
-Use **General** to choose the default session interface. **Harness** shows setup and readiness. **Agents → Codex** manages device accounts. **Browser** manages profiles and downloads. Project settings hold role-specific model, effort, permission, and rules overrides.
+Use **General** to choose the default session interface. **Harness** shows setup and readiness, and the subscription accounts of Claude Code and Codex. **Browser** manages profiles and downloads. Project settings hold role-specific model, effort, permission, and rules overrides.
 
 Closing a terminal or switching views does not archive a session. Some detached terminal and Chat processes can survive a daemon restart; reconnecting depends on the computer and provider state. **Archive** ends the Orchestrator session. Stopping only its agent leaves a session you can resume. See [session commands](/cli#ao-session) for resume, restore, and cleanup.
 

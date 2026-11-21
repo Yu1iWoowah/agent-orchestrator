@@ -32,7 +32,7 @@ func TestBatchConversationProjection(t *testing.T) {
 	if err := s.BindTurnToProvider(ctx, "leader", "provider-batch", histClock.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CompleteQueuedBatch(ctx, conversation, []string{"follower"}, "provider-batch", histClock.Add(time.Minute)); err != nil {
+	if err := s.CompleteQueuedBatch(ctx, conversation, []string{"follower"}, "provider-batch", "", histClock.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SettleAssistantMessage(ctx, conversation, "provider-answer", "provider-batch", "Shared batch answer", "answer", histClock.Add(2*time.Minute)); err != nil {

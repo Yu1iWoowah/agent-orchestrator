@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -13,6 +14,12 @@ import (
 
 // ErrNotProvisioning refuses intake when no controller is starting.
 var ErrNotProvisioning = domain.ErrSessionNotProvisioning
+
+// startingIntakeStore accepts input for a session whose controller is being
+// started, which the store cannot tell from a session that needs no queue.
+type startingIntakeStore interface {
+	AppendStartingUserMessage(ctx context.Context, conversationID string, session domain.SessionID, msg domain.ConversationMessage, turnID string, now time.Time) (bool, error)
+}
 
 // QueueUserMessage records a turn for a session whose controller does not exist
 // yet. It is the opening prompt's delivery path for an asynchronous spawn, and
@@ -26,13 +33,14 @@ func (s *Service) QueueUserMessage(
 	if err != nil {
 		return domain.ConversationTurn{}, err
 	}
-	return s.queueWithoutController(ctx, record, msg)
+	return s.queueWithoutController(ctx, record, msg, false)
 }
 
 func (s *Service) queueWithoutController(
 	ctx context.Context,
 	record domain.SessionRecord,
 	msg ports.ChatUserMessage,
+	behindAccountMove bool,
 ) (domain.ConversationTurn, error) {
 	if err := validateReplacementControlMessage(ctx, record.ID, record.Metadata.ControllerGeneration, msg); err != nil {
 		return domain.ConversationTurn{}, err
@@ -45,15 +53,22 @@ func (s *Service) queueWithoutController(
 		}
 	}
 	heldByReplacement := false
+	var startToken uint64
 	if !record.ProvisionState.IsProvisioning() && record.HibernatedAt == nil {
+		startToken = s.startToken(record.ID)
 		err := s.replacementWakeFence(ctx, record.ID)
-		if !errors.Is(err, domain.ErrReplacementIntakeFenced) {
-			if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrReplacementIntakeFenced):
+			heldByReplacement = true
+		case err != nil:
+			return domain.ConversationTurn{}, err
+		case startToken != 0:
+			if err := s.awaitStoppedControllerCleanup(ctx, record.ID); err != nil {
 				return domain.ConversationTurn{}, err
 			}
+		case !behindAccountMove:
 			return domain.ConversationTurn{}, ErrNotProvisioning
 		}
-		heldByReplacement = true
 	}
 	conversation, err := s.ensureConversation(ctx, record)
 	if err != nil {
@@ -85,10 +100,35 @@ func (s *Service) queueWithoutController(
 		SenderProjectID:     msg.SenderProjectID,
 		SenderDisplayName:   msg.SenderDisplayName,
 		AuthoredByUser:      msg.AuthoredByUser,
+		SpawnOpeningPrompt:  msg.SpawnOpeningPrompt,
 		Continuation:        msg.Continuation,
 		InteractionAt:       msg.InteractionAt,
 	}
-	created, err := s.store.AppendUserMessage(ctx, conversation.ID, record.ID, "", message, turnID, now)
+	appendQueued := func(conversationID string) (bool, error) {
+		if starting, ok := s.store.(startingIntakeStore); ok && startToken != 0 && !heldByReplacement {
+			return starting.AppendStartingUserMessage(ctx, conversationID, record.ID, message, turnID, now)
+		}
+		return s.store.AppendUserMessage(ctx, conversationID, record.ID, "", message, turnID, now)
+	}
+	var created bool
+	if startToken != 0 && !heldByReplacement {
+		gate := s.intakeGate(domain.SessionConversationOwner(record.ID))
+		if err := gate.lock(ctx); err != nil {
+			return domain.ConversationTurn{}, err
+		}
+		if s.startToken(record.ID) != startToken {
+			gate.unlock()
+			return domain.ConversationTurn{}, ErrNotProvisioning
+		}
+		now = s.now()
+		created, err = appendQueued(conversation.ID)
+		if created && err == nil {
+			s.markStartIntakeAt(record.ID, now)
+		}
+		gate.unlock()
+	} else {
+		created, err = appendQueued(conversation.ID)
+	}
 	if errors.Is(err, domain.ErrConversationRebound) {
 		// An orchestrator's first controller moved its queue to the project
 		// conversation after ensureConversation returned the provisioning row
@@ -97,8 +137,11 @@ func (s *Service) queueWithoutController(
 		if err == nil {
 			err = validateExcerptReferences(msg.Excerpts, conversation.ID)
 		}
+		if err == nil && startToken != 0 && !heldByReplacement {
+			return domain.ConversationTurn{}, ErrNotProvisioning
+		}
 		if err == nil {
-			created, err = s.store.AppendUserMessage(ctx, conversation.ID, record.ID, "", message, turnID, now)
+			created, err = appendQueued(conversation.ID)
 		}
 	}
 	if err != nil {
@@ -122,6 +165,25 @@ func (s *Service) queueWithoutController(
 		_ = controller.drainOne(ctx) // The message is already accepted; drain logs failures.
 	}
 	return turn, nil
+}
+
+// awaitStoppedControllerCleanup waits for a stopped controller of id to finish
+// its exit cleanup. That cleanup settles every queued turn its generation still
+// owns, so input accepted for the controller that is starting must land after
+// it. The registry drops a controller only once its cleanup has finished.
+func (s *Service) awaitStoppedControllerCleanup(ctx context.Context, id domain.SessionID) error {
+	s.mu.RLock()
+	previous := s.controllers[id]
+	s.mu.RUnlock()
+	if previous == nil || previous.State() != ports.ChatControllerStopped {
+		return nil
+	}
+	select {
+	case <-previous.stopped:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // queuedDeliveryContent preserves structured payloads and bounded references.

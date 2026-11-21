@@ -44,7 +44,7 @@ func TestTranscriptFlags_Validation(t *testing.T) {
 func TestSessionGet_TranscriptRequestShapeAndProjectStop(t *testing.T) {
 	cfg := setConfigEnv(t)
 	var calls []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/internal/telemetry/cli-invoked" {
 			body, _ := io.ReadAll(r.Body)
 			if strings.Contains(string(body), "transcript") || strings.Contains(string(body), "demo-1") {
@@ -215,7 +215,7 @@ func TestSessionGet_TranscriptHumanAndJSON(t *testing.T) {
 func TestSessionGet_TranscriptACPToolResult(t *testing.T) {
 	fileText := "package main\n" + strings.Repeat("read content line\n", 100)
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/conversation") {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"conversationId": "cnv", "latestSequence": 2, "oldestSequence": 2,
@@ -283,7 +283,7 @@ func TestSessionGet_TranscriptEdges(t *testing.T) {
 	t.Run("tui skips conversation", func(t *testing.T) {
 		cfg := setConfigEnv(t)
 		var conv bool
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(r.URL.Path, "/conversation") {
 				conv = true
 			}
@@ -322,7 +322,7 @@ func TestSessionGet_TranscriptEdges(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := setConfigEnv(t)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasSuffix(r.URL.Path, "/conversation") {
 					w.WriteHeader(http.StatusConflict)
 					_, _ = io.WriteString(w, `{"code":"`+tc.code+`","message":"`+tc.message+`","requestId":"req-transition"}`)
@@ -353,7 +353,7 @@ func TestSessionGet_TranscriptEdges(t *testing.T) {
 
 	t.Run("empty conversation", func(t *testing.T) {
 		cfg := setConfigEnv(t)
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "/conversation") {
 				_, _ = io.WriteString(w, `{"conversationId":"","controller":"stopped","messages":[],"activities":[],"turns":[],"hasMoreBefore":false,"latestSequence":0}`)
 				return
@@ -376,7 +376,7 @@ func TestSessionGet_TranscriptEdges(t *testing.T) {
 
 	t.Run("no older cursor", func(t *testing.T) {
 		cfg := setConfigEnv(t)
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "/conversation") {
 				_, _ = io.WriteString(w, `{"conversationId":"cnv","latestSequence":1,"oldestSequence":1,"hasMoreBefore":false,"messages":[{"kind":"message","sequence":1,"role":"user","origin":"human","text":"hi","createdAt":"2026-10-09T10:00:00Z"}],"activities":[],"turns":[]}`)
 				return
@@ -397,7 +397,7 @@ func TestSessionGet_TranscriptEdges(t *testing.T) {
 	t.Run("cap 0 passthrough and unicode", func(t *testing.T) {
 		body := strings.Repeat("你", 600) + "MIDDLE" + strings.Repeat("🙂", 600)
 		cfg := setConfigEnv(t)
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "/conversation") {
 				payload, _ := json.Marshal(map[string]any{
 					"conversationId": "cnv",
@@ -570,7 +570,7 @@ func TestTranscriptCapsStreamedActivityFields(t *testing.T) {
 func TestSessionGet_TranscriptCapsACPFileSnapshots(t *testing.T) {
 	const fieldLength = 12000
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/conversation") {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"conversationId": "cnv", "latestSequence": 2, "oldestSequence": 2,
@@ -780,7 +780,7 @@ func transcriptFixtureServer(t *testing.T) *httptest.Server {
 			},
 		},
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(r.URL.Path, "/conversation"):

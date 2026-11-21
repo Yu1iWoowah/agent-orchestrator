@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -37,6 +39,7 @@ import (
 	previewutil "github.com/aoagents/agent-orchestrator/backend/internal/preview"
 	"github.com/aoagents/agent-orchestrator/backend/internal/previewserver"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
+	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
@@ -44,6 +47,16 @@ import (
 )
 
 type fakeSessionService struct {
+	artifactsRegistered   []string
+	artifactsUnregistered []string
+	registerArtifactsErr  error
+	deleted               []domain.SessionID
+	deleteCleanup         []bool
+	keptSessions          map[domain.SessionID]domain.Session
+	keptSets              []sessionsvc.KeptArtifacts
+	keepingDeleted        []domain.SessionID
+	forgottenKept         []string
+	deleteErr             error
 	// lastListFilter is the filter the controller parsed; listPage, when set,
 	// replaces the page built from sessions so a test can pin the wire shape.
 	lastListFilter             sessionsvc.ListFilter
@@ -54,8 +67,10 @@ type fakeSessionService struct {
 	artifactsDeleted           []domain.SessionID
 	deleteArtifactsErr         error
 	sessions                   map[domain.SessionID]domain.Session
+	resumeStatus               map[domain.SessionID]sessionsvc.ResumeAgentStatus
 	sent                       string
 	sentAttachment             *ports.SpawnAttachment
+	sendErr                    error
 	sentDeliveryOptions        ports.MessageDeliveryOptions
 	delegationInput            sessionsvc.DelegateTaskInput
 	delegationErr              error
@@ -425,12 +440,22 @@ func (f *fakeSessionService) ExitAgent(_ context.Context, id domain.SessionID) (
 	return sessionsvc.ExitAgentOutcome{Session: s}, nil
 }
 
-func (f *fakeSessionService) ResumeAgent(_ context.Context, id domain.SessionID) (sessionsvc.ResumeAgentOutcome, error) {
+func (f *fakeSessionService) StartResumeAgent(_ context.Context, id domain.SessionID, _ bool) (domain.Session, error) {
 	s := f.sessions[id]
-	s.Activity.State = domain.ActivityIdle
-	s.Status = domain.StatusIdle
-	f.sessions[id] = s
-	return sessionsvc.ResumeAgentOutcome{Session: s, Mode: sessionsvc.RestoreModeViewNative}, nil
+	if f.resumeStatus == nil {
+		f.resumeStatus = map[domain.SessionID]sessionsvc.ResumeAgentStatus{}
+	}
+	f.resumeStatus[id] = sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentRunning}
+	return s, nil
+}
+
+func (f *fakeSessionService) ResumeAgentStatus(_ context.Context, id domain.SessionID) (sessionsvc.ResumeAgentStatus, error) {
+	status, ok := f.resumeStatus[id]
+	if !ok {
+		return sessionsvc.ResumeAgentStatus{}, apierr.NotFound("AGENT_RESUME_NOT_FOUND", "No resume of this agent is recorded since the daemon started")
+	}
+	status.Session = f.sessions[id]
+	return status, nil
 }
 
 func (f *fakeSessionService) Kill(_ context.Context, id domain.SessionID) (bool, error) {
@@ -439,6 +464,19 @@ func (f *fakeSessionService) Kill(_ context.Context, id domain.SessionID) (bool,
 	s.Status = domain.StatusTerminated
 	f.sessions[id] = s
 	return true, nil
+}
+
+func (f *fakeSessionService) RegisterArtifacts(_ context.Context, id domain.SessionID, references []string) (sessionsvc.ArtifactRegistration, error) {
+	if f.registerArtifactsErr != nil {
+		return sessionsvc.ArtifactRegistration{}, f.registerArtifactsErr
+	}
+	f.artifactsRegistered = append(f.artifactsRegistered, references...)
+	return sessionsvc.ArtifactRegistration{Registered: references, OtherFiles: 2, OtherRootFiles: []string{"draft.md"}}, nil
+}
+
+func (f *fakeSessionService) UnregisterArtifact(_ context.Context, _ domain.SessionID, path string) error {
+	f.artifactsUnregistered = append(f.artifactsUnregistered, path)
+	return nil
 }
 
 func (f *fakeSessionService) DeleteArtifacts(_ context.Context, id domain.SessionID) error {
@@ -479,14 +517,14 @@ func (f *fakeSessionService) Rename(_ context.Context, id domain.SessionID, disp
 func (f *fakeSessionService) Send(_ context.Context, _ domain.SessionID, message string, attachment *ports.SpawnAttachment) error {
 	f.sent = message
 	f.sentAttachment = attachment
-	return nil
+	return f.sendErr
 }
 
 func (f *fakeSessionService) SendWithOptions(_ context.Context, _ domain.SessionID, message string, attachment *ports.SpawnAttachment, options ports.MessageDeliveryOptions) error {
 	f.sent = message
 	f.sentAttachment = attachment
 	f.sentDeliveryOptions = options
-	return nil
+	return f.sendErr
 }
 
 func (f *fakeSessionService) DelegateTask(_ context.Context, in sessionsvc.DelegateTaskInput) (sessionsvc.DelegateTaskOutcome, error) {
@@ -1149,7 +1187,7 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	s.Metadata = domain.SessionMetadata{Branch: "qa/modal-worker", WorkspacePath: "/tmp/private-worktree", RuntimeHandleID: "runtime-1", Prompt: "private prompt"}
 	s.SCMStatus = domain.StatusReviewPending
 	s.KanbanColumn = domain.KanbanNeedsReview
-	s.DisplayStatus = contract.DisplayNeedsHumanReview
+	s.DisplayStatus = contract.DisplayAwaitingReview
 	svc.sessions["ao-1"] = s
 	srv := newSessionTestServer(t, svc)
 
@@ -1167,7 +1205,7 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	if list.Sessions[0].KanbanColumn != string(domain.KanbanNeedsReview) {
 		t.Fatalf("kanbanColumn = %q, want the derived column on the wire", list.Sessions[0].KanbanColumn)
 	}
-	if list.Sessions[0].DisplayStatus != string(contract.DisplayNeedsHumanReview) {
+	if list.Sessions[0].DisplayStatus != string(contract.DisplayAwaitingReview) {
 		t.Fatalf("displayStatus = %q, want the derived phrase on the wire", list.Sessions[0].DisplayStatus)
 	}
 	if list.Sessions[0].Branch != "qa/modal-worker" {
@@ -1261,17 +1299,34 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 		t.Fatalf("exit response = %#v", exited)
 	}
 
+	body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-2/resume-agent", "")
+	assertErrorCode(t, body, status, http.StatusNotFound, "AGENT_RESUME_NOT_FOUND")
 	body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions/ao-2/resume-agent", "")
-	if status != http.StatusOK {
-		t.Fatalf("resume agent = %d, want 200; body=%s", status, body)
+	if status != http.StatusAccepted {
+		t.Fatalf("resume agent = %d, want 202; body=%s", status, body)
 	}
-	var resumed struct {
-		SessionID  string `json:"sessionId"`
-		ResumeMode string `json:"resumeMode"`
-	}
+	var resumed map[string]any
 	mustJSON(t, body, &resumed)
-	if resumed.SessionID != "ao-2" || resumed.ResumeMode != "native" {
+	if resumed["ok"] != true || resumed["sessionId"] != "ao-2" || resumed["session"] == nil || resumed["resumeMode"] != nil {
 		t.Fatalf("resume response = %#v", resumed)
+	}
+	resumeFinished := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		status sessionsvc.ResumeAgentStatus
+		want   string
+	}{
+		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentRunning}, `"state":"running"`},
+		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentSucceeded, Mode: sessionsvc.RestoreModeViewNative, FinishedAt: &resumeFinished}, `"resumeMode":"native","finishedAt":"2026-11-14T12:00:00Z"`},
+		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentFailed, Err: apierr.Conflict("AGENT_RESUME_FAILED", "AO could not restart the agent", map[string]any{"step": "runtime"})},
+			`"error":{"status":409,"code":"AGENT_RESUME_FAILED","message":"AO could not restart the agent","details":{"step":"runtime"}}`},
+		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentFailed, Err: context.DeadlineExceeded},
+			`"error":{"status":503,"code":"SERVICE_UNAVAILABLE"`},
+	} {
+		svc.resumeStatus["ao-2"] = tc.status
+		body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-2/resume-agent", "")
+		if status != http.StatusOK || !strings.Contains(string(body), tc.want) || !strings.Contains(string(body), `"sessionId":"ao-2"`) {
+			t.Fatalf("resume status = %d %s, want %s", status, body, tc.want)
+		}
 	}
 
 	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/sessions/ao-2", `{"displayName":"Renamed"}`)
@@ -1817,13 +1872,14 @@ func TestSessionsAPI_SpawnRejectsOversizedBody(t *testing.T) {
 	srv := newSessionTestServer(t, svc)
 
 	// A body past the ~135 MiB maxSpawnBodyBytes cap is rejected while decoding
-	// (MaxBytesReader), before the attachment size caps and without materializing
+	// (MaxBytesReader), without materializing
 	// the whole body. The oversized bytes live in an *attachment* payload (not the
 	// prompt, which has its own much smaller PROMPT_TOO_LONG cap), so this pins the
 	// body cap specifically: MaxBytesReader makes the read/decode fail with
-	// INVALID_JSON. If that line were removed the body would decode fully and be
-	// rejected later with an attachment-specific code (ATTACHMENT_TOO_LARGE),
-	// failing this test. 150 MiB of base64 comfortably exceeds the ~135 MiB cap.
+	// INVALID_JSON. If that line were removed the body would decode fully (inline
+	// data has no decoded cap of its own; large files go through
+	// /api/v1/attachment-uploads), failing this test. 150 MiB of base64
+	// comfortably exceeds the ~135 MiB cap.
 	oversized := `{"projectId":"ao","attachments":[{"mimeType":"image/png","data":"` +
 		strings.Repeat("A", 150<<20) + `"}]}`
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", oversized)
@@ -1966,6 +2022,51 @@ func TestSessionsAPI_SpawnPassesModelToService(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_SpawnAndDelegatePassAccountToService(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		accepted     bool
+	}{
+		{"fork", `"accountId":" acct-b "`, true},
+		{"upstream", `"agentAccountId":" acct-b "`, true},
+		{"equal", `"accountId":"acct-b","agentAccountId":" acct-b "`, true},
+		{"conflicting", `"accountId":"acct-b","agentAccountId":"acct-c"`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newFakeSessionService()
+			srv := newSessionTestServer(t, svc)
+			body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", `{"kind":"worker","harness":"claude-code","prompt":"fix",`+tc.fields+`}`)
+			want := http.StatusCreated
+			if !tc.accepted {
+				want = http.StatusBadRequest
+			}
+			if status != want {
+				t.Fatalf("spawn status=%d want=%d body=%s", status, want, body)
+			}
+			if tc.accepted && svc.lastSpawn.AgentAccountID != "acct-b" {
+				t.Fatalf("spawn account=%q", svc.lastSpawn.AgentAccountID)
+			}
+			if !tc.accepted && svc.lastSpawn.Kind != "" {
+				t.Fatal("conflicting fields reached spawn service")
+			}
+			body, status, _ = doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", `{"projectId":"ao","brief":"Fix it","agent":"codex",`+tc.fields+`}`)
+			want = http.StatusAccepted
+			if !tc.accepted {
+				want = http.StatusBadRequest
+			}
+			if status != want {
+				t.Fatalf("delegate status=%d want=%d body=%s", status, want, body)
+			}
+			if tc.accepted && svc.delegationInput.AgentAccountID != "acct-b" {
+				t.Fatalf("delegate account=%q", svc.delegationInput.AgentAccountID)
+			}
+			if !tc.accepted && svc.delegationInput.ProjectID != "" {
+				t.Fatal("conflicting fields reached delegate service")
+			}
+		})
+	}
+}
+
 func TestSessionsAPI_SpawnPassesEffortToService(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
@@ -2007,6 +2108,33 @@ func TestSessionsAPI_SpawnPassesParentSessionToService(t *testing.T) {
 	}
 	if svc.lastSpawn.ParentSessionID != "ao-1" {
 		t.Fatalf("service ParentSessionID = %q, want ao-1", svc.lastSpawn.ParentSessionID)
+	}
+}
+
+// `ao spawn` asks for the async start so the session reads as provisioning
+// with its prompt queued while it starts; a standalone worker has no project
+// to start in the background and stays synchronous.
+func TestSessionsAPI_SpawnAsyncOnlyForProjectSessions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"project", `{"projectId":"ao","kind":"worker","harness":"claude-code","prompt":"fix","async":true}`, true},
+		{"omitted", `{"projectId":"ao","kind":"worker","harness":"claude-code","prompt":"fix"}`, false},
+		{"standalone", `{"kind":"worker","harness":"claude-code","prompt":"fix","async":true}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newFakeSessionService()
+			srv := newSessionTestServer(t, svc)
+			body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", tc.body)
+			if status != http.StatusCreated {
+				t.Fatalf("POST session = %d, want 201; body=%s", status, body)
+			}
+			if svc.lastSpawn.Async != tc.want {
+				t.Fatalf("service Async = %v, want %v", svc.lastSpawn.Async, tc.want)
+			}
+		})
 	}
 }
 
@@ -3009,6 +3137,82 @@ func TestSessionsAPI_SetPreviewAbsoluteWorkspaceFileUsesConfinedOrigin(t *testin
 	previewBody, previewStatus, _ := doPreviewOriginRequest(t, srv, resp.Session.PreviewURL, "/")
 	if previewStatus != http.StatusOK || string(previewBody) != `<html>workspace preview</html>` {
 		t.Fatalf("workspace preview = %d, %q; want 200 and workspace file", previewStatus, previewBody)
+	}
+}
+
+func TestSessionsAPI_SetPreviewAbsoluteArtifactFileUsesArtifactOrigin(t *testing.T) {
+	svc := newFakeSessionService()
+	workspace, artifacts := t.TempDir(), t.TempDir()
+	report := filepath.Join(artifacts, "q3", "report.html")
+	notes := filepath.Join(artifacts, "notes.md")
+	if err := os.MkdirAll(filepath.Dir(report), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(report, []byte(`<html>artifact report</html>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(notes, []byte("# Review notes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := svc.sessions["ao-1"]
+	s.Metadata = domain.SessionMetadata{WorkspacePath: workspace, ArtifactDir: artifacts}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	setPreview := func(target string) string {
+		t.Helper()
+		body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/preview", `{"url":`+strconv.Quote(target)+`}`)
+		if status != http.StatusOK {
+			t.Fatalf("set preview %q = %d, want 200; body=%s", target, status, body)
+		}
+		var resp struct {
+			Session struct {
+				PreviewURL string `json:"previewUrl"`
+			} `json:"session"`
+		}
+		mustJSON(t, body, &resp)
+		return resp.Session.PreviewURL
+	}
+
+	reportURLPath := filepath.ToSlash(report)
+	if filepath.VolumeName(report) != "" {
+		reportURLPath = "/" + reportURLPath
+	}
+	for _, target := range []string{report, (&url.URL{Scheme: "file", Path: reportURLPath}).String()} {
+		previewURL := setPreview(target)
+		parsed, err := url.Parse(previewURL)
+		if err != nil {
+			t.Fatalf("parse preview url: %v", err)
+		}
+		if !strings.HasPrefix(parsed.Hostname(), "ao-preview-artifact.") || parsed.Path != "/q3/report.html" {
+			t.Fatalf("previewUrl for %q = %q, want artifact origin at /q3/report.html", target, previewURL)
+		}
+		body, status, _ := doPreviewOriginRequest(t, srv, previewURL, parsed.Path)
+		if status != http.StatusOK || string(body) != `<html>artifact report</html>` {
+			t.Fatalf("artifact preview = %d, %q; want 200 and the artifact file", status, body)
+		}
+	}
+
+	notesURL := setPreview(notes)
+	body, status, _ := doPreviewOriginRequest(t, srv, notesURL, "/notes.md")
+	if status != http.StatusOK || !bytes.Contains(body, []byte("Review notes</h1>")) {
+		t.Fatalf("markdown artifact preview = %d, %q; want rendered Markdown", status, body)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.html")
+	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	escape := filepath.Join(artifacts, "escape.html")
+	if err := os.Symlink(outside, escape); err != nil {
+		if runtime.GOOS == "windows" || errors.Is(err, os.ErrPermission) {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		t.Fatalf("create symlink escape: %v", err)
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/preview", `{"url":`+strconv.Quote(escape)+`}`)
+	if status != http.StatusForbidden || !bytes.Contains(body, []byte(`"code":"PREVIEW_FILE_OUTSIDE_WORKSPACE"`)) {
+		t.Fatalf("set artifact symlink escape = %d, body=%s; want 403", status, body)
 	}
 }
 
@@ -4621,7 +4825,7 @@ func TestSessionsAPI_DelegateTask(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
 
-	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", `{"projectId":"ao","brief":"Fix\u0000 it","agent":"cursor","model":" sonnet-custom ","effort":" high ","mode":"chat","approvalMode":"bypass-permissions","taskPreparation":" prep-token ","attachments":[{"mimeType":"image/png","data":"AQID"}]}`)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", `{"projectId":"ao","brief":"Fix\u0000 it","branch":" ao/new-task ","agent":"cursor","model":" sonnet-custom ","effort":" high ","mode":"chat","approvalMode":"bypass-permissions","taskPreparation":" prep-token ","attachments":[{"mimeType":"image/png","data":"AQID"}]}`)
 	if status != http.StatusAccepted {
 		t.Fatalf("delegate = %d, want 202; body=%s", status, body)
 	}
@@ -4634,7 +4838,7 @@ func TestSessionsAPI_DelegateTask(t *testing.T) {
 	if !got.OK || got.WorkerID != "ao-worker" || got.OrchestratorID != "ao-orch" {
 		t.Fatalf("response = %#v", got)
 	}
-	if svc.delegationInput.ProjectID != "ao" || svc.delegationInput.Brief != "Fix it" || svc.delegationInput.RequestedAgent != domain.HarnessCursor || svc.delegationInput.Model != "sonnet-custom" || svc.delegationInput.Effort == nil || *svc.delegationInput.Effort != "high" || svc.delegationInput.RequestedMode != domain.SessionModeChat || svc.delegationInput.ApprovalMode != domain.PermissionModeBypassPermissions || svc.delegationInput.TaskPreparation != "prep-token" {
+	if svc.delegationInput.ProjectID != "ao" || svc.delegationInput.Brief != "Fix it" || svc.delegationInput.Branch != "ao/new-task" || svc.delegationInput.RequestedAgent != domain.HarnessCursor || svc.delegationInput.Model != "sonnet-custom" || svc.delegationInput.Effort == nil || *svc.delegationInput.Effort != "high" || svc.delegationInput.RequestedMode != domain.SessionModeChat || svc.delegationInput.ApprovalMode != domain.PermissionModeBypassPermissions || svc.delegationInput.TaskPreparation != "prep-token" {
 		t.Fatalf("delegation input = %#v", svc.delegationInput)
 	}
 	if len(svc.delegationInput.Attachments) != 1 {
@@ -4687,7 +4891,7 @@ func TestSessionsAPI_PreparesAndCancelsTaskWorkspace(t *testing.T) {
 func TestSessionsAPI_DelegateTaskAcceptsLongBrief(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
-	brief := strings.Repeat("a", 4097)
+	brief := strings.Repeat("a", 100<<10)
 	payload, err := json.Marshal(map[string]string{
 		"projectId": "ao",
 		"brief":     brief,
@@ -4708,7 +4912,7 @@ func TestSessionsAPI_DelegateTaskAcceptsLongBrief(t *testing.T) {
 func TestSessionsAPI_DelegateTaskRejectsBriefPastLaunchSafeLimit(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
-	brief := strings.Repeat("a", (16<<10)+1)
+	brief := strings.Repeat("a", (100<<10)+1)
 	payload, err := json.Marshal(map[string]string{
 		"projectId": "ao",
 		"brief":     brief,
@@ -4723,7 +4927,7 @@ func TestSessionsAPI_DelegateTaskRejectsBriefPastLaunchSafeLimit(t *testing.T) {
 		Message string `json:"message"`
 	}
 	mustJSON(t, body, &got)
-	if got.Message != "Task must be 16 KiB or fewer" {
+	if got.Message != "Task must be 100 KiB or fewer" {
 		t.Fatalf("error message = %q, want actionable size limit", got.Message)
 	}
 	if svc.delegationInput.ProjectID != "" {
@@ -4813,12 +5017,6 @@ func TestSessionsAPI_DelegateTaskRejectsInvalidAttachments(t *testing.T) {
 			body: `{"projectId":"ao","brief":"Fix it","attachments":[{"mimeType":"image/svg+xml","data":"PHN2Zy8+"}]}`,
 			code: "UNSUPPORTED_ATTACHMENT_TYPE",
 		},
-		{
-			name: "too large",
-			body: `{"projectId":"ao","brief":"Fix it","attachments":[{"mimeType":"image/png","data":"` +
-				base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", (50<<20)+1))) + `"}]}`,
-			code: "ATTACHMENT_TOO_LARGE",
-		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4843,6 +5041,16 @@ func TestSessionsAPI_DelegateTaskRejectsOversizedBody(t *testing.T) {
 	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
 	if svc.delegationInput.ProjectID != "" {
 		t.Fatalf("delegate service called with oversized body: %#v", svc.delegationInput)
+	}
+}
+
+func TestSessionsAPI_SendDuringAHandoffIsARetryableConflict(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.sendErr = fmt.Errorf("send ao-1: %w", chatsvc.ErrControllerHandoff)
+	srv := newSessionTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/send", `{"message":"hi"}`)
+	if status != http.StatusConflict || !strings.Contains(string(body), "CHAT_INTERFACE_TRANSITION") {
+		t.Fatalf("send = %d %s, want 409 CHAT_INTERFACE_TRANSITION", status, body)
 	}
 }
 
@@ -4909,7 +5117,7 @@ func TestSessionsAPI_SendRejectsOversizedBody(t *testing.T) {
 func TestSessionsAPI_CleanupWithProjectFilter(t *testing.T) {
 	svc := newFakeSessionService()
 	svc.cleanupResult = []domain.SessionID{"ao-1"}
-	svc.cleanupSkipped = []sessionsvc.CleanupSkipped{{SessionID: "ao-2", Reason: "workspace has uncommitted changes"}}
+	svc.cleanupSkipped = []sessionsvc.CleanupSkipped{{SessionID: "ao-2", Code: domain.CleanupSkipDirty, Reason: "workspace has uncommitted changes"}}
 	srv := newSessionTestServer(t, svc)
 
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/cleanup?project=ao", "")
@@ -4921,6 +5129,7 @@ func TestSessionsAPI_CleanupWithProjectFilter(t *testing.T) {
 		Cleaned []string `json:"cleaned"`
 		Skipped []struct {
 			SessionID string `json:"sessionId"`
+			Code      string `json:"code"`
 			Reason    string `json:"reason"`
 		} `json:"skipped"`
 	}
@@ -4928,11 +5137,25 @@ func TestSessionsAPI_CleanupWithProjectFilter(t *testing.T) {
 	if !got.OK || len(got.Cleaned) != 1 || got.Cleaned[0] != "ao-1" {
 		t.Fatalf("cleanup response = %#v", got)
 	}
-	if len(got.Skipped) != 1 || got.Skipped[0].SessionID != "ao-2" || got.Skipped[0].Reason != "workspace has uncommitted changes" {
-		t.Fatalf("cleanup skipped = %#v, want preserved workspace with reason", got.Skipped)
+	if len(got.Skipped) != 1 || got.Skipped[0].SessionID != "ao-2" || got.Skipped[0].Code != "dirty" ||
+		got.Skipped[0].Reason != "workspace has uncommitted changes" {
+		t.Fatalf("cleanup skipped = %#v, want preserved workspace with code and reason", got.Skipped)
 	}
 	if len(svc.cleanupProjects) != 1 || svc.cleanupProjects[0] != "ao" {
 		t.Fatalf("cleanupProjects = %#v, want [ao]", svc.cleanupProjects)
+	}
+}
+
+// The schema's enum for a cleanup skip code must list exactly the codes the
+// session manager can report.
+func TestCleanupSkippedSessionCodeEnumMatchesDomain(t *testing.T) {
+	field, _ := reflect.TypeFor[controllers.CleanupSkippedSession]().FieldByName("Code")
+	want := make([]string, 0, len(domain.CleanupSkipCodes))
+	for _, code := range domain.CleanupSkipCodes {
+		want = append(want, string(code))
+	}
+	if got := strings.Split(field.Tag.Get("enum"), ","); !slices.Equal(got, want) {
+		t.Fatalf("enum = %q, want %q", got, want)
 	}
 }
 
@@ -5354,5 +5577,49 @@ func TestSessionsAPI_LegacyPreviewDocumentsHaveNoAPIOrigin(t *testing.T) {
 		if status != 200 || headers.Get("Content-Security-Policy") != "" {
 			t.Fatalf("isolated %s: status=%d headers=%v", name, status, headers)
 		}
+	}
+}
+
+func (f *fakeSessionService) Delete(_ context.Context, id domain.SessionID, cleanup bool) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, id)
+	f.deleteCleanup = append(f.deleteCleanup, cleanup)
+	return nil
+}
+
+func TestSessionsAPI_DeleteSession(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodDelete, "/api/v1/sessions/ao-1", "")
+	if status != http.StatusOK {
+		t.Fatalf("delete = %d, want 200; body=%s", status, body)
+	}
+	var got struct {
+		OK        bool   `json:"ok"`
+		SessionID string `json:"sessionId"`
+	}
+	mustJSON(t, body, &got)
+	if !got.OK || got.SessionID != "ao-1" || len(svc.deleted) != 1 || svc.deleted[0] != "ao-1" {
+		t.Fatalf("delete response = %#v, deleted = %v", got, svc.deleted)
+	}
+	if _, status, _ := doRequest(t, srv, http.MethodDelete, "/api/v1/sessions/ao-1?cleanup=true", ""); status != http.StatusOK {
+		t.Fatalf("delete with cleanup = %d, want 200", status)
+	}
+	if !slices.Equal(svc.deleteCleanup, []bool{false, true}) {
+		t.Fatalf("cleanup flags = %v, want [false true]", svc.deleteCleanup)
+	}
+}
+
+func TestSessionsAPI_DeleteSessionRefusal(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.deleteErr = apierr.Conflict("WORKSPACE_NOT_RELEASED", "The session's worktree has not been cleaned up yet.", nil)
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodDelete, "/api/v1/sessions/ao-1", "")
+	if status != http.StatusConflict || !strings.Contains(string(body), "WORKSPACE_NOT_RELEASED") {
+		t.Fatalf("delete = %d %s, want 409 WORKSPACE_NOT_RELEASED", status, body)
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -149,7 +148,7 @@ func TestLoginOutputUnknownNameCannotClearSensitiveState(t *testing.T) {
 
 func TestCompletedLegacyConflictHasFreshAddGuidance(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return

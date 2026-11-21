@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/deliverytelemetry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
@@ -276,6 +277,12 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 			return err
 		}
 	}
+	// After the review-feedback nudges above, so a "review done" notice
+	// follows the inline comments of the review it reports. A failure is left
+	// to the notice sweep rather than replaying this observation.
+	if err := m.DeliverReviewDoneNotices(ctx, id); err != nil {
+		slog.Default().WarnContext(ctx, "lifecycle: deliver review done notices", "session", id, "err", err)
+	}
 	// Surface deferred policy/parent-stack read errors only after independent
 	// nudges have been sent, so one failed lookup cannot hide another reaction.
 	if ciPolicyErr != nil {
@@ -297,7 +304,12 @@ func (m *Manager) terminateCompletedSession(ctx context.Context, id domain.Sessi
 	if terminator == nil {
 		return fmt.Errorf("terminate completed session %s: session terminator is not configured", id)
 	}
-	if _, err := terminator.Kill(ctx, id); err != nil {
+	before, live := m.liveBeforeEnd(ctx, id)
+	_, err := terminator.Kill(ctx, id)
+	// Cleanup can fail after the terminal write; the row decides whether the
+	// session ended (the report is claimed once per termination).
+	m.reportEndIfTerminated(ctx, before, live, err, deliverytelemetry.EndPRMerged)
+	if err != nil {
 		return fmt.Errorf("terminate completed session %s: %w", id, err)
 	}
 	return nil
@@ -650,7 +662,10 @@ func (m *Manager) ApplyTrackerFacts(ctx context.Context, id domain.SessionID, o 
 		if m.sessionMutationInProgress(id) {
 			return nil
 		}
-		return m.MarkTerminated(ctx, id)
+		before, live := m.liveBeforeEnd(ctx, id)
+		err := m.MarkTerminated(ctx, id)
+		m.reportEndIfTerminated(ctx, before, live, err, deliverytelemetry.EndIssueClosed)
+		return err
 	}
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil || !ok {
@@ -850,13 +865,13 @@ func formatReviewChangesRequestedMessage(review domain.PullRequestReview) string
 	if review.ID != "" {
 		fmt.Fprintf(&msg, "\nReview ID: %s", domain.SanitizeControlChars(review.ID))
 	}
-	msg.WriteString("\n\nAddress the requested changes and push. You should not need to re-fetch the review unless you need additional context beyond what AO has provided here.")
+	msg.WriteString("\n\nAddress the requested changes and push. You should not need to re-fetch the review unless you need additional context beyond what Orchestrator has provided here.")
 	return msg.String()
 }
 
 func formatReviewCommentsMessage(comments []ports.PRCommentObservation) string {
 	if len(comments) == 0 {
-		return "A reviewer left feedback on your PR. Address it and push. Fetch the review details only if you need additional context beyond what AO has provided here."
+		return "A reviewer left feedback on your PR. Address it and push. Fetch the review details only if you need additional context beyond what Orchestrator has provided here."
 	}
 	var msg strings.Builder
 	fmt.Fprintf(&msg, "The following %d unresolved review comment(s) are on your PR as of just now. You should not need to re-fetch this data unless you need additional context.\n", len(comments))
@@ -938,6 +953,15 @@ func (m *Manager) sendOnce(ctx context.Context, id domain.SessionID, prURL, key,
 			return sendOnceAccounted, err
 		}
 		m.react.loaded[prURL] = true
+	}
+	if chat, ok := m.store.(reviewNoticeChatStore); ok && strings.HasPrefix(key, "comment:") {
+		rec, found, err := m.store.GetSession(ctx, id)
+		if err != nil {
+			return sendOnceSuppressed, err
+		}
+		if found && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+			return m.sendChatReviewFeedbackLocked(ctx, chat, id, prURL, key, sig, msg, maxAttempts)
+		}
 	}
 
 	if m.react.seen[key] == sig {

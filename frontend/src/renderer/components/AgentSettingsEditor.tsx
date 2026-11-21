@@ -42,6 +42,7 @@ export function AgentSettingsEditor({ snapshot, sessionId, hostId, retry }: {
 	const error = change.error ? agentSettingsErrorMessage(change.error, t("agentSettings.conflict")) : undefined;
 	const restart = Boolean(snapshot.restartRequired);
 	const model = snapshot.capabilities.models.find((candidate) => candidate.model === draft?.selection.model || (!draft?.selection.model && candidate.isDefault));
+	const efforts = !draft?.selection.model && !draft?.baseline.model ? snapshot.currentModelEfforts ?? model?.efforts : model?.efforts;
 	function changeOpen(next: boolean) {
 		setOpen(next);
 		if (!next) retry?.onClose();
@@ -87,7 +88,7 @@ export function AgentSettingsEditor({ snapshot, sessionId, hostId, retry }: {
 					{t("agentSettings.allowStopTurn")}
 				</label> : <>
 					<SettingMenu label={t("agentSettings.model")} value={draft.selection.model} choices={snapshot.capabilities.models.map((candidate) => candidate.model)} disabled={change.isPending} onChange={(value) => edit("model", value)} />
-					<SettingMenu label={t("agentSettings.effort")} value={draft.selection.effort} choices={model?.efforts ?? []} disabled={change.isPending} onChange={(value) => edit("effort", value)} />
+					<SettingMenu label={t("agentSettings.effort")} value={draft.selection.effort} choices={efforts ?? []} disabled={change.isPending} onChange={(value) => edit("effort", value)} />
 					<SettingMenu label={t("agentSettings.fast")} value={draft.selection.fastMode === "default" ? "" : draft.selection.fastMode} choices={["off", "on"]} disabled={change.isPending} onChange={(value) => edit("fastMode", value || "default")} />
 					{snapshot.capabilities.state !== "supported" && <p className="text-caption text-settings-muted">{t("agentSettings.capabilitiesUnavailable")} · {snapshot.capabilities.reason}</p>}
 				</>}

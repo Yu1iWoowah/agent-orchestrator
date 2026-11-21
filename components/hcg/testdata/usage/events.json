@@ -1,0 +1,344 @@
+{
+  "claude-code-chat": {
+    "sessionId": "claude-code-chat",
+    "throughId": 2,
+    "nextAfterId": 2,
+    "hasMore": false,
+    "sourceAsOf": "2026-11-08T00:00:00Z",
+    "metadataAsOf": "2026-11-08T00:00:00Z",
+    "projectId": "fixture",
+    "role": "worker",
+    "mode": "chat",
+    "accountId": null,
+    "currentNativeId": "root",
+    "consistency": "insertion_bound_only; existing rows and metadata may change",
+    "bindings": [
+      {
+        "id": 1,
+        "sessionId": "claude-code-chat",
+        "harness": "claude-code",
+        "nativeRootId": "root",
+        "state": "partial",
+        "lastErrorCode": "source_discovery_pending",
+        "sources": [
+          {
+            "id": 1,
+            "kind": "claude_main",
+            "nativeSessionId": "root",
+            "subagentId": "",
+            "generation": 0,
+            "state": "active",
+            "lastErrorCode": "",
+            "anomalyCount": 0
+          },
+          {
+            "id": 2,
+            "kind": "claude_subagent",
+            "nativeSessionId": "child",
+            "subagentId": "child",
+            "generation": 1,
+            "state": "error",
+            "lastErrorCode": "malformed_jsonl",
+            "anomalyCount": 1
+          }
+        ]
+      }
+    ],
+    "events": [
+      {
+        "id": 1,
+        "bindingId": 1,
+        "usageSourceId": 1,
+        "sourceEventKey": "1",
+        "providerId": "anthropic",
+        "modelId": "fixture",
+        "measurementKind": "native_reported",
+        "inputTokens": 100,
+        "cachedInputTokens": 70,
+        "uncachedInputTokens": 30,
+        "outputTokens": 5,
+        "createdAt": null,
+        "providerUsage": {
+          "input_tokens": 10,
+          "cache_creation_input_tokens": 20,
+          "cache_read_input_tokens": 70,
+          "output_tokens": 5
+        },
+        "usageProjectionStatus": "complete"
+      },
+      {
+        "id": 2,
+        "bindingId": 1,
+        "usageSourceId": 2,
+        "sourceEventKey": "2",
+        "providerId": "anthropic",
+        "modelId": "fixture",
+        "measurementKind": "native_reported",
+        "inputTokens": null,
+        "cachedInputTokens": null,
+        "uncachedInputTokens": null,
+        "outputTokens": null,
+        "createdAt": null,
+        "providerUsage": {},
+        "usageProjectionStatus": "missing"
+      }
+    ]
+  },
+  "claude-code-tui": {
+    "sessionId": "claude-code-tui",
+    "throughId": 2,
+    "nextAfterId": 2,
+    "hasMore": false,
+    "sourceAsOf": "2026-11-08T00:00:00Z",
+    "metadataAsOf": "2026-11-08T00:00:00Z",
+    "projectId": "fixture",
+    "role": "worker",
+    "mode": "tui",
+    "accountId": null,
+    "currentNativeId": "root",
+    "consistency": "insertion_bound_only; existing rows and metadata may change",
+    "bindings": [
+      {
+        "id": 1,
+        "sessionId": "claude-code-tui",
+        "harness": "claude-code",
+        "nativeRootId": "root",
+        "state": "partial",
+        "lastErrorCode": "source_discovery_pending",
+        "sources": [
+          {
+            "id": 1,
+            "kind": "claude_main",
+            "nativeSessionId": "root",
+            "subagentId": "",
+            "generation": 0,
+            "state": "active",
+            "lastErrorCode": "",
+            "anomalyCount": 0
+          },
+          {
+            "id": 2,
+            "kind": "claude_subagent",
+            "nativeSessionId": "child",
+            "subagentId": "child",
+            "generation": 1,
+            "state": "error",
+            "lastErrorCode": "malformed_jsonl",
+            "anomalyCount": 1
+          }
+        ]
+      }
+    ],
+    "events": [
+      {
+        "id": 1,
+        "bindingId": 1,
+        "usageSourceId": 1,
+        "sourceEventKey": "1",
+        "providerId": "anthropic",
+        "modelId": "fixture",
+        "measurementKind": "native_reported",
+        "inputTokens": 100,
+        "cachedInputTokens": 70,
+        "uncachedInputTokens": 30,
+        "outputTokens": 5,
+        "createdAt": null,
+        "providerUsage": {
+          "input_tokens": 10,
+          "cache_creation_input_tokens": 20,
+          "cache_read_input_tokens": 70,
+          "output_tokens": 5
+        },
+        "usageProjectionStatus": "complete"
+      },
+      {
+        "id": 2,
+        "bindingId": 1,
+        "usageSourceId": 2,
+        "sourceEventKey": "2",
+        "providerId": "anthropic",
+        "modelId": "fixture",
+        "measurementKind": "native_reported",
+        "inputTokens": null,
+        "cachedInputTokens": null,
+        "uncachedInputTokens": null,
+        "outputTokens": null,
+        "createdAt": null,
+        "providerUsage": {},
+        "usageProjectionStatus": "missing"
+      }
+    ]
+  },
+  "codex-chat": {
+    "sessionId": "codex-chat",
+    "throughId": 2,
+    "nextAfterId": 2,
+    "hasMore": false,
+    "sourceAsOf": "2026-11-08T00:00:00Z",
+    "metadataAsOf": "2026-11-08T00:00:00Z",
+    "projectId": "fixture",
+    "role": "worker",
+    "mode": "chat",
+    "accountId": null,
+    "currentNativeId": "root",
+    "consistency": "insertion_bound_only; existing rows and metadata may change",
+    "bindings": [
+      {
+        "id": 1,
+        "sessionId": "codex-chat",
+        "harness": "codex",
+        "nativeRootId": "root",
+        "state": "partial",
+        "lastErrorCode": "source_discovery_pending",
+        "sources": [
+          {
+            "id": 1,
+            "kind": "codex_rollout",
+            "nativeSessionId": "root",
+            "subagentId": "",
+            "generation": 0,
+            "state": "active",
+            "lastErrorCode": "",
+            "anomalyCount": 0
+          },
+          {
+            "id": 2,
+            "kind": "codex_rollout",
+            "nativeSessionId": "child",
+            "subagentId": "child",
+            "generation": 1,
+            "state": "error",
+            "lastErrorCode": "malformed_jsonl",
+            "anomalyCount": 1
+          }
+        ]
+      }
+    ],
+    "events": [
+      {
+        "id": 1,
+        "bindingId": 1,
+        "usageSourceId": 1,
+        "sourceEventKey": "1",
+        "providerId": "openai",
+        "modelId": "fixture",
+        "measurementKind": "native_reported",
+        "inputTokens": 100,
+        "cachedInputTokens": 70,
+        "uncachedInputTokens": 30,
+        "outputTokens": 5,
+        "createdAt": null,
+        "providerUsage": {
+          "last_token_usage": {
+            "input_tokens": 100,
+            "cached_input_tokens": 70,
+            "output_tokens": 5
+          }
+        },
+        "usageProjectionStatus": "complete"
+      },
+      {
+        "id": 2,
+        "bindingId": 1,
+        "usageSourceId": 2,
+        "sourceEventKey": "2",
+        "providerId": "openai",
+        "modelId": "fixture",
+        "measurementKind": "native_reported",
+        "inputTokens": null,
+        "cachedInputTokens": null,
+        "uncachedInputTokens": null,
+        "outputTokens": null,
+        "createdAt": null,
+        "providerUsage": {},
+        "usageProjectionStatus": "missing"
+      }
+    ]
+  },
+  "codex-tui": {
+    "sessionId": "codex-tui",
+    "throughId": 2,
+    "nextAfterId": 2,
+    "hasMore": false,
+    "sourceAsOf": "2026-11-08T00:00:00Z",
+    "metadataAsOf": "2026-11-08T00:00:00Z",
+    "projectId": "fixture",
+    "role": "worker",
+    "mode": "tui",
+    "accountId": null,
+    "currentNativeId": "root",
+    "consistency": "insertion_bound_only; existing rows and metadata may change",
+    "bindings": [
+      {
+        "id": 1,
+        "sessionId": "codex-tui",
+        "harness": "codex",
+        "nativeRootId": "root",
+        "state": "partial",
+        "lastErrorCode": "source_discovery_pending",
+        "sources": [
+          {
+            "id": 1,
+            "kind": "codex_rollout",
+            "nativeSessionId": "root",
+            "subagentId": "",
+            "generation": 0,
+            "state": "active",
+            "lastErrorCode": "",
+            "anomalyCount": 0
+          },
+          {
+            "id": 2,
+            "kind": "codex_rollout",
+            "nativeSessionId": "child",
+            "subagentId": "child",
+            "generation": 1,
+            "state": "error",
+            "lastErrorCode": "malformed_jsonl",
+            "anomalyCount": 1
+          }
+        ]
+      }
+    ],
+    "events": [
+      {
+        "id": 1,
+        "bindingId": 1,
+        "usageSourceId": 1,
+        "sourceEventKey": "1",
+        "providerId": "openai",
+        "modelId": "fixture",
+        "measurementKind": "native_reported",
+        "inputTokens": 100,
+        "cachedInputTokens": 70,
+        "uncachedInputTokens": 30,
+        "outputTokens": 5,
+        "createdAt": null,
+        "providerUsage": {
+          "last_token_usage": {
+            "input_tokens": 100,
+            "cached_input_tokens": 70,
+            "output_tokens": 5
+          }
+        },
+        "usageProjectionStatus": "complete"
+      },
+      {
+        "id": 2,
+        "bindingId": 1,
+        "usageSourceId": 2,
+        "sourceEventKey": "2",
+        "providerId": "openai",
+        "modelId": "fixture",
+        "measurementKind": "native_reported",
+        "inputTokens": null,
+        "cachedInputTokens": null,
+        "uncachedInputTokens": null,
+        "outputTokens": null,
+        "createdAt": null,
+        "providerUsage": {},
+        "usageProjectionStatus": "missing"
+      }
+    ]
+  }
+}

@@ -130,7 +130,7 @@ func (q *Queries) SelectTranscriptConversations(ctx context.Context, sessionID *
 }
 
 const selectTranscriptInterfaceTransitions = `-- name: SelectTranscriptInterfaceTransitions :many
-SELECT id, session_id, source_mode, target_mode, policy, phase, native_conversation_id, error_code, error_detail, created_at, updated_at, completed_at, notice_acknowledged_at, history_policy, source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id FROM session_interface_transitions WHERE session_id=?1 ORDER BY created_at,id
+SELECT id, session_id, source_mode, target_mode, policy, phase, native_conversation_id, error_code, error_detail, created_at, updated_at, completed_at, notice_acknowledged_at, history_policy, source_account_id, target_account_id, target_runtime_launch_id, target_runtime_handle_id, target_runtime_state, settings_operation_id, degraded_kind FROM session_interface_transitions WHERE session_id=?1 ORDER BY created_at,id
 `
 
 func (q *Queries) SelectTranscriptInterfaceTransitions(ctx context.Context, sessionID domain.SessionID) ([]SessionInterfaceTransition, error) {
@@ -163,6 +163,7 @@ func (q *Queries) SelectTranscriptInterfaceTransitions(ctx context.Context, sess
 			&i.TargetRuntimeHandleID,
 			&i.TargetRuntimeState,
 			&i.SettingsOperationID,
+			&i.DegradedKind,
 		); err != nil {
 			return nil, err
 		}
@@ -178,7 +179,7 @@ func (q *Queries) SelectTranscriptInterfaceTransitions(ctx context.Context, sess
 }
 
 const selectTranscriptMessages = `-- name: SelectTranscriptMessages :many
-SELECT m.id, m.conversation_id, m.turn_id, m.sequence, m.revision, m.role, m.origin, m.text, m.streaming, m.provider_item_id, m.client_message_id, m.created_at, m.updated_at, m.delivery_content_json, m.branch_id, m.client_payload_hash, m.sender_session_id, m.sender_project_id, m.sender_display_name, m.continuation FROM conversation_messages m
+SELECT m.id, m.conversation_id, m.turn_id, m.sequence, m.revision, m.role, m.origin, m.text, m.streaming, m.provider_item_id, m.client_message_id, m.created_at, m.updated_at, m.delivery_content_json, m.branch_id, m.client_payload_hash, m.sender_session_id, m.sender_project_id, m.sender_display_name, m.continuation, m.authored_by_user FROM conversation_messages m
 WHERE EXISTS (SELECT 1 FROM conversation_turns t WHERE t.id=m.turn_id AND t.handled_by_session_id=?1)
  OR (m.turn_id IS NULL AND EXISTS (SELECT 1 FROM conversations c WHERE c.id=m.conversation_id AND c.session_id=?1))
 ORDER BY m.conversation_id,m.sequence,m.id
@@ -214,6 +215,7 @@ func (q *Queries) SelectTranscriptMessages(ctx context.Context, sessionID domain
 			&i.SenderProjectID,
 			&i.SenderDisplayName,
 			&i.Continuation,
+			&i.AuthoredByUser,
 		); err != nil {
 			return nil, err
 		}
@@ -302,7 +304,7 @@ func (q *Queries) SelectTranscriptTerminalTurns(ctx context.Context, sessionID s
 }
 
 const selectTranscriptTurns = `-- name: SelectTranscriptTurns :many
-SELECT id, conversation_id, handled_by_session_id, provider_turn_id, controller_generation, state, error_message, requested_at, started_at, completed_at, diff_json, rolled_back_at, plan_json, branch_id, promotion_started_at, promoted_to_turn_id, retry_of_turn_id, handled_by_review_id, usage_limit_resets_at, usage_limit_auto_resume, usage_limit_resume_error, batched_input, provider_input_text, intake_sequence, agent_settings_snapshot_json FROM conversation_turns WHERE handled_by_session_id=?1 ORDER BY conversation_id, requested_at, id
+SELECT id, conversation_id, handled_by_session_id, provider_turn_id, controller_generation, state, error_message, requested_at, started_at, completed_at, diff_json, rolled_back_at, plan_json, branch_id, promotion_started_at, promoted_to_turn_id, retry_of_turn_id, handled_by_review_id, usage_limit_resets_at, usage_limit_auto_resume, usage_limit_resume_error, batched_input, provider_input_text, intake_sequence, agent_settings_snapshot_json, batch_delivery_kind, batch_delivery_steer_id, artifacts_json, failure_code FROM conversation_turns WHERE handled_by_session_id=?1 ORDER BY conversation_id, requested_at, id
 `
 
 func (q *Queries) SelectTranscriptTurns(ctx context.Context, sessionID domain.SessionID) ([]ConversationTurn, error) {
@@ -340,6 +342,10 @@ func (q *Queries) SelectTranscriptTurns(ctx context.Context, sessionID domain.Se
 			&i.ProviderInputText,
 			&i.IntakeSequence,
 			&i.AgentSettingsSnapshotJson,
+			&i.BatchDeliveryKind,
+			&i.BatchDeliverySteerID,
+			&i.ArtifactsJson,
+			&i.FailureCode,
 		); err != nil {
 			return nil, err
 		}

@@ -42,8 +42,13 @@ SELECT EXISTS(SELECT 1 FROM attention_questions WHERE origin_session_id=sqlc.arg
 SELECT DISTINCT origin_session_id FROM attention_questions WHERE state='open' AND expires_at IS NOT NULL AND expires_at<=?;
 
 -- name: InsertAttentionAnswer :one
-INSERT INTO attention_answers(question_id,client_answer_id,question_version,answers_json,fingerprint,message,saved_at,notes)
-VALUES(?,?,?,?,?,?,?,sqlc.narg(notes)) RETURNING *;
+INSERT INTO attention_answers(question_id,client_answer_id,question_version,answers_json,fingerprint,message,saved_at,notes,delivery_state)
+VALUES(?,?,?,?,?,?,?,sqlc.narg(notes),sqlc.arg(delivery_state)) RETURNING *;
+
+-- An AO delivery prompt is linked from its attempt, never by client key.
+-- name: IsChatDeliveryAttention :one
+SELECT EXISTS(SELECT 1 FROM chat_delivery_attempts WHERE session_id=sqlc.arg(session_id)
+ AND json_extract(record_json,'$.attentionId')=sqlc.arg(attention_id));
 
 -- name: GetAttentionAnswer :one
 SELECT * FROM attention_answers WHERE question_id=?;

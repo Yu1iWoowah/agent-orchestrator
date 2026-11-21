@@ -69,7 +69,7 @@ func (r *crashProcessRuntime) Destroy(context.Context, ports.RuntimeHandle) erro
 		return e
 	}
 	cmdline, e := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	if errors.Is(e, os.ErrNotExist) {
+	if errors.Is(e, os.ErrNotExist) || errors.Is(e, syscall.ESRCH) {
 		return nil
 	}
 	if e != nil {
@@ -94,7 +94,7 @@ func (r *crashProcessRuntime) IsAlive(context.Context, ports.RuntimeHandle) (boo
 		return false, e
 	}
 	b, e := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if errors.Is(e, os.ErrNotExist) {
+	if errors.Is(e, os.ErrNotExist) || errors.Is(e, syscall.ESRCH) {
 		return false, nil
 	}
 	if e != nil {

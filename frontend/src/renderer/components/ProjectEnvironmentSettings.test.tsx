@@ -2,15 +2,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import { ProjectEnvironmentSettings } from "./ProjectEnvironmentSettings";
+import { CloudCpError } from "../lib/cloud-cp/errors";
+import { CloudProjectEnvironmentSettings, ProjectEnvironmentSettings } from "./ProjectEnvironmentSettings";
 
-const { getMock, putMock, patchMock } = vi.hoisted(() => ({ getMock: vi.fn(), putMock: vi.fn(), patchMock: vi.fn() }));
+const { getMock, putMock, patchMock, cloudGet, cloudPut } = vi.hoisted(() => ({ getMock: vi.fn(), putMock: vi.fn(), patchMock: vi.fn(), cloudGet: vi.fn(), cloudPut: vi.fn() }));
 vi.mock("../lib/api-client", () => ({
-	apiClient: { GET: getMock, PUT: putMock, PATCH: patchMock },
+	apiClient: { GET: getMock, PUT: putMock, PATCH: patchMock, cloudGet, cloudPut },
 	apiErrorMessage: () => "request failed",
 	apiErrorCode: (error: { code?: string }) => error?.code,
 	apiErrorDetails: (error: { details?: unknown }) => error?.details,
 }));
+vi.mock("../hooks/useCloudCp", () => ({ useCloudCp: () => ({ client: { getProjectEnvironment: cloudGet, putProjectEnvironment: cloudPut }, ready: true, baseUrl: "https://cloud.test" }) }));
 
 beforeEach(() => {
 	getMock.mockReset().mockResolvedValue({ data: { status: "ok", project: { id: "p", name: "Example", config: { env: { EXISTING: "old" }, autoReview: true } } } });
@@ -150,4 +152,62 @@ it("PATCHes legal variable names that match JavaScript prototype members", async
  fireEvent.submit(document.getElementById("project-settings-form")!);
  await waitFor(()=>expect(patchMock).toHaveBeenCalledOnce());
  expect(JSON.stringify(patchMock.mock.calls[0][1].body)).toBe('{"config":{"env":{"constructor":"value","__proto__":"value"}},"expected":{"config":{"env":{"constructor":null,"__proto__":null}}}}');
+});
+
+it("saves a Cloud project's variables to the control plane, never the local daemon", async () => {
+	cloudGet.mockReset().mockResolvedValue({ editable: true, variables: [{ name: "API_KEY", value: "old" }] });
+	cloudPut.mockReset().mockImplementation(async (_org: string, _project: string, variables: Record<string, string>) => ({
+		editable: true, variables: Object.entries(variables).map(([name, value]) => ({ name, value })),
+	}));
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+	render(<QueryClientProvider client={client}><CloudProjectEnvironmentSettings projectId="p" cloudOrgId="org" /></QueryClientProvider>);
+	const value = await screen.findByLabelText("Value 1");
+	expect(screen.getByText(/Stored encrypted/)).toBeInTheDocument();
+	await userEvent.clear(value);
+	await userEvent.type(value, "new");
+	fireEvent.submit(document.getElementById("project-settings-form")!);
+	await waitFor(() => expect(cloudPut).toHaveBeenCalledWith("org", "p", { API_KEY: "new" }));
+	expect(getMock).not.toHaveBeenCalled();
+	expect(putMock).not.toHaveBeenCalled();
+});
+
+it("shows a Cloud member who cannot change them only the variables' names", async () => {
+	cloudGet.mockReset().mockResolvedValue({ editable: false, variables: [{ name: "API_KEY" }] });
+	cloudPut.mockReset();
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+	render(<QueryClientProvider client={client}><CloudProjectEnvironmentSettings projectId="p" cloudOrgId="org" /></QueryClientProvider>);
+	expect(await screen.findByText("API_KEY")).toBeInTheDocument();
+	expect(screen.getByText(/Only organization owners and admins/)).toBeInTheDocument();
+	expect(screen.queryByRole("button", { name: "Add variable" })).not.toBeInTheDocument();
+	expect(screen.queryByLabelText("Value 1")).not.toBeInTheDocument();
+	fireEvent.submit(document.getElementById("project-settings-form")!);
+	expect(cloudPut).not.toHaveBeenCalled();
+});
+
+it("says every session in a Cloud project, and anyone using it, can read the values", async () => {
+	cloudGet.mockReset().mockResolvedValue({ editable: false, variables: [{ name: "API_KEY" }] });
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+	render(<QueryClientProvider client={client}><CloudProjectEnvironmentSettings projectId="p" cloudOrgId="org" /></QueryClientProvider>);
+	expect(await screen.findByText(/Every session in this project receives these values/)).toHaveTextContent("anyone using those sessions, and the agent, can read them. Don't use them for coding-agent logins.");
+	// Members see names only here; that is not where the values are kept from them.
+	expect(screen.getByText(/can see or change their values here/)).toBeInTheDocument();
+});
+
+it("shows the control plane's message when it refuses a reserved name", async () => {
+	cloudGet.mockReset().mockResolvedValue({ editable: true, variables: [] });
+	cloudPut.mockReset().mockRejectedValue(new CloudCpError("ANTHROPIC_API_KEY is reserved: sign the agent in instead of setting its key.", { status: 422, code: "validation_error" }));
+	const onSaveState = vi.fn();
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+	render(<QueryClientProvider client={client}><CloudProjectEnvironmentSettings projectId="p" cloudOrgId="org" onSaveState={onSaveState} /></QueryClientProvider>);
+	await userEvent.click(await screen.findByRole("button", { name: "Paste .env" }));
+	fireEvent.change(screen.getByRole("textbox", { name: "Paste .env" }), { target: { value: "anthropic_api_key=sk-test" } });
+	await userEvent.click(screen.getByRole("button", { name: "Add to draft" }));
+	fireEvent.submit(document.getElementById("project-settings-form")!);
+	await waitFor(() => expect(cloudPut).toHaveBeenCalledWith("org", "p", { anthropic_api_key: "sk-test" }));
+	await waitFor(() => expect(onSaveState).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "failed" })));
+	expect(onSaveState).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "failed", error: "ANTHROPIC_API_KEY is reserved: sign the agent in instead of setting its key." }));
+	// The refused draft is kept, and not sent again until it changes.
+	await new Promise((resolve) => setTimeout(resolve, 900));
+	expect(cloudPut).toHaveBeenCalledTimes(1);
+	expect(screen.getByLabelText("Name 1")).toHaveValue("anthropic_api_key");
 });

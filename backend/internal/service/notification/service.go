@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -115,7 +116,7 @@ func (m *Manager) List(ctx context.Context, filter ListFilter) (ListPage, error)
 	}
 	out := make([]Notification, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, notificationFromRecord(row))
+		out = append(out, FromRecord(row))
 	}
 	page := ListPage{Notifications: out, UnreadCount: int(unreadCount), UnresolvedCount: int(unresolvedCount)}
 	if hasMore {
@@ -139,7 +140,7 @@ func (m *Manager) MarkRead(ctx context.Context, id string) (Notification, bool, 
 	if !ok {
 		return Notification{}, false, apierr.NotFound("NOTIFICATION_NOT_FOUND", "Unknown unread notification")
 	}
-	return notificationFromRecord(row), true, nil
+	return FromRecord(row), true, nil
 }
 
 // MarkAllRead acknowledges notifications as seen. With ids it acknowledges
@@ -179,7 +180,7 @@ func (m *Manager) Delete(ctx context.Context, id string) (Notification, error) {
 			m.logger.WarnContext(ctx, "notification delete event publish failed", "error", err)
 		}
 	}
-	return notificationFromRecord(row), nil
+	return FromRecord(row), nil
 }
 
 // ClearAll deletes notification history and publishes the same ordered clear
@@ -254,11 +255,20 @@ func invalidCursor() error {
 	return apierr.Invalid("INVALID_NOTIFICATION_CURSOR", "Notification cursor is invalid", nil)
 }
 
-func notificationFromRecord(rec domain.NotificationRecord) Notification {
+// FromRecord projects stored notification navigation for both HTTP and SSE.
+func FromRecord(rec domain.NotificationRecord) Notification {
 	return Notification{NotificationRecord: rec, Target: targetForRecord(rec)}
 }
 
 func targetForRecord(rec domain.NotificationRecord) Target {
+	if source, ok := strings.CutPrefix(rec.SourceKey, "attention:question:"); ok {
+		target := Target{Kind: TargetAgentQuestion, SessionID: rec.SessionID}
+		id, revision, found := strings.Cut(source, ":")
+		if version, err := strconv.ParseInt(revision, 10, 64); found && id != "" && err == nil && version > 0 {
+			target.QuestionID = id
+		}
+		return target
+	}
 	if rec.PRURL != "" {
 		return Target{Kind: TargetPR, SessionID: rec.SessionID, PRURL: rec.PRURL}
 	}

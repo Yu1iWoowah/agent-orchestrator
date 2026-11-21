@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/cli"
+	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -37,6 +39,7 @@ func TestPreparationPromptCLIIntakeAndPreparedRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := chi.NewRouter()
+	mountDaemonIdentity(router)
 	router.Route("/api/v1", func(r chi.Router) { (&controllers.OrchestratorReplacementController{Svc: x.service()}).Register(r) })
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
@@ -139,6 +142,7 @@ func TestReplacementResumeRetryCLIReconcilesPositiveEvidence(t *testing.T) {
 			}
 			intent := op.ResumeEvidence.ResumeGeneration
 			router := chi.NewRouter()
+			mountDaemonIdentity(router)
 			router.Route("/api/v1", func(r chi.Router) { (&controllers.OrchestratorReplacementController{Svc: x.service()}).Register(r) })
 			server := httptest.NewServer(router)
 			defer server.Close()
@@ -222,6 +226,17 @@ func TestReplacementResumeRetryCLIReconcilesPositiveEvidence(t *testing.T) {
 			if _, err := x.service().Cancel(ctx, op.ID); err == nil || errors.Is(err, context.Canceled) {
 				t.Fatal("post-stop cancel allowed", err)
 			}
+		})
+	}
+}
+
+// mountDaemonIdentity answers the CLI's loopback identity probes with the PID
+// this test writes to the run-file.
+func mountDaemonIdentity(router chi.Router) {
+	for path, status := range map[string]string{"/healthz": "ok", "/readyz": "ready"} {
+		router.Get(path, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "service": daemonmeta.ServiceName, "pid": os.Getpid()})
 		})
 	}
 }

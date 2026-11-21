@@ -54,40 +54,12 @@ for (const theme of ["dark", "light"] as const) {
 				await expect(page.locator(".browser-panel__topbar-host").getByRole("tab")).toHaveCount(0);
 				const strip = page.getByRole("tablist", { name: "Browser tabs", exact: true });
 				if (count === 1) {
-					await expect(strip).toHaveCount(0);
-					await expect(page.locator(".browser-panel__tab-fade")).toHaveCount(0);
-					const title = page.locator(".browser-panel__single-tab-title");
-					await expect.soft(title).toHaveText("AO guarded navigation with a long page title for browser layout verification");
+					await expect(strip.getByRole("tab")).toHaveCount(1);
+					await expect(strip.getByRole("tab")).toContainText("AO guarded navigation with a long page title for browser layout verification");
 					const close = page.getByRole("button", { name: "Close tab AO guarded navigation with a long page title for browser layout verification", exact: true });
-					const add = page.getByRole("button", { name: "Open new tab", exact: true });
 					await expect(close).toBeVisible();
-					await expect(close).toHaveCSS("transition-duration", "0s");
-					await close.hover();
-					await page.mouse.down();
-					await expect(close).toHaveCSS("transform", "none");
-					await page.mouse.move(0, 0);
-					await page.mouse.up();
-					const closeBox = await close.boundingBox();
-					const addBox = await add.boundingBox();
-					expect.soft(Math.abs(closeBox!.width - addBox!.width)).toBeLessThanOrEqual(0.1);
-					expect.soft(Math.abs(closeBox!.height - addBox!.height)).toBeLessThanOrEqual(0.1);
-					expect.soft(Math.abs(closeBox!.y - addBox!.y)).toBeLessThanOrEqual(0.1);
-					await testInfo.attach("single-tab-controls", { body: JSON.stringify({ close: closeBox, add: addBox }), contentType: "application/json" });
-					const hoverColor = await page.evaluate(() => {
-						const probe = document.createElement("span");
-						probe.style.backgroundColor = "var(--interactive-hover)";
-						document.body.append(probe);
-						const color = getComputedStyle(probe).backgroundColor;
-						probe.remove();
-						return color;
-					});
-					await close.hover();
-					await expect.soft(close).toHaveCSS("background-color", hoverColor);
-					await add.hover();
-					await expect(add).toHaveCSS("background-color", hoverColor);
-					const titleBox = await title.boundingBox();
-					expect(titleBox!.x + titleBox!.width).toBeLessThanOrEqual(closeBox!.x);
-					if (mode === "compact") expect(await title.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+					await close.click();
+					await expect(strip.getByRole("tab")).toHaveCount(0);
 				} else {
 					await expect(page.getByTestId("browser-tab-row").getByRole("tablist", { name: "Browser tabs" })).toHaveCount(1);
 					await expect(strip.getByRole("tab")).toHaveCount(3);
@@ -104,8 +76,8 @@ for (const theme of ["dark", "light"] as const) {
 					await strip.getByRole("tab", { name: "Page 1", exact: true }).focus();
 					// A page can close another tab while focus remains in this strip.
 					await page.getByRole("button", { name: "Close tab Page 2", exact: true }).evaluate((button: HTMLButtonElement) => button.click());
-					await expect(page.getByRole("button", { name: "Close tab Page 1", exact: true })).toBeFocused();
-					await expect(strip).toHaveCount(0);
+					await expect(strip.getByRole("tab", { name: "Page 1", exact: true })).toBeFocused();
+					await expect(strip.getByRole("tab")).toHaveCount(1);
 				}
 				await expect(page.getByRole("button", { name: "Open new tab", exact: true })).toBeVisible();
 			});

@@ -20,11 +20,11 @@ const (
 // It is a durable fact; changing defaults never rewrites an existing binding.
 type AgentAccountResolutionSource string
 
-// Durable resolution sources, including migrated legacy choices.
+// Durable resolution sources, including migrated legacy choices. New
+// resolution never produces "project"; stored bindings may still carry it.
 const (
 	AgentAccountSourceExplicit AgentAccountResolutionSource = "explicit"
 	AgentAccountSourceRole     AgentAccountResolutionSource = "role"
-	AgentAccountSourceProject  AgentAccountResolutionSource = "project"
 	AgentAccountSourceGlobal   AgentAccountResolutionSource = "global"
 	AgentAccountSourceDevice   AgentAccountResolutionSource = "device"
 	AgentAccountSourceLegacy   AgentAccountResolutionSource = "legacy"
@@ -67,14 +67,6 @@ func (c ProjectConfig) ValidateAccountReferences() error {
 	validID := func(id string) bool {
 		return len(id) <= 200 && strings.TrimSpace(id) == id && !strings.ContainsAny(id, "/\\\x00\r\n")
 	}
-	for provider, id := range c.AgentAccounts {
-		if provider != AgentAccountProviderClaude && provider != AgentAccountProviderCodex {
-			return fmt.Errorf("agentAccounts: unsupported provider")
-		}
-		if !validID(id) {
-			return fmt.Errorf("agentAccounts: invalid local account reference")
-		}
-	}
 	for _, role := range []RoleOverride{c.Worker, c.Orchestrator} {
 		if !validID(role.AgentAccountID) {
 			return fmt.Errorf("role: invalid local account reference")
@@ -106,7 +98,6 @@ func (c ProjectConfig) ValidateAccountReferences() error {
 // WithoutLocalAccounts is the allowlist projection for Cloud/sync/export.
 // Copy the reviewer slice so projecting it cannot clear the local configuration.
 func (c ProjectConfig) WithoutLocalAccounts() ProjectConfig {
-	c.AgentAccounts = nil
 	c.Env = maps.Clone(c.Env)
 	for key := range c.Env {
 		if localAccountEnvKey(key) {
@@ -124,11 +115,6 @@ func (c ProjectConfig) WithoutLocalAccounts() ProjectConfig {
 
 // HasLocalAccountReferences reports opaque references private to this host.
 func (c ProjectConfig) HasLocalAccountReferences() bool {
-	for _, id := range c.AgentAccounts {
-		if id != "" {
-			return true
-		}
-	}
 	if c.Worker.AgentAccountID != "" || c.Orchestrator.AgentAccountID != "" {
 		return true
 	}
@@ -169,7 +155,6 @@ func (c ProjectConfig) HasLocalAccountSettings() bool {
 // WithLocalAccountReferences restores host-private settings omitted from a
 // remote projection. Reviewer identity is its harness, never an array index.
 func (c ProjectConfig) WithLocalAccountReferences(previous ProjectConfig) ProjectConfig {
-	c.AgentAccounts = maps.Clone(previous.AgentAccounts)
 	c.Worker.AgentAccountID = previous.Worker.AgentAccountID
 	c.Orchestrator.AgentAccountID = previous.Orchestrator.AgentAccountID
 	c.Reviewers = append([]ReviewerConfig(nil), c.Reviewers...)

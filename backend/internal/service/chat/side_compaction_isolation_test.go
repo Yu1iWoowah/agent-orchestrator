@@ -28,6 +28,7 @@ func TestProtectedSideAutomaticPaths(t *testing.T) {
 		name string
 		run  func(*Service, domain.SideConversation) error
 	}{
+		{"close-side", func(s *Service, side domain.SideConversation) error { return s.closeSide(t.Context(), side) }},
 		{"quit-retire", func(s *Service, _ domain.SideConversation) error { return s.RetireSideChatLaunch(t.Context(), "run") }},
 		{"initialize", func(s *Service, _ domain.SideConversation) error { return s.InitializeSideChats(t.Context()) }},
 		{"claim", func(s *Service, _ domain.SideConversation) error { return s.ClaimSideChatLaunch(t.Context(), "run") }},

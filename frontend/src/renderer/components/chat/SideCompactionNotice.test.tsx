@@ -70,7 +70,7 @@ it.each(["deleted", "TUI", "ended", "new-launch-parent-present"])("finds and clo
 });
 
 it("lists protected sides in settings without developer mode", () => {
-	expect(visibleGlobalSettings({ cloudEnabled: false, developerMode: false, diagnostics: false, customCoder: false, selfServeBilling: false }).some((section) => section.id === "protectedSides")).toBe(true);
+	expect(visibleGlobalSettings({ cloudEnabled: false, diagnostics: false, customCoder: false, selfServeBilling: false }).some((section) => section.id === "protectedSides")).toBe(true);
 });
 
 it("retains the entry and error when close fails", async () => {

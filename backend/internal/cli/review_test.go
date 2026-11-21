@@ -25,7 +25,7 @@ type reviewCapture struct {
 func reviewServer(t *testing.T, status int, respBody string) (*httptest.Server, *reviewCapture) {
 	t.Helper()
 	capture := &reviewCapture{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		capture.method = r.Method
 		capture.path = r.URL.Path
@@ -145,38 +145,22 @@ func TestReviewSubmitBatchReadsReviewsFromStdin(t *testing.T) {
 	}
 }
 
-func TestReviewSubmitBatchRetriesAcrossDaemonRestart(t *testing.T) {
-	cfg := setReviewEnv(t)
-	srv, capture := reviewServer(t, http.StatusOK, `{"reviews":[{"id":"run-1","verdict":"changes_requested"}]}`)
+func TestReviewSubmitDoesNotRetryMissingDaemon(t *testing.T) {
+	setReviewEnv(t)
 
 	deps := aliveDeps()
 	deps.In = strings.NewReader(`{"reviews":[{"runId":"run-1","verdict":"changes_requested","body":"fix auth","githubReviewId":"101"}]}`)
-	retries := 0
 	deps.Sleep = func(time.Duration) {
-		retries++
-		writeRunFileFor(t, cfg, srv)
+		t.Fatal("must not wait or retry a missing daemon")
 	}
 
 	out, errOut, err := executeCLI(t, deps, "review", "submit", "mer-1", "--reviews", "-")
-	if err != nil {
-		t.Fatalf("submit should survive a daemon restart: %v\nstderr=%s", err, errOut)
-	}
-	if retries != 1 {
-		t.Fatalf("retry waits = %d, want 1", retries)
-	}
-	if !strings.Contains(out, "recorded 1 review(s) for mer-1") {
-		t.Fatalf("stdout = %q", out)
-	}
-	var req submitReviewRequest
-	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
-	if len(req.Reviews) != 1 || req.Reviews[0].RunID != "run-1" || req.Reviews[0].Body != "fix auth" || req.Reviews[0].GithubReviewID != "101" {
-		t.Fatalf("retried request = %+v", req)
+	if err == nil || !strings.Contains(err.Error(), "no run-file") || strings.Contains(err.Error(), "unconfirmed") || out != "" {
+		t.Fatalf("missing daemon: out=%q err=%v stderr=%s", out, err, errOut)
 	}
 }
 
-func TestReviewSubmitRetriesUncertainTransportFailureWithIdenticalPayload(t *testing.T) {
+func TestReviewSubmitDoesNotRetryUncertainTransportFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		bodyErr error
@@ -194,7 +178,7 @@ func TestReviewSubmitRetriesUncertainTransportFailureWithIdenticalPayload(t *tes
 			deps := aliveDeps()
 			deps.In = strings.NewReader(`{"reviews":[{"runId":"run-1","verdict":"approved","githubReviewId":"101"}]}`)
 			deps.Sleep = func(time.Duration) {}
-			deps.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			deps.HTTPClient = terminalFixtureClient(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				if req.URL.Path != "/api/v1/sessions/mer-1/reviews/submit" {
 					return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody}, nil
 				}
@@ -222,16 +206,16 @@ func TestReviewSubmitRetriesUncertainTransportFailureWithIdenticalPayload(t *tes
 					Header:     make(http.Header),
 					Body:       io.NopCloser(strings.NewReader(`{"reviews":[{"id":"run-1","verdict":"approved"}]}`)),
 				}, nil
-			})}
+			}))
 
 			out, errOut, err := executeCLI(t, deps, "review", "submit", "mer-1", "--reviews", "-")
-			if err != nil {
-				t.Fatalf("retry uncertain result: %v\nstderr=%s", err, errOut)
+			if err == nil || !strings.Contains(err.Error(), "unconfirmed") {
+				t.Fatalf("expected unconfirmed result: %v\nstderr=%s", err, errOut)
 			}
-			if len(bodies) != 2 || bodies[0] != bodies[1] {
-				t.Fatalf("request bodies = %#v, want two identical attempts", bodies)
+			if len(bodies) != 1 {
+				t.Fatalf("request bodies = %#v, want one attempt", bodies)
 			}
-			if !strings.Contains(out, "recorded 1 review(s) for mer-1") {
+			if strings.Contains(out, "recorded") {
 				t.Fatalf("stdout = %q", out)
 			}
 		})
@@ -267,7 +251,7 @@ func TestReviewRestartDoesNotRetryResponseBodyFailure(t *testing.T) {
 	attempts := 0
 	deps := aliveDeps()
 	deps.Sleep = func(time.Duration) { t.Fatal("must not retry a review trigger") }
-	deps.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	deps.HTTPClient = terminalFixtureClient(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path != "/api/v1/sessions/mer-1/reviews/trigger" {
 			return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody}, nil
 		}
@@ -277,7 +261,7 @@ func TestReviewRestartDoesNotRetryResponseBodyFailure(t *testing.T) {
 			Header:     make(http.Header),
 			Body:       io.NopCloser(io.MultiReader(strings.NewReader(`{"created":`), iotest.ErrReader(io.ErrUnexpectedEOF))),
 		}, nil
-	})}
+	}))
 
 	_, _, err := executeCLI(t, deps, "review", "restart", "mer-1")
 	if !errors.Is(err, io.ErrUnexpectedEOF) || !strings.Contains(err.Error(), "decode response") {
@@ -297,32 +281,100 @@ func TestReviewSubmitDoesNotRetryDaemonAPIRejection(t *testing.T) {
 	waits := 0
 	deps.Sleep = func(time.Duration) { waits++ }
 	_, _, err := executeCLI(t, deps, "review", "submit", "mer-1", "--run", "run-1", "--verdict", "approved")
-	if err == nil || !strings.Contains(err.Error(), "REVIEW_INVALID") {
-		t.Fatalf("err = %v, want daemon rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "REVIEW_INVALID") || strings.Contains(err.Error(), "unconfirmed") {
+		t.Fatalf("err = %v, want a confirmed daemon rejection", err)
 	}
 	if waits != 0 {
 		t.Fatalf("retry waits = %d, want 0", waits)
 	}
 }
 
-func TestReviewSubmitCancellationStopsUnavailableRetry(t *testing.T) {
+// The daemon records a batch run by run. When a later result fails, earlier
+// results stay recorded, so the CLI must not present the error as a clean
+// rejection.
+func TestReviewSubmitPartialBatchFailureIsUnconfirmed(t *testing.T) {
+	cfg := setReviewEnv(t)
+	var submits int
+	var recorded []string
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/sessions/mer-1/reviews/submit" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		submits++
+		var req submitReviewRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Reviews) != 2 {
+			t.Errorf("batch request = %+v, err = %v", req, err)
+		}
+		recorded = append(recorded, req.Reviews[0].RunID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"message":"Review operation failed","code":"REVIEW_OPERATION_FAILED","requestId":"req-partial"}`)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	deps := aliveDeps()
+	deps.In = strings.NewReader(`{"reviews":[{"runId":"run-1","verdict":"approved"},{"runId":"run-2","verdict":"approved"}]}`)
+	_, _, err := executeCLI(t, deps, "review", "submit", "mer-1", "--reviews", "-")
+	if err == nil {
+		t.Fatal("partial batch failure reported success")
+	}
+	for _, want := range []string{"REVIEW_OPERATION_FAILED", "req-partial", "unconfirmed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want %q", err, want)
+		}
+	}
+	if submits != 1 || len(recorded) != 1 || recorded[0] != "run-1" {
+		t.Fatalf("submits = %d, recorded = %v; want one request that recorded run-1", submits, recorded)
+	}
+}
+
+func TestReviewSubmitAPIErrorUnconfirmedBoundary(t *testing.T) {
+	single := submitReviewRequest{RunID: "run-1", Verdict: "approved"}
+	batch := submitReviewRequest{Reviews: []submitReviewItem{{RunID: "run-1", Verdict: "approved"}, {RunID: "run-2", Verdict: "approved"}}}
+	for _, tc := range []struct {
+		name        string
+		status      int
+		body        submitReviewRequest
+		unconfirmed bool
+	}{
+		{"single client rejection", http.StatusConflict, single, false},
+		{"single server error", http.StatusInternalServerError, single, true},
+		{"batch client rejection", http.StatusBadRequest, batch, true},
+		{"batch server error", http.StatusInternalServerError, batch, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := setReviewEnv(t)
+			srv, _ := reviewServer(t, tc.status, `{"message":"rejected","code":"REVIEW_X","requestId":"req-x"}`)
+			writeRunFileFor(t, cfg, srv)
+			c := newTestCommandContext(t, Deps{HTTPClient: apiFixtureClient(t, srv.Client()), ProcessAlive: func(int) bool { return false }})
+			err := c.postReviewJSON(context.Background(), "sessions/mer-1/reviews/submit", tc.body, &reviewRunResponse{})
+			var rejected apiResponseError
+			if !errors.As(err, &rejected) || rejected.StatusCode != tc.status || !strings.Contains(err.Error(), "req-x") {
+				t.Fatalf("err = %v, want the API envelope preserved", err)
+			}
+			if got := strings.Contains(err.Error(), "unconfirmed"); got != tc.unconfirmed {
+				t.Fatalf("unconfirmed = %v, want %v: %v", got, tc.unconfirmed, err)
+			}
+		})
+	}
+}
+
+func TestReviewSubmitCancellationStopsBeforeAttempt(t *testing.T) {
 	setReviewEnv(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	deps := aliveDeps()
-	waits := 0
 	deps.Sleep = func(time.Duration) {
-		waits++
-		cancel()
+		t.Fatal("cancelled submit must not retry")
 	}
-	c := &commandContext{deps: deps.withDefaults()}
+	c := newTestCommandContext(t, deps.withDefaults())
 	err := c.postReviewJSON(ctx, "sessions/mer-1/reviews/submit", submitReviewRequest{
 		RunID: "run-1", Verdict: "approved",
 	}, &reviewRunResponse{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context cancellation", err)
-	}
-	if waits != 1 {
-		t.Fatalf("retry waits = %d, want 1", waits)
 	}
 }
 
@@ -521,6 +573,49 @@ func TestReviewListGetsReviews(t *testing.T) {
 	}
 }
 
+// A review done message that failed to reach the worker is shown with its
+// last error, so a missed notice can be diagnosed without daemon logs.
+func TestReviewListShowsUndeliveredReviewDoneMessage(t *testing.T) {
+	cfg := setReviewEnv(t)
+	srv, _ := reviewServer(t, http.StatusOK, `{
+		"reviews":[{
+			"prUrl":"https://github.com/example/repo/pull/42",
+			"prNumber":42,
+			"title":"Fix session resume",
+			"status":"approved",
+			"latestRun":{"id":"run-1","verdict":"approved","workerNotice":"pending","workerNoticeAttempts":3,"workerNoticeError":"guard mer-1: send: no chat controller"}
+		},{
+			"prUrl":"https://github.com/example/repo/pull/43",
+			"prNumber":43,
+			"status":"approved",
+			"latestRun":{"id":"run-2","verdict":"approved","workerNotice":"sent","workerNoticeAttempts":1,"workerNoticeError":"earlier failure"}
+		},{
+			"prUrl":"https://github.com/example/repo/pull/44",
+			"prNumber":44,
+			"status":"approved",
+			"latestRun":{"id":"run-3","verdict":"approved","workerNotice":"failed","workerNoticeAttempts":5,"workerNoticeError":"bad \u001b[31merror"}
+		}]
+	}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(), "review", "ls", "mer-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if want := "#42: review done message for run run-1 not delivered yet after 3 failed attempt(s): guard mer-1: send: no chat controller"; !strings.Contains(out, want) {
+		t.Fatalf("stdout = %q, want %q", out, want)
+	}
+	if want := "#44: review done message for run run-3 not delivered, gave up after 5 failed attempt(s): bad [31merror"; !strings.Contains(out, want) {
+		t.Fatalf("stdout = %q, want %q", out, want)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Fatalf("control characters from the error reached the terminal: %q", out)
+	}
+	if strings.Contains(out, "earlier failure") {
+		t.Fatalf("a delivered message was reported as undelivered: %q", out)
+	}
+}
+
 func TestReviewListJSONPreservesResponse(t *testing.T) {
 	cfg := setReviewEnv(t)
 	srv, _ := reviewServer(t, http.StatusOK, `{
@@ -643,7 +738,7 @@ func TestReviewTriggerDefaultsToCallingSessionAsAgent(t *testing.T) {
 	if err := json.Unmarshal([]byte(capture.body), &body); err != nil {
 		t.Fatalf("decode body %q: %v", capture.body, err)
 	}
-	if body["source"] != "agent" || body["rejectReviewedHead"] != true || body["enableAutoInject"] != true {
+	if body["requesterSessionId"] != "mer-9" || body["source"] != "agent" || body["rejectReviewedHead"] != true || body["enableAutoInject"] != true {
 		t.Fatalf("body = %v, want source=agent, rejectReviewedHead and enableAutoInject", body)
 	}
 	if _, ok := body["rerun"]; ok {

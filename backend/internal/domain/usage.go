@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -12,11 +13,46 @@ type UsageSourceKind string
 
 // UsageSourceKind values identify certified native usage artifact shapes.
 const (
-	UsageSourceClaudeMain     UsageSourceKind = "claude_main"
-	UsageSourceClaudeSubagent UsageSourceKind = "claude_subagent"
-	UsageSourceCodexRollout   UsageSourceKind = "codex_rollout"
-	UsageSourceKimiWire       UsageSourceKind = "kimi_wire"
+	UsageSourceClaudeMain        UsageSourceKind = "claude_main"
+	UsageSourceClaudeSubagent    UsageSourceKind = "claude_subagent"
+	UsageSourceCodexRollout      UsageSourceKind = "codex_rollout"
+	UsageSourceKimiWire          UsageSourceKind = "kimi_wire"
+	UsageSourcePiSession         UsageSourceKind = "pi_session"
+	UsageSourceQwenMonthly       UsageSourceKind = "qwen_monthly"
+	UsageSourceOMPSession        UsageSourceKind = "omp_session"
+	UsageSourceKimchiSession     UsageSourceKind = "kimchi_session"
+	UsageSourcePrimeAgentSession UsageSourceKind = "prime_agent_session"
+	UsageSourceGooseLedger       UsageSourceKind = "goose_ledger"
+	UsageSourceOpenCodeDB        UsageSourceKind = "opencode_db"
+	UsageSourceKiloDB            UsageSourceKind = "kilo_db"
+	UsageSourceGrokUsage         UsageSourceKind = "grok_usage"
+	UsageSourceDeepSeekSession   UsageSourceKind = "deepseek_session"
+	UsageSourceAgyConversation   UsageSourceKind = "agy_conversation"
 )
+
+// AllUsageSourceKinds lists every certified usage artifact shape.
+var AllUsageSourceKinds = []UsageSourceKind{
+	UsageSourceClaudeMain,
+	UsageSourceClaudeSubagent,
+	UsageSourceCodexRollout,
+	UsageSourceKimiWire,
+	UsageSourcePiSession,
+	UsageSourceQwenMonthly,
+	UsageSourceOMPSession,
+	UsageSourceKimchiSession,
+	UsageSourcePrimeAgentSession,
+	UsageSourceGooseLedger,
+	UsageSourceOpenCodeDB,
+	UsageSourceKiloDB,
+	UsageSourceGrokUsage,
+	UsageSourceDeepSeekSession,
+	UsageSourceAgyConversation,
+}
+
+// IsKnown reports whether k is a certified usage source kind.
+func (k UsageSourceKind) IsKnown() bool {
+	return slices.Contains(AllUsageSourceKinds, k)
+}
 
 // UsageBindingState tracks the root native-session binding lifecycle.
 type UsageBindingState string
@@ -208,25 +244,34 @@ type ModelUsageEvent struct {
 	MeasurementKind       UsageMeasurementKind
 	Tokens                UsageTokenMetrics
 	ProviderUsageJSON     string
+	ServiceTier           string
+	ProviderMessageID     string
 	Costs                 UsageEventCosts
 	CreatedAt             time.Time
 	SourceEventKey        string
 }
 
-// UsageCostCandidate is one still-total-null event selected for an exact
-// provider catalog attempt. Source facts remain immutable and are carried back
-// to storage as compare-and-swap guards.
+// UsagePriceOverride is the user's own price for one stored model ID: either their own rates in USD per million tokens, or the rates of a catalog model to price as.
+type UsagePriceOverride struct {
+	ModelID                              string
+	Input, Output, CacheRead, CacheWrite string
+	PriceAs                              string
+}
+
+// UsageCostCandidate is one event selected for a catalog or override pricing attempt.
 type UsageCostCandidate struct {
-	ID                int64
-	BindingID         int64
-	ProviderID        UsageProviderID
-	BillingProviderID string
-	ModelID           string
-	MeasurementKind   UsageMeasurementKind
-	Tokens            UsageTokenMetrics
-	ProviderUsageJSON string
-	PricingVersion    string
-	SourceEventKey    string
+	ID                 int64
+	BindingID          int64
+	ProviderID         UsageProviderID
+	BillingProviderID  string
+	ModelID            string
+	MeasurementKind    UsageMeasurementKind
+	Tokens             UsageTokenMetrics
+	ProviderUsageJSON  string
+	ServiceTier        string
+	PricingVersion     string
+	SourceEventKey     string
+	EstimatedCostNanos *int64
 }
 
 // UsageCostUpdate carries one candidate's immutable compare-and-swap facts and
@@ -266,6 +311,7 @@ type LegacyUsageRepair struct {
 	BillingProviderID       string
 	BillingProviderSource   UsageBillingProviderSource
 	ProviderUsageJSON       string
+	ServiceTier             string
 	Costs                   UsageEventCosts
 }
 
@@ -352,40 +398,6 @@ type CompactSessionUsage struct {
 	ProcessedTokens *int64
 	Incomplete      bool
 	EstimatedCost   *EstimatedCost
-}
-
-// UsageMetricTotals is the aggregate metric block used by session, harness,
-// and model summaries.
-type UsageMetricTotals struct {
-	InputTokens         *int64
-	CachedInputTokens   *int64
-	UncachedInputTokens *int64
-	OutputTokens        *int64
-	ProcessedTokens     *int64
-	EstimatedCost       *EstimatedCost
-}
-
-// ModelUsageSummary is a per-model aggregate. The billing provider stays a
-// pricing input: every event was costed against its own provider's rates before
-// it reached this sum, so the total is exact without splitting the model apart.
-type ModelUsageSummary struct {
-	ModelID string
-	Totals  UsageMetricTotals
-}
-
-// HarnessUsageSummary groups model summaries by AO harness.
-type HarnessUsageSummary struct {
-	Harness AgentHarness
-	Totals  UsageMetricTotals
-	Models  []ModelUsageSummary
-}
-
-// SessionUsageSummary is the read model returned by the session usage service.
-type SessionUsageSummary struct {
-	SessionID  SessionID
-	Incomplete bool
-	Totals     UsageMetricTotals
-	Harnesses  []HarnessUsageSummary
 }
 
 // SourceCursorState is the durable source state to commit after parsing a
@@ -492,4 +504,111 @@ type SessionStep struct {
 	// EndedAt is zero while the tool is still running.
 	EndedAt time.Time
 	Failed  bool
+}
+
+// UsageLedgerEvent is the internal read row; raw provider JSON never crosses HTTP.
+type UsageLedgerEvent struct {
+	ID, BindingID, UsageSourceID int64
+	ModelUsageEvent
+	Execution *ExecutionUsageIdentity
+}
+
+// UsageEventView exposes only ledger identity and numeric usage.
+type UsageEventView struct {
+	Execution             *ExecutionUsageIdentity `json:"execution,omitempty"`
+	ID                    int64                   `json:"id"`
+	BindingID             int64                   `json:"bindingId,omitempty"`
+	UsageSourceID         int64                   `json:"usageSourceId,omitempty"`
+	SourceEventKey        string                  `json:"sourceEventKey"`
+	ProviderID            string                  `json:"providerId"`
+	ModelID               string                  `json:"modelId"`
+	MeasurementKind       string                  `json:"measurementKind"`
+	InputTokens           *int64                  `json:"inputTokens"`
+	CachedInputTokens     *int64                  `json:"cachedInputTokens"`
+	UncachedInputTokens   *int64                  `json:"uncachedInputTokens"`
+	OutputTokens          *int64                  `json:"outputTokens"`
+	CreatedAt             *time.Time              `json:"createdAt"`
+	ProviderUsage         map[string]any          `json:"providerUsage"`
+	UsageProjectionStatus string                  `json:"usageProjectionStatus" enum:"complete,partial,missing,invalid"`
+}
+
+// UsageBindingView omits paths, parser state and credentials.
+type UsageBindingView struct {
+	ID            int64             `json:"id"`
+	SessionID     SessionID         `json:"sessionId"`
+	Harness       string            `json:"harness"`
+	NativeRootID  string            `json:"nativeRootId"`
+	State         string            `json:"state"`
+	LastErrorCode string            `json:"lastErrorCode"`
+	Sources       []UsageSourceView `json:"sources"`
+}
+
+// UsageSourceView describes all discovered sources, including ones without events.
+type UsageSourceView struct {
+	ID              int64  `json:"id"`
+	Kind            string `json:"kind"`
+	NativeSessionID string `json:"nativeSessionId"`
+	SubagentID      string `json:"subagentId"`
+	Generation      int64  `json:"generation"`
+	State           string `json:"state"`
+	LastErrorCode   string `json:"lastErrorCode"`
+	AnomalyCount    int64  `json:"anomalyCount"`
+}
+
+// UsageEventsPage is a bounded read, not an isolated historical snapshot.
+type UsageEventsPage struct {
+	SessionID       SessionID          `json:"sessionId"`
+	Events          []UsageEventView   `json:"events"`
+	Bindings        []UsageBindingView `json:"bindings"`
+	ThroughID       int64              `json:"throughId"`
+	NextAfterID     int64              `json:"nextAfterId"`
+	HasMore         bool               `json:"hasMore"`
+	SourceAsOf      time.Time          `json:"sourceAsOf"`
+	MetadataAsOf    time.Time          `json:"metadataAsOf"`
+	ProjectID       ProjectID          `json:"projectId"`
+	Role            string             `json:"role"`
+	Mode            string             `json:"mode"`
+	AccountID       *string            `json:"accountId"`
+	CurrentNativeID string             `json:"currentNativeId"`
+	Consistency     string             `json:"consistency"`
+}
+
+// ExecutionUsageIdentity is provenance from the trusted execution recorder.
+// It names an auxiliary source, never a fabricated native artifact/binding.
+type ExecutionUsageIdentity struct {
+	RequestedServiceTier  string    `json:"requestedServiceTier,omitempty"`
+	ObservedServiceTier   string    `json:"observedServiceTier,omitempty"`
+	ServiceTierStatus     string    `json:"serviceTierStatus,omitempty"`
+	ID                    int64     `json:"id"`
+	ProjectID             string    `json:"projectId"`
+	SessionID             SessionID `json:"sessionId"`
+	DelegationID          string    `json:"delegationId"`
+	AttemptID             string    `json:"attemptId"`
+	BillingProvider       string    `json:"billingProvider"`
+	ProfileID             string    `json:"profileId"`
+	ProfileRevision       string    `json:"profileRevision"`
+	ProfileDigest         string    `json:"profileDigest"`
+	ProjectPolicyRevision string    `json:"projectPolicyRevision"`
+	RequestID             string    `json:"requestId"`
+	ResponseID            string    `json:"responseId,omitempty"`
+	UnknownReason         string    `json:"unknownReason,omitempty"`
+	FinishReason          string    `json:"finishReason,omitempty"`
+}
+
+// ExecutionUsageReceipt carries only trusted, bounded provider projections.
+// Descriptor and prices refer to dispatch time, not the current registration.
+type ExecutionUsageReceipt struct {
+	CacheWriteInputTokens                                                              *int64 `json:"cacheWriteInputTokens,omitempty"`
+	RequestedServiceTier                                                               string `json:"requestedServiceTier,omitempty"`
+	ObservedServiceTier                                                                string `json:"observedServiceTier,omitempty"`
+	ServiceTierStatus                                                                  string `json:"serviceTierStatus,omitempty"`
+	ProjectID                                                                          string
+	SessionID                                                                          SessionID
+	DelegationID, AttemptID                                                            string
+	BillingProvider, ProfileID, ProfileRevision, ProfileDigest                         string
+	ProjectPolicyRevision, ModelID, RequestID, ResponseID, UnknownReason, FinishReason string
+	ObservedAt                                                                         time.Time
+	Tokens                                                                             UsageTokenMetrics
+	TotalTokens, ReasoningOutputTokens                                                 *int64
+	Costs                                                                              UsageEventCosts
 }

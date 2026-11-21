@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,7 +43,7 @@ func TestAskCLICommandsUseOnlyDaemonRoutes(t *testing.T) {
 			cfg := setConfigEnv(t)
 			t.Setenv("AO_SESSION_ID", "worker-1")
 			calls := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/internal/telemetry/cli-invoked" {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -91,7 +90,7 @@ func TestAskReportForwardUsesOnlyItsOwningCapability(t *testing.T) {
 			t.Setenv("AO_SESSION_ID", tc.actor)
 			t.Setenv("AO_BROWSER_CAPABILITY", tc.capability)
 			calls := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/internal/telemetry/cli-invoked" {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -144,7 +143,7 @@ func TestAskCLIRejectsInvalidInputBeforeDaemon(t *testing.T) {
 func TestAskCLIConflictPreservesRequestIDAndUnknownSubmissionIsNotSuccess(t *testing.T) {
 	cfg := setConfigEnv(t)
 	t.Setenv("AO_SESSION_ID", "worker-1")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)
 		_, _ = io.WriteString(w, `{"message":"Reload question","code":"QUESTION_CHANGED","requestId":"req-question-7"}`)
 	}))
@@ -195,7 +194,7 @@ func TestAskCLIRejectsOversizedEnvelopeBeforeDaemon(t *testing.T) {
 
 func TestAskProjectCLIUsesExplicitAudienceAndCursor(t *testing.T) {
 	cfg := setConfigEnv(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/internal/telemetry/cli-invoked" {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -223,7 +222,7 @@ func TestAskCLIReadsSavedNotes(t *testing.T) {
 				cfg := setConfigEnv(t)
 				t.Setenv("AO_SESSION_ID", "worker-1")
 				record := `{"id":"ask-1","state":"answered","version":1,"payload":` + askCLIPayload + `,"answer":{"answers":[{"questionKey":"target","selectedOptionIds":["stage"],"notes":"  選 A，但 PR3 先不要做\n原文  "}],"notes":"總補充"}}`
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				server := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/internal/telemetry/cli-invoked" {
 						w.WriteHeader(http.StatusNoContent)
 						return

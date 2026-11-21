@@ -1,6 +1,7 @@
-go 1.27.1
+go 1.27.4
 
 use (
 	./backend
 	./cloud
+	./components/hcg
 )

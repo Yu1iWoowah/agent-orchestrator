@@ -9,12 +9,118 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/spf13/cobra"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
+type rhCatalogProvider struct {
+	provider domain.AgentAccountProvider
+	mu       sync.Mutex
+	calls    map[string][]string
+}
+
+func (p *rhCatalogProvider) record(home, operation string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls[home] = append(p.calls[home], operation)
+}
+func (p *rhCatalogProvider) Provider() domain.AgentAccountProvider { return p.provider }
+func (p *rhCatalogProvider) Identity(_ context.Context, home string) (domain.AgentAccountIdentityCheck, error) {
+	p.record(home, "identity")
+	return domain.AgentAccountIdentityCheck{SignedIn: true, Email: "fixture@example.invalid"}, nil
+}
+func (p *rhCatalogProvider) Limits(_ context.Context, home string) (domain.AgentAccountLimits, error) {
+	p.record(home, "limits")
+	return domain.AgentAccountLimits{}, nil
+}
+func (p *rhCatalogProvider) Prepare(home string) error { p.record(home, "prepare"); return nil }
+func (*rhCatalogProvider) LoginArgv(context.Context) ([]string, error) {
+	return nil, errors.New("login forbidden in RH catalog test")
+}
+func (*rhCatalogProvider) Logout(context.Context, string) error {
+	return errors.New("logout forbidden in RH catalog test")
+}
+func (*rhCatalogProvider) LaunchEnv(string) map[string]string { return nil }
+
+func TestReusableHandoffAccountRefreshIsGlobalBeforeCLIFilter(t *testing.T) {
+	cfg := setConfigEnv(t)
+	store := sqlitetest.MustOpen(t)
+	root := filepath.Join(t.TempDir(), "accounts")
+	providers := []*rhCatalogProvider{
+		{provider: domain.AgentAccountProviderClaude, calls: map[string][]string{}},
+		{provider: domain.AgentAccountProviderCodex, calls: map[string][]string{}},
+	}
+	var adapters []ports.AgentAccountProviderCLI
+	for _, provider := range providers {
+		adapters = append(adapters, provider)
+		for _, suffix := range []string{"one", "two"} {
+			id := string(provider.provider) + "-" + suffix
+			home := filepath.Join(root, string(provider.provider), id)
+			if err := os.MkdirAll(home, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateAgentAccount(context.Background(), domain.AgentAccount{
+				ID: id, Provider: provider.provider, Home: home, CreatedAt: time.Now(),
+				ProfileKind: domain.AgentAccountProfileContained,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	service := agentaccounts.New(store, adapters, root, nil, nil)
+	router := chi.NewRouter()
+	router.Route("/api/v1", func(r chi.Router) { (&controllers.AgentAccountsController{Svc: service}).Register(r) })
+	server := newFixtureServer(t, router)
+	defer server.Close()
+	writeRunFileFor(t, cfg, server)
+	out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "account", "ls", "--provider", "codex", "--refresh", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Accounts []struct {
+			Provider string `json:"provider"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Accounts) != 3 {
+		t.Fatalf("filtered accounts=%d, want device plus two", len(response.Accounts))
+	}
+	for _, account := range response.Accounts {
+		if account.Provider != "codex" {
+			t.Fatalf("CLI filter leaked provider %s", account.Provider)
+		}
+	}
+	for _, provider := range providers {
+		provider.mu.Lock()
+		for _, suffix := range []string{"one", "two"} {
+			home := filepath.Join(root, string(provider.provider), string(provider.provider)+"-"+suffix)
+			if got := strings.Join(provider.calls[home], ","); got != "prepare,identity,limits" {
+				t.Errorf("provider=%s profile=%s operations=%q", provider.provider, suffix, got)
+			}
+		}
+		provider.mu.Unlock()
+	}
+}
+
 func TestAccountUsageErrorsDoNotCallDaemon(t *testing.T) {
-	for _, args := range [][]string{{"ls", "--provider", ""}, {"use", "A", "--default", "--project", ""}, {"use", "A", "--default", "--session", " "}, {"use", "A"}, {"use", "A", "--default", "--session", "s"}, {"use", "A", "--default", "--role", "worker"}, {"use", "A", "--project", "p", "--role", "reviewer"}, {"use", "A", "--project", "p", "--wait"}, {"add"}, {"add", "--provider", "other"}, {"login"}, {"rm"}} {
+	for _, args := range [][]string{{"ls", "--provider", ""}, {"use", "A", "--default", "--project", ""}, {"use", "A", "--default", "--session", " "}, {"use", "A"}, {"use", "A", "--default", "--session", "s"}, {"use", "A", "--default", "--role", "worker"}, {"use", "A", "--project", "p", "--role", "reviewer"}, {"use", "A", "--project", "p"}, {"use", "A", "--project", "p", "--wait"}, {"add"}, {"add", "--provider", "other"}, {"login"}, {"rm"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			_, _, err := executeCLI(t, Deps{}, append([]string{"account"}, args...)...)
 			if ExitCode(err) != 2 {
@@ -39,7 +145,7 @@ func TestAccountCommandsUseOnlyDaemonRoutes(t *testing.T) {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			calls := 0
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/telemetry/") {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -72,7 +178,7 @@ func TestAccountCommandsUseOnlyDaemonRoutes(t *testing.T) {
 
 func TestAccountDaemonFailurePreservesRequestID(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -91,7 +197,7 @@ func TestAccountDaemonFailurePreservesRequestID(t *testing.T) {
 func TestSpawnExplicitAccountReachesDaemonWithoutGlobalReadiness(t *testing.T) {
 	cfg := setConfigEnv(t)
 	called := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -121,7 +227,7 @@ func TestAccountLoginReconnectDoesNotStartAnotherProfileOrPrintProviderFields(t 
 	cfg := setConfigEnv(t)
 	verifies := 0
 	gets := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -164,7 +270,7 @@ func TestAccountLoginCancelUsesFreshContextAndChecksDurableOutcome(t *testing.T)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelled := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -193,7 +299,7 @@ func TestAccountLoginCancelUsesFreshContextAndChecksDurableOutcome(t *testing.T)
 	defer srv.Close()
 	writeRunFileFor(t, cfg, srv)
 	var out, stderr bytes.Buffer
-	root := NewRootCommand(Deps{Out: &out, Err: &stderr, ProcessAlive: func(int) bool { return true }})
+	root := newTestRootCommand(t, Deps{Out: &out, Err: &stderr, HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }})
 	root.SetArgs([]string{"account", "add", "--provider", "codex", "--no-attach"})
 	err := root.ExecuteContext(ctx)
 	if !cancelled || !errors.Is(err, context.Canceled) || !strings.Contains(stderr.String(), "cleanup confirmed") {
@@ -205,7 +311,7 @@ func TestAccountUseWaitRequiresDurableCompleted(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			cfg := setConfigEnv(t)
 			gets := 0
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/telemetry/") {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -233,7 +339,7 @@ func TestAccountLoginCancelDuringStartRetainsExactOperationReference(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelled := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -254,7 +360,7 @@ func TestAccountLoginCancelDuringStartRetainsExactOperationReference(t *testing.
 	defer srv.Close()
 	writeRunFileFor(t, cfg, srv)
 	var stderr bytes.Buffer
-	root := NewRootCommand(Deps{Err: &stderr, Out: io.Discard, ProcessAlive: func(int) bool { return true }})
+	root := newTestRootCommand(t, Deps{Err: &stderr, Out: io.Discard, HTTPClient: apiFixtureClient(t, nil), ProcessAlive: func(int) bool { return true }})
 	root.SetArgs([]string{"account", "add", "--provider", "codex", "--no-attach"})
 	err := root.ExecuteContext(ctx)
 	if !cancelled || !errors.Is(err, context.Canceled) || !strings.Contains(stderr.String(), "cleanup confirmed") {
@@ -264,7 +370,7 @@ func TestAccountLoginCancelDuringStartRetainsExactOperationReference(t *testing.
 
 func TestAccountRemoveShowsOnlyBlockingOwnersWithoutStoppingThem(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/telemetry/") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -328,5 +434,264 @@ func TestLoginOutputDropsLongCredentialContinuationAndKeepsNextPrompt(t *testing
 	output.write(&out, []byte("ken=PRIVATE_TOKEN_CANARY\r\n"))
 	if strings.Contains(out.String(), "TOKEN_CANARY") {
 		t.Fatal("credential split across frames reached output")
+	}
+}
+
+type accountServer struct {
+	mu       sync.Mutex
+	requests []string
+	switches []switchSessionAccountRequest
+	polls    int
+	final    string
+}
+
+func (a *accountServer) log(r *http.Request) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.requests = append(a.requests, r.Method+" "+r.URL.RequestURI())
+}
+
+func newAccountServer(t *testing.T, final string) (*httptest.Server, *accountServer) {
+	t.Helper()
+	state := &accountServer{final: final}
+	accounts := `{"accounts":[` +
+		`{"id":"device-claude","provider":"claude","device":true,"email":"me@example.com","plan":"max","default":true,"signedIn":true,"loggedIn":true},` +
+		`{"id":"work","provider":"claude","device":false,"email":"work@example.com","plan":"team","default":false,"signedIn":true,"loggedIn":true,"orgId":"org-team-1","orgName":"Team"},` +
+		`{"id":"device-codex","provider":"codex","device":true,"default":true,"signedIn":false,"loggedIn":false}]}`
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/telemetry/cli-invoked" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		state.log(r)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agents/accounts":
+			_, _ = io.WriteString(w, accounts)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/accounts/work/default":
+			_, _ = io.WriteString(w, accounts)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1":
+			_, _ = io.WriteString(w, `{"session":`+sessionJSON("demo-1", "demo", "worker", "idle", false)+`}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/ghost":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":"not_found","code":"SESSION_NOT_FOUND","message":"Unknown session"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agents/accounts/sessions/demo-1":
+			_, _ = io.WriteString(w, `{"claude":"work","codex":"device-codex"}`)
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/agents/accounts/sessions/demo-1":
+			var req switchSessionAccountRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			state.mu.Lock()
+			state.switches = append(state.switches, req)
+			state.mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","transition":{"id":"t-1","phase":"requested","targetAccountId":`+jsonQuote(req.AccountID)+`}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1/interface-transition":
+			state.mu.Lock()
+			state.polls++
+			id, phase := "t-1", "draining"
+			if state.polls > 1 {
+				phase = state.final
+			}
+			if phase == "superseded" {
+				id, phase = "t-2", "draining"
+			}
+			state.mu.Unlock()
+			_, _ = io.WriteString(w, `{"supported":true,"targetMode":"chat","transition":{"id":"`+id+`","phase":"`+phase+`","errorDetail":"the account is signed out"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, state
+}
+
+func runAccountCLI(t *testing.T, final string, args ...string) (string, *accountServer, error) {
+	t.Helper()
+	cfg := setConfigEnv(t)
+	srv, state := newAccountServer(t, final)
+	writeRunFileFor(t, cfg, srv)
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, args...)
+	if err != nil {
+		t.Logf("stderr: %s", errOut)
+	}
+	return out, state, err
+}
+
+func TestAccountListFiltersByAgent(t *testing.T) {
+	out, _, err := runAccountCLI(t, "completed", "account", "ls", "--agent", "claude-code")
+	if err != nil {
+		t.Fatalf("account ls: %v", err)
+	}
+	for _, want := range []string{"device-claude", "me@example.com [this computer's login]", "signed in, default", "work@example.com"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "device-codex") {
+		t.Fatalf("codex account listed under --agent claude-code:\n%s", out)
+	}
+}
+
+func TestAccountListTellsOrganizationsApart(t *testing.T) {
+	accounts := []accountInfo{
+		{ID: "acme-1", Provider: "claude", Email: "dev@example.com", Plan: "team", SignedIn: true, OrgID: "aaaaaaaa-1111", OrgName: "Acme"},
+		{ID: "acme-2", Provider: "claude", Email: "Dev@example.com", Plan: "team", SignedIn: true, OrgID: "bbbbbbbb-2222", OrgName: "Acme"},
+		{ID: "personal", Provider: "claude", Email: "dev@example.com", Plan: "max", SignedIn: true, OrgID: "cccccccc-3333", OrgName: "Personal"},
+		{ID: "solo", Provider: "codex", SignedIn: true},
+	}
+	var out strings.Builder
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := writeAccountList(cmd, accounts); err != nil {
+		t.Fatal(err)
+	}
+	orgs := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n")[1:] {
+		fields := strings.Split(line, "  ")
+		var cells []string
+		for _, field := range fields {
+			if field = strings.TrimSpace(field); field != "" {
+				cells = append(cells, field)
+			}
+		}
+		orgs[cells[0]] = cells[3]
+	}
+	want := map[string]string{"acme-1": "Acme (aaaaaaaa)", "acme-2": "Acme (bbbbbbbb)", "personal": "Personal", "solo": "-"}
+	if !reflect.DeepEqual(orgs, want) {
+		t.Fatalf("ORG column = %#v, want %#v\n%s", orgs, want, out.String())
+	}
+}
+
+func TestAccountListJSONKeepsOrganization(t *testing.T) {
+	out, _, err := runAccountCLI(t, "completed", "account", "ls", "--json")
+	if err != nil {
+		t.Fatalf("account ls --json: %v", err)
+	}
+	var res accountList
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	for _, account := range res.Accounts {
+		if account.ID == "work" && (account.OrgID != "org-team-1" || account.OrgName != "Team") {
+			t.Fatalf("work account lost its organization: %#v", account)
+		}
+	}
+}
+
+func TestAccountListRejectsUnknownAgent(t *testing.T) {
+	if _, _, err := runAccountCLI(t, "completed", "account", "ls", "--agent", "aider"); err == nil {
+		t.Fatal("account ls --agent aider succeeded")
+	}
+}
+
+func TestAccountDefault(t *testing.T) {
+	out, state, err := runAccountCLI(t, "completed", "account", "default", "work")
+	if err != nil {
+		t.Fatalf("account default: %v", err)
+	}
+	if !strings.Contains(out, "work (work@example.com) is now the default for new claude-code sessions") {
+		t.Fatalf("unexpected output:\n%s", out)
+	}
+	if want := []string{"POST /api/v1/agents/accounts/work/default"}; !reflect.DeepEqual(state.requests, want) {
+		t.Fatalf("requests = %#v, want %#v", state.requests, want)
+	}
+}
+
+func TestAccountShowDefaultsToThisSession(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "demo-1")
+	out, _, err := runAccountCLI(t, "completed", "account", "show")
+	if err != nil {
+		t.Fatalf("account show: %v", err)
+	}
+	if out != "claude-code: work\ncodex: device-codex\n" {
+		t.Fatalf("unexpected output:\n%q", out)
+	}
+}
+
+func TestAccountShowRefusesUnknownSession(t *testing.T) {
+	out, state, err := runAccountCLI(t, "completed", "account", "show", "ghost", "--json")
+	if err == nil || !strings.Contains(err.Error(), "Unknown session") {
+		t.Fatalf("account show ghost: err = %v, out = %q", err, out)
+	}
+	if out != "" {
+		t.Fatalf("printed accounts for an unknown session: %q", out)
+	}
+	if want := []string{"GET /api/v1/sessions/ghost"}; !reflect.DeepEqual(state.requests, want) {
+		t.Fatalf("requests = %#v, want %#v", state.requests, want)
+	}
+}
+
+func TestAccountSwitchStartsWithoutWaiting(t *testing.T) {
+	out, state, err := runAccountCLI(t, "completed", "account", "switch", "demo-1", "work", "--stop-turn")
+	if err != nil {
+		t.Fatalf("account switch: %v", err)
+	}
+	if !strings.Contains(out, "moving demo-1 to work (transition t-1, requested)") {
+		t.Fatalf("unexpected output:\n%s", out)
+	}
+	if want := []switchSessionAccountRequest{{AccountID: "work", StopTurn: true}}; !reflect.DeepEqual(state.switches, want) {
+		t.Fatalf("switch bodies = %#v, want %#v", state.switches, want)
+	}
+	if state.polls != 0 {
+		t.Fatalf("polled %d times without --wait", state.polls)
+	}
+}
+
+func TestAccountSwitchWaits(t *testing.T) {
+	old := accountSwitchPoll
+	accountSwitchPoll = time.Millisecond
+	t.Cleanup(func() { accountSwitchPoll = old })
+
+	out, state, err := runAccountCLI(t, "completed", "account", "switch", "demo-1", "work", "--wait")
+	if err != nil {
+		t.Fatalf("account switch --wait: %v", err)
+	}
+	if !strings.Contains(out, "moved demo-1 to work") || state.polls != 2 {
+		t.Fatalf("output %q after %d polls", out, state.polls)
+	}
+
+	_, _, err = runAccountCLI(t, "failed", "account", "switch", "demo-1", "work", "--wait")
+	if err == nil || !strings.Contains(err.Error(), "ended failed: the account is signed out") {
+		t.Fatalf("failed move error = %v", err)
+	}
+}
+
+func TestAccountSwitchWaitStopsWhenSuperseded(t *testing.T) {
+	old := accountSwitchPoll
+	accountSwitchPoll = time.Millisecond
+	t.Cleanup(func() { accountSwitchPoll = old })
+
+	_, state, err := runAccountCLI(t, "superseded", "account", "switch", "demo-1", "work", "--wait", "--timeout", "5s")
+	if err == nil || !strings.Contains(err.Error(), "later change (transition t-2) replaced it") {
+		t.Fatalf("superseded move error = %v", err)
+	}
+	if state.polls != 2 {
+		t.Fatalf("polled %d times, want 2", state.polls)
+	}
+}
+
+func TestAccountLoginShowsBlockingOwnersFromRefusal(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/telemetry/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/agents/accounts/A/login" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"code":"AGENT_ACCOUNT_IN_USE","message":"Account is held.","requestId":"login-request","details":{"usageOwners":[{"kind":"transition","sessionId":"active","transitionId":"move-1","blocking":true},{"kind":"session","sessionId":"old","blocking":false}]}}`)
+	}))
+	defer srv.Close()
+	writeRunFileFor(t, cfg, srv)
+	_, stderr, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "account", "login", "A", "--detach")
+	if ExitCode(err) != 1 || !strings.Contains(err.Error(), "login-request") || !strings.Contains(stderr, "active") || !strings.Contains(stderr, "move-1") || strings.Contains(stderr, "old") {
+		t.Fatalf("err=%v stderr=%s", err, stderr)
 	}
 }

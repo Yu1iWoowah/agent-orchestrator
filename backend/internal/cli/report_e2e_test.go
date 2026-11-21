@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -47,7 +46,7 @@ func TestReportRoundTrip(t *testing.T) {
 	})
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router := httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{Reports: service}, httpd.ControlDeps{})
-	server := httptest.NewServer(router)
+	server := newFixtureServer(t, router)
 	writeRunFileFor(t, cfg, server)
 
 	_, stderr, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},

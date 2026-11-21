@@ -77,6 +77,24 @@ const (
 	// ACPInitialPermissionsMetaKey records the process-launch approval policy,
 	// which can differ from mutable session settings after reconnect.
 	ACPInitialPermissionsMetaKey = "ao.initialPermissions"
+	// ACPSteerPromptMetaKey marks a session/prompt that steers the running turn
+	// (acp.SteerPrompt). The host admits it while the turn's prompt is active,
+	// and the turn's result is the answer of the last of its prompts to return.
+	ACPSteerPromptMetaKey = "ao.steerPrompt"
+	// ACPSteerKeepsTurnMetaKey also marks a steer prompt that the agent answers
+	// at once while the turn's earlier prompt keeps the work, as Hermes'
+	// `/steer` command is. Its answer is never the turn's result: the turn
+	// ends with the answer of its last other prompt, success or failure.
+	ACPSteerKeepsTurnMetaKey = "ao.steerKeepsTurn"
+	// ACPSteerTurnEndedDataKey is set in the error data of a steer prompt the
+	// host refused because the turn it was meant for had already ended. The
+	// agent never saw it, so the guidance can go as a new turn.
+	ACPSteerTurnEndedDataKey = "ao.steerTurnEnded"
+	// ACPPromptHandoffMethod is an AO-private notification carrying the
+	// non-final answer of a prompt an earlier daemon attachment sent, such as
+	// a running prompt handing the turn to a steer prompt. The reattached
+	// controller has no request of its own to match it to.
+	ACPPromptHandoffMethod = "_ao/persistent_prompt_handoff"
 )
 
 var (
@@ -107,6 +125,9 @@ type Descriptor struct {
 	Token                string    `json:"token"`
 	PID                  int       `json:"pid"`
 	StartedAt            time.Time `json:"startedAt"`
+	// BootID names the boot the host started in; empty for hosts started
+	// before it was recorded.
+	BootID string `json:"bootId,omitempty"`
 }
 
 // Config identifies one provider process and its AO session ownership.
@@ -141,6 +162,10 @@ type ACPState struct {
 	PendingCompaction      bool            `json:"pendingCompaction,omitempty"`
 	PendingResultEventID   string          `json:"pendingResultEventId,omitempty"`
 	RetainUnpromptedEvents bool            `json:"retainUnpromptedEvents,omitempty"`
+	// AvailableCommands is the latest available_commands_update catalog for
+	// SessionID. Adapters announce it once, as a notification after session
+	// setup, so a controller that reattaches later would otherwise never see it.
+	AvailableCommands json.RawMessage `json:"availableCommands,omitempty"`
 }
 
 // Transport is one authenticated attachment to a persistent provider host.
@@ -202,6 +227,89 @@ func lockPath(dataDir, sessionID string) (string, error) {
 	return filepath.Join(dir, "host.lock"), nil
 }
 
+// Each detached host gets its own spawn record, named by its pid, so no host's
+// cleanup can remove another's record.
+const spawnRecordPrefix = "host.spawn-"
+
+func spawnPath(dataDir, sessionID string, pid int) (string, error) {
+	dir, err := hostDir(dataDir, sessionID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, spawnRecordPrefix+strconv.Itoa(pid)), nil
+}
+
+// recordSpawn names a detached host process before it can take its launch
+// lock. A caller that stops waiting still leaves the starting host visible.
+func recordSpawn(dataDir, sessionID string, pid int) error {
+	path, err := spawnPath(dataDir, sessionID, pid)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, nil, 0o600)
+}
+
+// clearSpawnRecord removes the spawn record of the host with pid.
+func clearSpawnRecord(dataDir, sessionID string, pid int) {
+	if path, err := spawnPath(dataDir, sessionID, pid); err == nil {
+		_ = os.Remove(path)
+	}
+}
+
+// spawnRecords lists the pids named by spawn records. A record whose name is
+// not a pid makes the result unknown.
+func spawnRecords(dataDir, sessionID string) ([]int, HostState) {
+	dir, err := hostDir(dataDir, sessionID)
+	if err != nil {
+		return nil, HostUnknown
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, HostAbsent
+	}
+	if err != nil {
+		return nil, HostUnknown
+	}
+	state := HostAbsent
+	var pids []int
+	for _, entry := range entries {
+		name, ok := strings.CutPrefix(entry.Name(), spawnRecordPrefix)
+		if !ok {
+			continue
+		}
+		pid, err := strconv.Atoi(name)
+		if err != nil || pid <= 0 {
+			state = HostUnknown
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	return pids, state
+}
+
+func spawnHostState(dataDir, sessionID string) HostState {
+	pids, state := spawnRecords(dataDir, sessionID)
+	for _, pid := range pids {
+		if processalive.Alive(pid) {
+			return HostRunning
+		}
+	}
+	return state
+}
+
+// clearDeadSpawnRecords removes spawn records whose host has exited.
+func clearDeadSpawnRecords(dataDir, sessionID string) {
+	pids, _ := spawnRecords(dataDir, sessionID)
+	for _, pid := range pids {
+		if !processalive.Alive(pid) {
+			clearSpawnRecord(dataDir, sessionID, pid)
+		}
+	}
+}
+
 func acquireHostLock(dataDir, sessionID string) (func(), error) {
 	dir, err := hostDir(dataDir, sessionID)
 	if err != nil {
@@ -217,13 +325,18 @@ func acquireHostLock(dataDir, sessionID string) (func(), error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // AO-owned capability directory.
 	if errors.Is(err, os.ErrExist) {
 		owner, readErr := os.ReadFile(path) //nolint:gosec // AO-owned path derived from validated session id.
-		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(owner)))
-		if readErr != nil || parseErr != nil || pid <= 0 || processalive.Alive(pid) {
+		fields := strings.Fields(string(owner))
+		pid, parseErr := 0, errors.New("empty chat host lock")
+		if len(fields) > 0 {
+			pid, parseErr = strconv.Atoi(fields[0])
+		}
+		if readErr != nil || parseErr != nil || pid <= 0 || processalive.Alive(pid) && !lockFromPreviousBoot(dataDir, sessionID, pid, fields) {
 			return nil, ErrHostExists
 		}
 		// A host can die after atomically creating its launch lock but before it
-		// publishes host.json. Reclaim only a lock whose recorded owner is proven
-		// dead, then retry the same O_EXCL acquisition once.
+		// publishes host.json, or a reboot can leave both behind while its PID is
+		// reused. Reclaim only a lock whose recorded owner is proven gone, then
+		// retry the same O_EXCL acquisition once.
 		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			return nil, ErrHostExists
 		}
@@ -235,7 +348,7 @@ func acquireHostLock(dataDir, sessionID string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := fmt.Fprintf(f, "%d\n", os.Getpid()); err != nil {
+	if _, err := fmt.Fprintf(f, "%d %s\n", os.Getpid(), currentBootID()); err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
 		return nil, err
@@ -247,12 +360,28 @@ func acquireHostLock(dataDir, sessionID string) (func(), error) {
 	return func() { _ = os.Remove(path) }, nil
 }
 
-func readDescriptor(dataDir, sessionID string) (Descriptor, error) {
+// lockFromPreviousBoot proves a lock's live-looking PID belongs to an earlier
+// boot: by the boot id the lock records, or for a lock written before boot ids
+// were recorded, by the descriptor its same PID published (u3 transition).
+func lockFromPreviousBoot(dataDir, sessionID string, pid int, fields []string) bool {
+	if len(fields) > 1 {
+		return hostFromPreviousBoot(fields[1], time.Time{})
+	}
+	d, err := readDescriptorOnce(dataDir, sessionID)
+	return err == nil && d.PID == pid && hostFromPreviousBoot(d.BootID, d.StartedAt)
+}
+
+func readDescriptorOnce(dataDir, sessionID string) (Descriptor, error) {
 	path, err := descriptorPath(dataDir, sessionID)
 	if err != nil {
 		return Descriptor{}, err
 	}
-	b, err := os.ReadFile(path) //nolint:gosec // AO-owned path derived from validated session id.
+	f, err := openHostFile(path)
+	if err != nil {
+		return Descriptor{}, err
+	}
+	b, err := io.ReadAll(f)
+	_ = f.Close()
 	if err != nil {
 		return Descriptor{}, err
 	}
@@ -316,11 +445,17 @@ func validateDescriptor(cfg Config, d Descriptor) error {
 	return nil
 }
 
+// hostMayBeAlive is false when the descriptor's PID is gone or proven to be
+// reused after a reboot; a failed probe alone never proves a host dead.
+func hostMayBeAlive(d Descriptor) bool {
+	return processalive.Alive(d.PID) && !hostFromPreviousBoot(d.BootID, d.StartedAt)
+}
+
 // ConnectOrStart attaches to an existing compatible host or starts one with the
 // current AO executable. Failed/incompatible probes never terminate that host.
 func ConnectOrStart(ctx context.Context, cfg Config) (*Transport, error) {
 	if d, err := readDescriptor(cfg.DataDir, cfg.SessionID); err == nil {
-		if err := validateDescriptor(cfg, d); err != nil && processalive.Alive(d.PID) {
+		if err := validateDescriptor(cfg, d); err != nil && hostMayBeAlive(d) {
 			return nil, err
 		}
 		transport, attachErr := attach(ctx, d, true)
@@ -352,7 +487,7 @@ func ConnectOrStart(ctx context.Context, cfg Config) (*Transport, error) {
 		// A failed socket probe is not proof that a provider is dead. Only an OS
 		// process observation permits clearing the descriptor and falling back to
 		// native resume in a new host.
-		if processalive.Alive(d.PID) {
+		if hostMayBeAlive(d) {
 			return nil, fmt.Errorf("%w: %w", ErrOwnershipInconclusive, attachErr)
 		}
 		// Do not remove stale ownership files here. Another starter may have
@@ -405,7 +540,7 @@ func ConnectOrStart(ctx context.Context, cfg Config) (*Transport, error) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if d, readErr := readDescriptor(cfg.DataDir, cfg.SessionID); readErr == nil && processalive.Alive(d.PID) {
+	if d, readErr := readDescriptor(cfg.DataDir, cfg.SessionID); readErr == nil && hostMayBeAlive(d) {
 		return nil, fmt.Errorf("%w: %w", ErrOwnershipInconclusive, lastErr)
 	}
 	return nil, fmt.Errorf("start chat host: %w", lastErr)
@@ -432,6 +567,7 @@ func Reconcile(ctx context.Context, dataDir string, keep map[string]struct{}) er
 		if _, ok := keep[sessionID]; ok {
 			continue
 		}
+		clearDeadSpawnRecords(dataDir, sessionID)
 		d, readErr := readDescriptor(dataDir, sessionID)
 		if readErr != nil {
 			continue
@@ -462,6 +598,11 @@ func Reconcile(ctx context.Context, dataDir string, keep map[string]struct{}) er
 func attach(ctx context.Context, d Descriptor, reconnected bool) (*Transport, error) {
 	if d.Version != ProtocolVersion {
 		return nil, fmt.Errorf("%w: host=%d daemon=%d", ErrIncompatible, d.Version, ProtocolVersion)
+	}
+	if reconnected {
+		if err := probeDeliverySupport(ctx, d); err != nil {
+			return nil, err
+		}
 	}
 	handshakeCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
@@ -509,6 +650,22 @@ func attach(ctx context.Context, d Descriptor, reconnected bool) (*Transport, er
 	}, nil
 }
 
+// probeDeliverySupport refuses a surviving host that cannot answer delivery
+// queries. Only its explicit unknown-action reply proves that; a failed or
+// silent probe keeps the existing inconclusive path, and the host stays alive.
+func probeDeliverySupport(ctx context.Context, d Descriptor) error {
+	probeCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancel()
+	_, err := (&DeliveryClient{descriptor: d}).call(probeCtx, nil, "delivery-query")
+	if errors.Is(err, errUnknownHostAction) {
+		return fmt.Errorf("%w: host predates delivery evidence", ErrIncompatible)
+	}
+	if err != nil && !errors.Is(err, ports.ErrChatDeliveryUnverified) {
+		return err
+	}
+	return nil
+}
+
 func bindConnToContext(ctx context.Context, conn net.Conn) func(error) error {
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	return func(err error) error {
@@ -532,6 +689,76 @@ func HostPID(dataDir, sessionID string) (int, bool) {
 	return d.PID, true
 }
 
+// HostState is what the recorded provider host for a session proves.
+type HostState int
+
+const (
+	// HostUnknown is an unreadable, undecodable or invalid record.
+	HostUnknown HostState = iota
+	// HostAbsent is no record, or a record whose pid has exited.
+	HostAbsent
+	// HostRunning is a record whose pid is alive.
+	HostRunning
+)
+
+// ProbeHost reads the host records for sessionID; nothing is ever started or
+// stopped here. The spawn record names a detached host before it takes its
+// launch lock, and the lock covers it until after host.json is removed, so the
+// host is absent only when no record names a live owner and all could be read.
+func ProbeHost(dataDir, sessionID string) HostState {
+	states := []HostState{descriptorHostState(dataDir, sessionID), pidFileHostState(lockPath(dataDir, sessionID)), spawnHostState(dataDir, sessionID)}
+	state := HostAbsent
+	for _, s := range states {
+		if s == HostRunning {
+			return HostRunning
+		}
+		if s == HostUnknown {
+			state = HostUnknown
+		}
+	}
+	return state
+}
+
+func descriptorHostState(dataDir, sessionID string) HostState {
+	d, err := readDescriptor(dataDir, sessionID)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return HostAbsent
+	case err != nil || d.PID <= 0:
+		return HostUnknown
+	case processalive.Alive(d.PID):
+		return HostRunning
+	default:
+		return HostAbsent
+	}
+}
+
+// pidFileHostState reads the launch lock's owner pid. An empty or unreadable
+// lock may be one whose pid is not written yet, so it is unknown.
+func pidFileHostState(path string, pathErr error) HostState {
+	if pathErr != nil {
+		return HostUnknown
+	}
+	owner, err := os.ReadFile(path) //nolint:gosec // AO-owned path derived from validated session id.
+	if errors.Is(err, os.ErrNotExist) {
+		return HostAbsent
+	}
+	// The lock holds "<pid> <boot id>"; locks written before boot ids hold the pid only.
+	fields := strings.Fields(string(owner))
+	pid, parseErr := 0, errors.New("empty chat host lock")
+	if len(fields) > 0 {
+		pid, parseErr = strconv.Atoi(fields[0])
+	}
+	switch {
+	case err != nil || parseErr != nil || pid <= 0:
+		return HostUnknown
+	case processalive.Alive(pid):
+		return HostRunning
+	default:
+		return HostAbsent
+	}
+}
+
 // Shutdown terminates current session ownership and waits for it to end.
 // Missing/dead hosts are harmless; unknown live owners fail closed.
 // The protocol acknowledgement only confirms that shutdown was requested.
@@ -543,6 +770,38 @@ func Shutdown(ctx context.Context, dataDir, sessionID string) error {
 // grace (session closed, or deaf to stdin). An older host waits the full grace.
 func ShutdownQuick(ctx context.Context, dataDir, sessionID string) error {
 	return shutdown(ctx, dataDir, sessionID, true, "")
+}
+
+func readDescriptor(dataDir, sessionID string) (Descriptor, error) {
+	return readDescriptorContext(context.Background(), dataDir, sessionID)
+}
+
+func readDescriptorContext(ctx context.Context, dataDir, sessionID string) (Descriptor, error) {
+	d, err := readDescriptorOnce(dataDir, sessionID)
+	if !isDescriptorSharingViolation(err) {
+		return d, err
+	}
+	timeout := time.NewTimer(time.Second)
+	defer timeout.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return Descriptor{}, ctx.Err()
+		case <-timeout.C:
+			return Descriptor{}, err
+		case <-ticker.C:
+			d, err = readDescriptorOnce(dataDir, sessionID)
+			if !isDescriptorSharingViolation(err) {
+				return d, err
+			}
+		}
+	}
+}
+
+func readShutdownDescriptor(ctx context.Context, dataDir, sessionID string) (Descriptor, error) {
+	return readDescriptorContext(ctx, dataDir, sessionID)
 }
 
 // ShutdownForReplacement requires a matching live host and a post-cleanup
@@ -560,7 +819,7 @@ func CheckReplacementShutdown(ctx context.Context, dataDir, sessionID, owner str
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	d, err := readDescriptor(dataDir, sessionID)
+	d, err := readDescriptorContext(ctx, dataDir, sessionID)
 	if errors.Is(err, os.ErrNotExist) {
 		return ErrNotRunning
 	}
@@ -574,7 +833,7 @@ func CheckReplacementShutdown(ctx context.Context, dataDir, sessionID, owner str
 }
 
 func shutdown(ctx context.Context, dataDir, sessionID string, quick bool, confirmedOwner string) error {
-	d, err := readDescriptor(dataDir, sessionID)
+	d, err := readShutdownDescriptor(ctx, dataDir, sessionID)
 	if errors.Is(err, os.ErrNotExist) {
 		if confirmedOwner != "" {
 			return ErrNotRunning
@@ -644,7 +903,7 @@ func shutdown(ctx context.Context, dataDir, sessionID string, quick bool, confir
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		current, readErr := readDescriptor(dataDir, sessionID)
+		current, readErr := readShutdownDescriptor(waitCtx, dataDir, sessionID)
 		if readErr == nil && current.Token != d.Token {
 			if confirmedOwner != "" {
 				return ErrOwnershipInconclusive
@@ -662,7 +921,8 @@ func shutdown(ctx context.Context, dataDir, sessionID string, quick bool, confir
 			} else if lockErr != nil {
 				return lockErr
 			}
-		} else if readErr != nil && !positiveStop {
+		} else if readErr != nil && !positiveStop && !hostFileBusy(readErr) {
+			// A sharing violation may be the exiting host deleting its descriptor.
 			return readErr
 		}
 		select {
@@ -689,6 +949,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer releaseLock()
+	defer clearSpawnRecord(cfg.DataDir, cfg.SessionID, os.Getpid())
 	token, err := randomToken()
 	if err != nil {
 		return err
@@ -711,13 +972,19 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	child.Stderr = io.Discard
+	// The adapter's stderr is the only record of why a turn went silent. Keep it
+	// beside the descriptor instead of discarding it.
+	if dir, dirErr := hostDir(cfg.DataDir, cfg.SessionID); dirErr == nil {
+		adapterLog := openAdapterLog(dir, adapterLogMaxBytes)
+		defer func() { _ = adapterLog.Close() }()
+		child.Stderr = adapterLog
+	}
 	closeProviderTree, err := startProviderProcess(child)
 	if err != nil {
 		return err
 	}
 	// The job owns descendants even if the direct provider exits first. Close
-	// it before releasing the host lock so Shutdown follows the kill request.
+	// it before waiting for inherited pipes and releasing the host lock.
 	defer func() { _ = closeProviderTree(false) }()
 
 	d := Descriptor{
@@ -725,6 +992,12 @@ func Run(ctx context.Context, cfg Config) error {
 		Version:          ProtocolVersion, SessionID: cfg.SessionID, Protocol: cfg.Protocol,
 		OwnershipFingerprint: cfg.OwnershipFingerprint,
 		Address:              listener.Addr().String(), Token: token, PID: os.Getpid(), StartedAt: time.Now().UTC(),
+		BootID: currentBootID(),
+	}
+	if cfg.Protocol == ProtocolACP {
+		if err := recordAdapterIdentity(cfg.DataDir, d, child.Process.Pid); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "chat adapter lifetime evidence unavailable")
+		}
 	}
 	if err := writeDescriptor(cfg.DataDir, d); err != nil {
 		_ = killProviderProcess(context.WithoutCancel(ctx), child)
@@ -849,6 +1122,8 @@ func Run(ctx context.Context, cfg Config) error {
 		_ = json.NewEncoder(confirmation).Encode(response)
 		_ = confirmation.Close()
 	} else {
+		// Reap descendants before waiting for inherited stderr pipes.
+		_ = closeProviderTree(false)
 		_ = wait()
 	}
 	return runErr
@@ -995,6 +1270,9 @@ func (h *host) handle(conn net.Conn) {
 				receipts, err := h.delivery.query(request.Deliveries, request.Action == "delivery-flush")
 				response.OK = err == nil
 				response.Deliveries = receipts
+				if gap := (*ports.ChatDeliveryGapError)(nil); errors.As(err, &gap) {
+					response.Error = deliveryGapPrefix + strings.Join(gap.Methods, ",")
+				}
 			}
 		}
 		_ = json.NewEncoder(conn).Encode(response)

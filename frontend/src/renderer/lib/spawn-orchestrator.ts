@@ -1,7 +1,10 @@
+import { apiErrorException } from "./api-error-exception";
 import { apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId } from "./api-client";
-import { appI18n } from "../i18n";
-import { aoBridge } from "./bridge";
 import { resumeOnce } from "../hooks/useCanResumeAgent";
+import { followResume, noteResumeFailure } from "./resume-watch";
+import { queryClient } from "./query-client";
+import { workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
+import { conversationQueryKey } from "../hooks/useConversation";
 import type { OrchestratorSpawnSource } from "./orchestrator-spawn-sources";
 import { captureRendererEvent } from "./telemetry";
 import { clientForSessionHost } from "./host-clients";
@@ -83,10 +86,13 @@ export async function spawnOrchestrator(
 			);
 		}
 
-		void captureRendererEvent("ao.renderer.orchestrator_spawn_succeeded", { project_id: projectId, source });
+		void captureRendererEvent("ao.orchestrators.spawned", { project_id: projectId, source });
 		return data.orchestrator.id;
 	} catch (err) {
-		void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", { project_id: projectId, source });
+		void captureRendererEvent("ao.orchestrators.spawn_failed", {
+			project_id: projectId, source,
+			...(err instanceof OrchestratorSpawnError ? { error_code: err.code, http_status: err.status } : {}),
+		});
 		throw err;
 	}
 }
@@ -114,15 +120,14 @@ async function requestOrchestratorResume(sessionId: string, hostId?: string): Pr
 		params: { path: { sessionId } },
 	});
 	if (error && apiErrorCode(error) !== "AGENT_NOT_EXITED") {
-		throw new Error(apiErrorMessage(error, `Could not resume the orchestrator (${response.status})`));
+		noteResumeFailure(sessionId, error, hostId);
+		throw apiErrorException(error, `Could not resume the orchestrator (${response.status})`);
 	}
-	if (data?.resumeMode === "saved_prompt") {
-		void aoBridge.notifications
-			.show({
-				id: `resume-agent-fallback:${sessionId}:${Date.now()}`,
-				title: appI18n.t("inspector.startedFromPrompt"),
-				body: appI18n.t("inspector.resumeFallbackBody"),
-			})
-			.catch((err) => console.warn("Unable to show resume fallback notification", err));
-	}
+	if (error) return;
+	// The daemon finishes the resume in the background; the watch records a
+	// failure and refreshes the session once it settles.
+	followResume(sessionId, hostId, response, data, () => Promise.all([
+		queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) }),
+		queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId, hostId) }),
+	]));
 }

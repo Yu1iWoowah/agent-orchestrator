@@ -92,6 +92,17 @@ const (
 	TurnStateHeld TurnState = "held"
 )
 
+// SettledTurnStateKeepingFailure is the state a settlement actually writes over
+// a stored turn. A history replay re-settles a turn without its error, which is
+// not portable; a resumed Codex thread also replays a turn AO already failed as
+// interrupted. The stored failure is what happened, so it is kept.
+func SettledTurnStateKeepingFailure(stored TurnState, storedErr string, next TurnState, nextErr string) TurnState {
+	if nextErr == "" && next == TurnStateInterrupted && stored == TurnStateFailed && storedErr != "" {
+		return TurnStateFailed
+	}
+	return next
+}
+
 // Terminal reports whether no further work is expected on the turn.
 func (s TurnState) Terminal() bool {
 	switch s {
@@ -426,6 +437,17 @@ type ConversationAccount struct {
 	ReauthReason string `json:"reauthReason,omitempty"`
 }
 
+// RequireLogin records that the provider refused the login at at.
+func (a *ConversationAccount) RequireLogin(reason, failureID string, at time.Time) {
+	a.AuthenticationState = "required"
+	a.ReauthRequiredAt = &at
+	a.ReauthReason = reason
+	a.LastAuthFailureAt = &at
+	a.LastAuthFailureReason = reason
+	a.AuthFailureID = failureID
+	a.AuthVerifiedAt = nil
+}
+
 // ThreadStatus is the provider's own lifecycle state for a thread. It is NOT AO's
 // session status, which stays derived from durable facts at read time; this is one
 // more such fact.
@@ -497,6 +519,10 @@ type ConversationPlan struct {
 	// list, rather than one plan per turn. A turn ending says nothing about its
 	// steps, and the copy each later turn receives is the same list, not a new plan.
 	SpansTurns bool `json:"spansTurns,omitempty"`
+	// Superseded marks a copy of a list that spans turns which a later copy has
+	// replaced. The daemon sets it as it writes the newer copy, so a client shows
+	// the list once without dating copies itself.
+	Superseded bool `json:"superseded,omitempty"`
 }
 
 // ConversationPlanStep is one step of a plan.
@@ -581,6 +607,7 @@ type ConversationTurn struct {
 	State          TurnState `json:"state"`
 	// ErrorMessage is set for failed turns. Interrupted turns are not errors.
 	ErrorMessage string                  `json:"errorMessage,omitempty"`
+	FailureCode  ConversationFailureCode `json:"failureCode,omitempty"`
 	UsageLimit   *ConversationUsageLimit `json:"usageLimit,omitempty"`
 	RequestedAt  time.Time               `json:"requestedAt"`
 	StartedAt    *time.Time              `json:"startedAt,omitempty"`
@@ -600,7 +627,44 @@ type ConversationTurn struct {
 	// the whole plan on every change, so only the latest is an answer and the
 	// earlier ones are the same plan with fewer steps ticked off.
 	Plan *ConversationPlan `json:"plan,omitempty"`
+	// Artifacts are the session artifact files the turn created or edited, as
+	// AO saw them in the artifact directory when the turn ended. Unlike Diff it
+	// does not depend on the provider, so it covers files written through a
+	// shell command. Nil for a turn AO did not watch from its start, or one that
+	// changed none. A pointer, as Diff is, so a turn stays comparable.
+	Artifacts *ConversationTurnArtifacts `json:"artifacts,omitempty"`
 }
+
+// ConversationTurnArtifacts is the set of session artifact files a turn changed.
+type ConversationTurnArtifacts struct {
+	Files []ConversationTurnArtifact `json:"files"`
+}
+
+// ConversationTurnArtifact is one session artifact file a turn changed.
+type ConversationTurnArtifact struct {
+	// Path is relative to the session's artifact directory, slash-separated.
+	Path string `json:"path"`
+	// Status is TurnArtifactAdded or TurnArtifactModified.
+	Status string `json:"status"`
+}
+
+// The ways a turn can change an artifact file. A file the turn deleted is not
+// listed: there is nothing left to show for it.
+const (
+	TurnArtifactAdded    = "added"
+	TurnArtifactModified = "modified"
+)
+
+// ConversationFailureCode identifies a provider failure with a known recovery path.
+type ConversationFailureCode string
+
+const (
+	// ConversationFailureProviderKeyMissing means the provider route lacks a configured API key.
+	ConversationFailureProviderKeyMissing ConversationFailureCode = "provider_key_missing"
+	// ConversationFailureAuthRequired means the provider refused the agent's
+	// login, so signing in again is the way to recover the turn.
+	ConversationFailureAuthRequired ConversationFailureCode = "auth_required"
+)
 
 // ConversationTurnDiff is the turn's changed-file summary.
 //
@@ -652,8 +716,11 @@ type QueuedTurn struct {
 	Text   string
 	// ClientMessageID is carried through to the provider so a dispatch retried
 	// after a crash cannot produce a second provider turn.
-	ClientMessageID   string
-	Origin            MessageOrigin
+	ClientMessageID string
+	Origin          MessageOrigin
+	// AuthoredByUser is user-written content AO delivered as automation, which
+	// the user may promote like their own typed message.
+	AuthoredByUser    bool
 	SenderSessionID   string
 	SenderProjectID   string
 	SenderDisplayName string
@@ -695,11 +762,12 @@ type ConversationMessage struct {
 	// The agent receives Text like any message; the timeline shows a marker
 	// instead of a message bubble.
 	Continuation bool `json:"continuation,omitempty"`
-	// AuthoredByUser is an intake-only fact used to project user activity when
-	// AO delivered the message as automation. It is not part of the persisted
-	// delivery origin or the conversation API representation. Replacement holds
-	// retain a private author/time receipt until that projection can resume.
-	AuthoredByUser bool `json:"-"`
+	// AuthoredByUser marks user-written content AO delivered as automation, such
+	// as Browser-panel annotations. Origin stays automation; the user may still
+	// steer or cancel the queued turn, but not edit its generated text. The API
+	// exposes it through the conversation message response.
+	AuthoredByUser     bool `json:"-"`
+	SpawnOpeningPrompt bool `json:"-"`
 	// Streaming is true while more deltas are expected.
 	Streaming bool `json:"streaming"`
 	// ProviderItemID deduplicates provider observations of the same message.
@@ -898,3 +966,12 @@ const (
 	ConversationSteerRejectedByProvider          ConversationSteerRejectionKind = "provider_refused"
 	ConversationSteerRejectedInterfaceTransition ConversationSteerRejectionKind = "interface_transition"
 )
+
+// ConversationBatchedDelivery links a queued turn AO batched into another turn's
+// provider input. SteerActivityID names the steer that carried it; empty means a
+// queue drain, where the turn joined DeliveredWithTurnID's input from the start.
+type ConversationBatchedDelivery struct {
+	TurnID              string `json:"turnId"`
+	DeliveredWithTurnID string `json:"deliveredWithTurnId"`
+	SteerActivityID     string `json:"steerActivityId,omitempty"`
+}

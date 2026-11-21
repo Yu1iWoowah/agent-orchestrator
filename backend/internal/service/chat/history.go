@@ -52,6 +52,13 @@ var (
 	// ErrTurnProviderMismatch reports a durable turn owned by an earlier agent
 	// provider. Its opaque provider turn id is invalid in the current controller.
 	ErrTurnProviderMismatch = errors.New("conversation turn belongs to a different agent provider")
+	// ErrFilesNotRestorable refuses a rollback asked to restore files AO has no
+	// way to put back. Nothing was changed; a conversation-only rollback still works.
+	ErrFilesNotRestorable = errors.New("chat rollback cannot restore files")
+	// ErrFilesChanged refuses a file restore whose preview no longer matches the
+	// worktree: files changed after the user was shown the list. Nothing was
+	// changed; a fresh preview lists what a restore would do now.
+	ErrFilesChanged = errors.New("the worktree changed since the rollback preview")
 	// ErrTitleRequired refuses a blank thread title. The provider refuses one too,
 	// and reporting it here keeps the error about the caller's input.
 	ErrTitleRequired = errors.New("thread title is required")
@@ -105,14 +112,16 @@ func classify(err error) error {
 const maxTitleRunes = 80
 
 // Rollback discards a turn and everything after it, from the agent's memory and
-// from AO's timeline.
+// from AO's timeline. With filePlanID, the PlanID of the RollbackPreview the user
+// confirmed, it also puts the session's worktree back to the snapshot taken when
+// that turn was sent, and refuses with ErrFilesChanged if the files changed since.
 //
 // Refused while a turn is running, and refused BEFORE the provider is asked. The
 // provider refuses this too, but relying on that alone would make the outcome a
 // race: AO would have already decided to hide rows by the time it learned it could
 // not. The controller holds its dispatch lock across the check and the call, so
 // within AO the answer cannot change underneath.
-func (s *Service) Rollback(ctx context.Context, id domain.SessionID, turnID string) (int, error) {
+func (s *Service) Rollback(ctx context.Context, id domain.SessionID, turnID, filePlanID string) (int, error) {
 	ctx, releaseMutation, err := s.beginReplacementMutation(ctx, id)
 	if err != nil {
 		return 0, err
@@ -126,7 +135,7 @@ func (s *Service) Rollback(ctx context.Context, id domain.SessionID, turnID stri
 	if _, ok := controller.conv.(ports.ChatRollbacker); !ok {
 		return 0, ErrRollbackUnsupported
 	}
-	return controller.Rollback(ctx, turnID)
+	return controller.Rollback(ctx, turnID, filePlanID)
 }
 
 // ForkConversation branches this session's provider conversation and returns the
@@ -474,6 +483,7 @@ func (s *Service) EditMessage(
 	// Consume the replacement privately while its bootstrap prompt is recorded.
 	// The source remains the registry owner with its intake fence installed, so a
 	// concurrent ordinary send cannot become the first turn on the new branch.
+	s.bindControllerAdapter(replacement)
 	replacement.initializeAgentSettings(operationCtx)
 	replacement.start()
 	if replayContent.Type != "" {
@@ -1125,6 +1135,7 @@ func (s *Service) installBranchController(
 	source, replacement *Controller,
 	sourceBranchID string,
 ) error {
+	s.bindControllerAdapter(replacement)
 	replacement.initializeAgentSettings(ctx)
 	replacement.start()
 	return s.installStartedBranchController(ctx, id, source, replacement, sourceBranchID)
@@ -1152,13 +1163,7 @@ func (s *Service) installStartedBranchController(
 		return ErrControllerHandoff
 	}
 	source.prepareBranchHandoffStop()
-	s.ownerControllers[owner] = replacement
-	// Keep the session index as the backwards-compatible lookup path used by
-	// worker chat commands. Review owners never share this index, so replacing a
-	// worker controller cannot affect a reviewer controller for the same session.
-	if owner.Kind == domain.ConversationOwnerSession {
-		s.controllers[id] = replacement
-	}
+	s.publishControllerLocked(owner, replacement)
 	if cfg, ok := s.startConfigs[owner]; ok {
 		// Mirror the owner ActivateConversationBranchSession just made durable,
 		// agent-session identity included. A stale field here fails the next

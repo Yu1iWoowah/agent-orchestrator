@@ -1,8 +1,11 @@
 package chat_test
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,7 +34,7 @@ func (f *fakeConversation) fakeDeliveryReceipt(attempt, turn string, settled boo
 	if f.deliveryReceipts == nil {
 		f.deliveryReceipts = map[string]domain.ChatDeliveryReceipt{}
 	}
-	r := domain.ChatDeliveryReceipt{AttemptID: attempt, ProviderTurnID: turn, ProviderRequestID: "fake-rpc-" + attempt, ProviderEpoch: "fake-native-epoch", Disposition: domain.ChatDeliveryAccepted, Source: "provider_response", Complete: true, ObservedAt: f.deliveryNow(), ExecutionSettled: settled}
+	r := domain.ChatDeliveryReceipt{AttemptID: attempt, ProviderTurnID: turn, ProviderRequestID: "fake-rpc-" + attempt, ProviderEpoch: cmp.Or(f.deliveryEpoch, "fake-native-epoch"), Disposition: domain.ChatDeliveryAccepted, Source: "provider_response", Complete: true, ObservedAt: f.deliveryNow(), ExecutionSettled: settled}
 	if f.deliveryPrepared && !settled {
 		r.Disposition = domain.ChatDeliveryUnknown
 		r.Source = "incomplete"
@@ -44,6 +47,9 @@ func (f *fakeConversation) QueryDeliveryAttempt(_ context.Context, key ports.Cha
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	r, ok := f.deliveryReceipts[key.AttemptID]
+	if !ok && f.deliveryDenied {
+		return r, ports.ErrChatDeliveryDenied
+	}
 	if !ok {
 		return r, ports.ErrChatDeliveryUnverified
 	}
@@ -209,7 +215,7 @@ func TestBlockedDeliveryRechecksOriginalOnNativeReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock.awaitTimer(t, 30*time.Second)
-	clock.advance(30 * time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
 	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
 		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
 		return e == nil && a.AttentionID != ""
@@ -349,6 +355,8 @@ type originalDeliveryReservationStore struct {
 	calls        atomic.Int32
 	original     chan domain.ChatDeliveryAttempt
 	missingReads atomic.Int32
+	priorSeen    chan struct{}
+	seenOnce     sync.Once
 }
 
 func (s *originalDeliveryReservationStore) ReserveChatDelivery(ctx context.Context, a domain.ChatDeliveryAttempt) (domain.ChatDeliveryAttempt, bool, error) {
@@ -371,12 +379,24 @@ func (s *originalDeliveryReservationStore) ChatDeliveryAttempt(ctx context.Conte
 	}
 	return a, err
 }
+
+func (s *originalDeliveryReservationStore) PendingChatDeliveries(ctx context.Context, id domain.SessionID) ([]domain.ChatDeliveryAttempt, error) {
+	attempts, err := s.Store.PendingChatDeliveries(ctx, id)
+	for _, attempt := range attempts {
+		if attempt.ID == "existing-attempt" {
+			s.seenOnce.Do(func() { close(s.priorSeen) })
+			break
+		}
+	}
+	return attempts, err
+}
+
 func TestReservationBlockedByOriginalAttemptWaitsForSettlement(t *testing.T) {
 	clock := newSettingsTestClock()
 	conv := newFakeConversation()
 	var fault *originalDeliveryReservationStore
 	h := newHarnessWithConversationAndStoreForHarness(t, conv, func(st *store.Store) chatsvc.Store {
-		fault = &originalDeliveryReservationStore{Store: st, original: make(chan domain.ChatDeliveryAttempt, 1)}
+		fault = &originalDeliveryReservationStore{Store: st, original: make(chan domain.ChatDeliveryAttempt, 1), priorSeen: make(chan struct{})}
 		return fault
 	}, domain.HarnessCodex, func(o *chatsvc.Options) { o.Now = clock.Now; o.After = clock.After })
 	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "wait for exact prior attempt", ClientMessageID: "original-attempt"})
@@ -384,8 +404,15 @@ func TestReservationBlockedByOriginalAttemptWaitsForSettlement(t *testing.T) {
 		t.Fatalf("original intake lost: %+v %v", turn, err)
 	}
 	prior := <-fault.original
-	clock.awaitTimer(t, 30*time.Second)
-	clock.advance(60 * time.Second)
+	select {
+	case <-fault.priorSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delivery monitor did not read the prior attempt")
+	}
+	if prior.NextCheckAt == nil {
+		t.Fatal("prior attempt has no check deadline")
+	}
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(prior.NextCheckAt.Sub(clock.Now()) + time.Nanosecond) })
 	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
 		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, prior.ID)
 		return e == nil && a.AttentionID != ""
@@ -436,5 +463,423 @@ func TestSettledDeliveryAckRetriesWithoutAnotherTurn(t *testing.T) {
 	}
 	if err := h.svc.StopAll(t.Context()); err != nil {
 		t.Fatalf("settled ACK recovery blocked shutdown: %v", err)
+	}
+}
+
+// legacyHostConversation answers delivery queries like a host without a
+// record. Without receipts it stands in for a host that predates them.
+type legacyHostConversation struct {
+	*fakeConversation
+	withoutReceipts bool
+	timeout         bool
+	queryStarted    chan struct{}
+}
+
+func (c *legacyHostConversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) (ports.ChatTurnRef, error) {
+	ref, err := c.fakeConversation.SendTurn(ctx, msg)
+	if c.withoutReceipts {
+		ref.Delivery = nil
+	}
+	return ref, err
+}
+
+func (c *legacyHostConversation) QueryDeliveryAttempt(ctx context.Context, _ ports.ChatDeliveryLookup) (domain.ChatDeliveryReceipt, error) {
+	if c.timeout {
+		c.queryStarted <- struct{}{}
+		<-ctx.Done()
+		return domain.ChatDeliveryReceipt{}, ctx.Err()
+	}
+	return domain.ChatDeliveryReceipt{}, ports.ErrChatDeliveryDenied
+}
+
+func TestLegacyDeliverySettlesOnlyWithoutCorrelationAfterCompletedMembers(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		withoutReceipts bool
+		timeout         bool
+		memberState     domain.TurnState
+		settles         bool
+	}{
+		{name: "settles", withoutReceipts: true, memberState: domain.TurnStateCompleted, settles: true},
+		{name: "failed-member", withoutReceipts: true, memberState: domain.TurnStateFailed},
+		{name: "interrupted-member", withoutReceipts: true, memberState: domain.TurnStateInterrupted},
+		{name: "request-id", memberState: domain.TurnStateCompleted},
+		{name: "query-timeout", withoutReceipts: true, timeout: true, memberState: domain.TurnStateCompleted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := newSettingsTestClock()
+			conv := &legacyHostConversation{fakeConversation: newFakeConversation(), withoutReceipts: tc.withoutReceipts, timeout: tc.timeout, queryStarted: make(chan struct{}, 8)}
+			// Its receipts stay outcome_unknown but carry the host epoch and request ID.
+			conv.deliveryPrepared = tc.name == "request-id"
+			expireQuery := func() {
+				if tc.timeout {
+					<-conv.queryStarted
+					clock.awaitTimer(t, 10*time.Second)
+					clock.advance(10 * time.Second)
+				}
+			}
+			h := deliveryHarness(t, conv, clock)
+			turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "legacy input", ClientMessageID: "legacy-" + tc.name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A running member never settles: the silent attempt opens its question.
+			clock.awaitTimer(t, 30*time.Second)
+			h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+			expireQuery()
+			h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+				a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+				return e == nil && a.AttentionID != "" && !a.ExecutionSettled
+			})
+			blocked, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+			// No native receipt accompanies the terminal event from this host.
+			conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID, TurnState: tc.memberState}
+			expireQuery()
+			if tc.settles {
+				h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+					a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+					return e == nil && a.ExecutionSettled
+				})
+				saved, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+				if saved.Disposition != domain.ChatDeliveryUnknown || saved.EvidenceLevel != 0 || saved.ErrorCode != "CHAT_DELIVERY_LEGACY_SETTLED" || saved.Receipt == nil || saved.Receipt.Source != "incomplete" || saved.Receipt.Complete || !saved.Receipt.ExecutionSettled {
+					t.Fatalf("legacy settlement = %+v receipt=%+v", saved, saved.Receipt)
+				}
+				question, err := h.st.GetAttentionQuestion(t.Context(), testSession, blocked.AttentionID)
+				if err != nil || question.State != "cancelled" || question.CloseReason != "原執行已確認結束" {
+					t.Fatalf("open delivery question = %+v %v", question, err)
+				}
+				if pending, err := h.st.PendingChatDeliveries(t.Context(), testSession); err != nil || len(pending) != 0 {
+					t.Fatalf("settled legacy attempt still pending: %+v %v", pending, err)
+				}
+				// A later host receipt short of acceptance cannot rewrite the settlement.
+				late := domain.ChatDeliveryReceipt{AttemptID: attempt.ID, ProviderEpoch: "host-epoch", ProviderRequestID: "rpc-1", Disposition: domain.ChatDeliveryUnknown, Source: "incomplete", ObservedAt: clock.Now()}
+				if _, err := h.ctrl.RecordDeliveryReceiptForTest(t.Context(), late); err != nil {
+					t.Fatal(err)
+				}
+				kept, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+				if err != nil || kept.Version != saved.Version || kept.ErrorCode != "CHAT_DELIVERY_LEGACY_SETTLED" || kept.Receipt.ProviderEpoch != "" {
+					t.Fatalf("host receipt rewrote legacy settlement: %+v %v", kept, err)
+				}
+				if err := h.svc.StopAll(t.Context()); err != nil {
+					t.Fatalf("shutdown preflight still blocked: %v", err)
+				}
+			} else {
+				h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+					a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+					return e == nil && a.Version > blocked.Version
+				})
+				saved, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+				if saved.ExecutionSettled || saved.ErrorCode == "CHAT_DELIVERY_LEGACY_SETTLED" {
+					t.Fatalf("attempt settled outside the legacy conditions: %+v", saved)
+				}
+			}
+			if len(conv.sentTexts()) != 1 {
+				t.Fatal("legacy input replayed")
+			}
+		})
+	}
+}
+
+func TestHostCannotSettleUnknownDelivery(t *testing.T) {
+	clock := newSettingsTestClock()
+	conv := &legacyHostConversation{fakeConversation: newFakeConversation(), withoutReceipts: true}
+	h := deliveryHarness(t, conv, clock)
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "host receipt", ClientMessageID: "host-unknown-settled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := domain.ChatDeliveryReceipt{AttemptID: attempt.ID, Disposition: domain.ChatDeliveryUnknown, Source: "incomplete", ExecutionSettled: true, ObservedAt: clock.Now()}
+	if _, err := h.ctrl.RecordDeliveryReceiptForTest(t.Context(), r); !errors.Is(err, ports.ErrChatDeliveryUnverified) {
+		t.Fatalf("host incomplete settled receipt = %v, want rejected", err)
+	}
+	saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+	if err != nil || saved.ExecutionSettled {
+		t.Fatalf("host settled an unknown outcome: %+v %v", saved, err)
+	}
+}
+
+func TestLegacySettlementReleasesHeldDispatchAndHibernation(t *testing.T) {
+	h, conv := settledHibernationHarness(t, "")
+	ctx := t.Context()
+	conv.mu.Lock()
+	conv.deliveryDenied = true
+	conv.sendErr = errors.New("provider connection lost after write")
+	conv.mu.Unlock()
+	// An uncertain send holds the controller on the original attempt.
+	_, _ = h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "uncertain original", ClientMessageID: "uncertain-original"})
+	pending, err := h.st.PendingChatDeliveries(ctx, testSession)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("uncertain original attempt = %+v %v", pending, err)
+	}
+	original := pending[0]
+	conv.mu.Lock()
+	conv.sendErr = nil
+	conv.mu.Unlock()
+	// The original execution later completed every member.
+	if err := h.st.SettleTurnByID(ctx, original.TurnIDs[0], domain.TurnStateCompleted, "", h.now()); err != nil {
+		t.Fatal(err)
+	}
+	conv.events <- ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady}
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttempt(ctx, testSession, original.ID)
+		return e == nil && a.ExecutionSettled && a.ErrorCode == "CHAT_DELIVERY_LEGACY_SETTLED"
+	})
+	next, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "after legacy settlement", ClientMessageID: "after-legacy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent := conv.sentTexts(); len(sent) != 1 || sent[0] != "after legacy settlement" {
+		t.Fatalf("settled legacy attempt still holds dispatch: sent=%v turn=%+v", sent, next)
+	}
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: next.ProviderTurnID, TurnState: domain.TurnStateCompleted})
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, next.ID)
+		return e == nil && a.ExecutionSettled
+	})
+	if err := h.svc.DrainQueued(ctx, testSession); err != nil {
+		t.Fatal(err)
+	}
+	rec, found, err := h.st.GetSession(ctx, testSession)
+	if err != nil || !found {
+		t.Fatalf("get session = %v, %v", found, err)
+	}
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: h.now().Add(-chatsvc.IdleBeforeHibernate)}
+	if err := h.st.UpdateSession(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if slept, err := h.svc.HibernateChat(ctx, testSession); err != nil || !slept {
+		t.Fatalf("settled legacy attempt blocks hibernation: slept=%v err=%v", slept, err)
+	}
+}
+
+// deliveryLinkRaceStore makes the first prompt link lose a real owner CAS.
+type deliveryLinkRaceStore struct {
+	*store.Store
+	raced  atomic.Bool
+	prompt atomic.Value
+}
+
+func (s *deliveryLinkRaceStore) BlockChatDeliveryWithAttention(ctx context.Context, a domain.ChatDeliveryAttempt, expected int64, actor domain.AgentSettingsOwner, prompt domain.AttentionQuestionCreate, at time.Time) (domain.ChatDeliveryAttempt, error) {
+	if !s.raced.Swap(true) {
+		s.prompt.Store(prompt.ID)
+		stale := actor
+		stale.BranchID = "replaced-branch"
+		return s.Store.BlockChatDeliveryWithAttention(ctx, a, expected, stale, prompt, at)
+	}
+	return s.Store.BlockChatDeliveryWithAttention(ctx, a, expected, actor, prompt, at)
+}
+
+func TestFailedPromptLinkRollsBackAndNextBlockRetries(t *testing.T) {
+	clock := newSettingsTestClock()
+	conv := &stalledDeliveryConversation{fakeConversation: newFakeConversation(), queryCount: make(chan string, 8)}
+	race := &deliveryLinkRaceStore{}
+	h := newHarnessWithConversationAndStoreForHarness(t, conv, func(st *store.Store) chatsvc.Store { race.Store = st; return race }, domain.HarnessCodex, func(o *chatsvc.Options) { o.Now = clock.Now; o.After = clock.After })
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "silent original", ClientMessageID: "link-race"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.awaitTimer(t, 30*time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	// The block's own deadline, then the monitor's retry after the failed link.
+	clock.awaitTimer(t, 5*time.Second)
+	clock.awaitTimer(t, 5*time.Second)
+	// The failed block leaves neither the prompt nor its blocked state behind.
+	first, _ := race.prompt.Load().(string)
+	if first == "" {
+		t.Fatal("first block never reached the store")
+	}
+	if _, err := h.st.GetAttentionQuestion(t.Context(), testSession, first); !errors.Is(err, domain.ErrAttentionQuestionNotFound) {
+		t.Fatalf("rolled-back delivery prompt is visible: %v", err)
+	}
+	if unlinked, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID); err != nil || unlinked.AttentionID != "" || unlinked.BlockedSince != nil {
+		t.Fatalf("failed block left partial state: %+v %v", unlinked, err)
+	}
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(5 * time.Second) })
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		a, e := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+		return e == nil && a.AttentionID != ""
+	})
+	blocked, _ := h.st.ChatDeliveryAttempt(t.Context(), testSession, attempt.ID)
+	question, err := h.st.GetAttentionQuestion(t.Context(), testSession, blocked.AttentionID)
+	if err != nil || question.State != "open" || blocked.AttentionID == first {
+		t.Fatalf("retried block = %+v question=%+v %v", blocked, question, err)
+	}
+}
+
+// deferredDeliveryConversation is ACP-shaped: its prompt answers only when the
+// turn ends, so until the first progress event the host reports the recorded
+// prompt as unknown and incomplete with no progress.
+type deferredDeliveryConversation struct{ *stalledDeliveryConversation }
+
+func (c *deferredDeliveryConversation) StartDeferredTurn(string) error { return nil }
+func (c *deferredDeliveryConversation) DiscardDeferredTurn(string)     {}
+
+func firstProgressHarness(t *testing.T, deferred bool) (*harness, *stalledDeliveryConversation, *settingsTestClock, domain.ChatDeliveryAttempt) {
+	t.Helper()
+	clock := newSettingsTestClock()
+	stalled := &stalledDeliveryConversation{fakeConversation: newFakeConversation(), queryCount: make(chan string, 64)}
+	var conv ports.ChatConversation = stalled
+	if deferred {
+		conv = &deferredDeliveryConversation{stalled}
+	}
+	h := deliveryHarness(t, conv, clock)
+	// The harness models eager drivers as accepted at send. Both shapes report
+	// the same recorded prompt here (unknown, incomplete, epoch and request id,
+	// no progress), so only the driver differs between them.
+	stalled.setDeliveryClock(clock.Now, true)
+	turn, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "large context prompt", ClientMessageID: "first-progress"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := h.st.ChatDeliveryAttemptForTurn(t.Context(), testSession, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.awaitTimer(t, 30*time.Second)
+	return h, stalled, clock, a
+}
+
+func awaitDeliveryQuery(t *testing.T, conv *stalledDeliveryConversation, id string) {
+	t.Helper()
+	select {
+	case key := <-conv.queryCount:
+		if key != id {
+			t.Fatal(key)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("original execution was not queried")
+	}
+}
+
+// awaitDeliveryDecision returns the attempt once the monitor has either opened
+// a question or rescheduled the next check after the current time.
+func awaitDeliveryDecision(t *testing.T, h *harness, clock *settingsTestClock, id string) domain.ChatDeliveryAttempt {
+	t.Helper()
+	var saved domain.ChatDeliveryAttempt
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		var err error
+		saved, err = h.st.ChatDeliveryAttempt(t.Context(), testSession, id)
+		return err == nil && (saved.AttentionID != "" || saved.NextCheckAt != nil && saved.NextCheckAt.After(clock.Now()))
+	})
+	return saved
+}
+
+func TestACPPromptWithoutProgressWaitsUntilFirstEventLimit(t *testing.T) {
+	h, conv, clock, a := firstProgressHarness(t, true)
+	limit := a.CreatedAt.Add(5 * time.Minute)
+	for clock.Now().Add(30 * time.Second).Before(limit) {
+		h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+		awaitDeliveryQuery(t, conv, a.ID)
+		saved := awaitDeliveryDecision(t, h, clock, a.ID)
+		want := clock.Now().Add(30 * time.Second)
+		if want.After(limit) {
+			want = limit
+		}
+		if saved.AttentionID != "" || saved.BlockedSince != nil || saved.ErrorCode != "" {
+			t.Fatalf("after %s an ACP prompt awaiting its first event opened a question: %+v", clock.Now().Sub(a.CreatedAt), saved)
+		}
+		if !saved.LastProgressAt.Equal(a.LastProgressAt) || saved.NextCheckAt == nil || !saved.NextCheckAt.Equal(want) {
+			t.Fatalf("recheck changed progress time or missed its schedule: last=%s next=%v want=%s", saved.LastProgressAt, saved.NextCheckAt, want)
+		}
+		clock.awaitTimer(t, 30*time.Second)
+	}
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	awaitDeliveryQuery(t, conv, a.ID)
+	h.awaitSnapshot(t, func(_ store.ConversationSnapshot) bool {
+		saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
+		return err == nil && saved.AttentionID != ""
+	})
+	blocked, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
+	if err != nil || blocked.ErrorCode != "CHAT_EXECUTION_STATE_UNVERIFIED" || !clock.Now().Equal(limit) {
+		t.Fatalf("no first event by the limit must open one question: %+v at %s %v", blocked, clock.Now().Sub(a.CreatedAt), err)
+	}
+}
+
+func TestACPFirstProgressBeforeLimitFollowsNativeProgress(t *testing.T) {
+	h, conv, clock, a := firstProgressHarness(t, true)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	awaitDeliveryQuery(t, conv, a.ID)
+	if waiting := awaitDeliveryDecision(t, h, clock, a.ID); waiting.AttentionID != "" || waiting.BlockedSince != nil {
+		t.Fatalf("at 30 seconds an ACP prompt awaiting its first event opened a question: %+v", waiting)
+	}
+	clock.awaitTimer(t, 30*time.Second)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(15 * time.Second) })
+	eventAt := clock.Now()
+	conv.mu.Lock()
+	receipt := conv.deliveryReceipts[a.ID]
+	receipt.Progress = "running"
+	receipt.ProgressSequence = 1
+	receipt.ObservedAt = eventAt
+	conv.deliveryReceipts[a.ID] = receipt
+	conv.mu.Unlock()
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(15 * time.Second) })
+	awaitDeliveryQuery(t, conv, a.ID)
+	clock.awaitTimer(t, 15*time.Second)
+	saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
+	if err != nil || saved.AttentionID != "" || saved.BlockedSince != nil || saved.ErrorCode != "" {
+		t.Fatalf("first progress before the limit opened a question: %+v %v", saved, err)
+	}
+	if !saved.LastProgressAt.Equal(eventAt) || saved.NextCheckAt == nil || !saved.NextCheckAt.Equal(eventAt.Add(30*time.Second)) {
+		t.Fatalf("first progress did not hand over to the native progress budget: %+v", saved)
+	}
+}
+
+// The host's stall watchdog fails a prompt without telling the delivery
+// journal. Until that prompt's execution settles, the stall must not release
+// queued input onto the provider; settlement then lets it go.
+func TestStalledPromptWithUnsettledDeliveryHoldsQueueUntilSettled(t *testing.T) {
+	h, conv, clock, a := firstProgressHarness(t, true)
+	if _, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "queued", ClientMessageID: "queued", Origin: domain.MessageOriginHuman}); err != nil {
+		t.Fatal(err)
+	}
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
+	// Sent directly: the fake's emit would attach a settled receipt, which the
+	// ACP driver never does for a watchdog failure.
+	conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-1",
+		TurnState: domain.TurnStateFailed, Err: fmt.Errorf("ACP session/prompt: %w", ports.ErrChatPromptStalled)}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return turnStateByText(t, s)["large context prompt"] == domain.TurnStateFailed
+	})
+	assertTurnStaysQueued(t, h, "queued")
+	if sent := conv.sentTexts(); len(sent) != 1 {
+		t.Fatalf("provider received %v while the stalled prompt's execution was unverified", sent)
+	}
+
+	conv.mu.Lock()
+	receipt := conv.deliveryReceipts[a.ID]
+	receipt.Disposition, receipt.Source, receipt.Complete, receipt.ExecutionSettled = domain.ChatDeliveryAccepted, "provider_response", true, true
+	conv.deliveryReceipts[a.ID] = receipt
+	conv.mu.Unlock()
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return turnStateByText(t, s)["queued"] != domain.TurnStateQueued && len(conv.sentTexts()) >= 2
+	})
+	if sent := conv.sentTexts(); len(sent) != 2 || sent[1] != "queued" {
+		t.Fatalf("provider received %v, want the queued input once the stalled prompt settled", sent)
+	}
+}
+
+func TestEagerPromptWithoutProgressStillOpensQuestionAtThirtySeconds(t *testing.T) {
+	h, conv, clock, a := firstProgressHarness(t, false)
+	if r := a.Receipt; a.Disposition != domain.ChatDeliveryUnknown || r == nil || r.Source != "incomplete" || r.ProviderEpoch == "" || r.ProviderRequestID == "" || r.ProgressSequence != 0 {
+		t.Fatalf("eager attempt is not the recorded-prompt state the ACP wait covers: %+v", a)
+	}
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	awaitDeliveryQuery(t, conv, a.ID)
+	blocked := awaitDeliveryDecision(t, h, clock, a.ID)
+	if blocked.AttentionID == "" || blocked.ErrorCode != "CHAT_EXECUTION_STATE_UNVERIFIED" || clock.Now().Sub(a.CreatedAt) != 30*time.Second {
+		t.Fatalf("an eager prompt in the same state must keep the 30 second question: %+v at %s", blocked, clock.Now().Sub(a.CreatedAt))
 	}
 }

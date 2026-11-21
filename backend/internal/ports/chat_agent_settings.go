@@ -13,6 +13,12 @@ type ChatAgentSettingsReconciliationEvidence interface {
 	ReconciliationEvidence(context.Context, domain.AgentSettingsOwner) (AgentSettingsReconciliationEvidence, error)
 }
 
+// ChatAgentSettingsPlanEvidence verifies a sticky plan against the same
+// receipt returned as reconciliation evidence. A nil plan reads the preimage.
+type ChatAgentSettingsPlanEvidence interface {
+	ReconciliationPlanEvidence(context.Context, domain.AgentSettingsOwner, *domain.AgentSettingsProviderPlan) (AgentSettingsReconciliationEvidence, error)
+}
+
 // AgentSettingsReconciliationEvidence separates per-request wire from sticky
 // provider state. Per-turn wire does not claim a current provider observation.
 type AgentSettingsReconciliationEvidence struct {
@@ -21,6 +27,8 @@ type AgentSettingsReconciliationEvidence struct {
 	ProviderEpoch      string
 	SourceRef          string
 	Settings           *domain.AgentSettings
+	Native             *domain.AgentSettingsNativeValues
+	Permission         string
 	PermissionVerified bool
 }
 

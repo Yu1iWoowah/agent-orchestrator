@@ -15,15 +15,91 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
+type scopedSwitchLaunch struct{ account domain.ResolvedAgentAccount }
+
+func (l scopedSwitchLaunch) PrepareProviderSwitchLaunch(ctx context.Context, _ domain.SessionRecord, _ domain.AgentHarness) (context.Context, map[string]string, *domain.ResolvedAgentAccount, func(), error) {
+	return ports.WithAgentAccount(ctx, l.account), nil, &l.account, func() {}, nil
+}
+
+type scopedSwitchCatalog struct{ account domain.ResolvedAgentAccount }
+
+func (c *scopedSwitchCatalog) ModelCatalog(ctx context.Context, _, _ string, _ bool) (ports.AgentModelCatalog, error) {
+	c.account, _ = ports.AgentAccountFromContext(ctx)
+	return ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{ID: "approved-model"}}}, nil
+}
+
+func TestProviderSwitchModelCatalogUsesTargetAccountBeforeStoppingSource(t *testing.T) {
+	h, _, driver := newEditHarness(t, false)
+	account := domain.ResolvedAgentAccount{AccountID: "target-claude", Provider: domain.AgentAccountProviderClaude}
+	catalog := &scopedSwitchCatalog{}
+	h.svc.SetProviderSwitchLaunch(scopedSwitchLaunch{account})
+	h.svc.SetSwitchModelCatalog(catalog)
+
+	_, err := h.svc.SwitchProviderReport(t.Context(), testSession, domain.ProviderSwitchRequest{
+		TargetHarness: domain.HarnessClaudeCode, Model: "wrong-model",
+	})
+	var refused *domain.ProviderSwitchError
+	if !errors.As(err, &refused) || refused.Kind != domain.ProviderSwitchRefusalUnsupported || catalog.account.AccountID != account.AccountID {
+		t.Fatalf("switch = %v, catalog account = %+v", err, catalog.account)
+	}
+	driver.mu.Lock()
+	defer driver.mu.Unlock()
+	if len(driver.startConfigs) != 1 || !h.svc.HasLiveChatController(testSession) {
+		t.Fatal("model refusal touched the source or started the target")
+	}
+	if _, found, err := h.st.GetSessionAgentAccountBinding(t.Context(), testSession, account.Provider); err != nil || found {
+		t.Fatalf("model refusal left a target binding: found=%v err=%v", found, err)
+	}
+}
+
+func TestForcedProviderSwitchKeepsUnsettledDeliveryAndQueue(t *testing.T) {
+	h, _, driver := newEditHarness(t, false)
+	ctx := t.Context()
+	active, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "original work", ClientMessageID: "original-force"})
+	if err != nil || active.ID == "" {
+		t.Fatalf("start original work: %+v %v", active, err)
+	}
+	attempt, err := h.st.ChatDeliveryAttemptForTurn(ctx, testSession, active.ID)
+	if err != nil || attempt.ExecutionSettled || attempt.Disposition != domain.ChatDeliveryAccepted {
+		t.Fatalf("expected accepted/unsettled delivery: %+v %v", attempt, err)
+	}
+	queued, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "queued work", ClientMessageID: "queued-force"})
+	if err != nil || queued.State != domain.TurnStateQueued {
+		t.Fatalf("queue original input: %+v %v", queued, err)
+	}
+	_, err = h.svc.SwitchProviderReport(ctx, testSession, domain.ProviderSwitchRequest{TargetHarness: domain.HarnessClaudeCode, Force: true})
+	var refused *domain.ProviderSwitchError
+	if !errors.As(err, &refused) || refused.Kind != domain.ProviderSwitchRefusalBusy {
+		t.Fatalf("force = %v, want busy refusal", err)
+	}
+	saved, err := h.st.ChatDeliveryAttempt(ctx, testSession, attempt.ID)
+	if err != nil || saved.ExecutionSettled || saved.Disposition != attempt.Disposition {
+		t.Fatalf("force changed acceptance: %+v %v", saved, err)
+	}
+	follower, err := h.st.TurnByID(ctx, queued.ID)
+	if err != nil || follower.State != domain.TurnStateQueued || len(h.conv.sentTexts()) != 1 {
+		t.Fatalf("force mutated source work: follower=%+v sends=%v err=%v", follower, h.conv.sentTexts(), err)
+	}
+	driver.mu.Lock()
+	starts := len(driver.startConfigs)
+	driver.mu.Unlock()
+	record, found, err := h.st.GetSession(ctx, testSession)
+	if err != nil || !found || record.Harness != domain.HarnessCodex || starts != 1 {
+		t.Fatalf("force changed source or started another provider: harness=%s starts=%d err=%v", record.Harness, starts, err)
+	}
+}
+
 func TestProviderSwitchPublishesApproximateBranch(t *testing.T) {
 	h, _, driver := newEditHarness(t, false)
 	ctx := context.Background()
+	selected := domain.ResolvedAgentAccount{AccountID: "device-claude", Provider: domain.AgentAccountProviderClaude, Source: domain.AgentAccountSourceDevice}
+	h.svc.SetProviderSwitchLaunch(scopedSwitchLaunch{selected})
 
 	// Give the source a complete durable exchange so the target assertion proves
 	// the bootstrap came from AO's canonical rows, not provider scrollback.
 	completeTurn(t, h, "keep this context", "provider-turn-1")
 	h.awaitSnapshot(t, func(snapshot store.ConversationSnapshot) bool {
-		return len(snapshot.Messages) == 2
+		return len(snapshot.Messages) == 2 && h.ctrl.PendingTurnIDForTest() == ""
 	})
 
 	// A turn this session had in the Terminal UI lives in the terminal turn
@@ -56,6 +132,9 @@ func TestProviderSwitchPublishesApproximateBranch(t *testing.T) {
 		AutoCompactWindow: "1m",
 	}); err != nil {
 		t.Fatalf("SwitchProvider: %v", err)
+	}
+	if binding, found, err := h.st.GetSessionAgentAccountBinding(ctx, testSession, selected.Provider); err != nil || !found || binding != selected {
+		t.Fatalf("target binding = %+v, found=%v, err=%v", binding, found, err)
 	}
 
 	targetConfig := lastStart(driver)
@@ -93,8 +172,8 @@ func TestProviderSwitchPublishesApproximateBranch(t *testing.T) {
 		IdempotencyKey: "switch-once",
 	})
 	var refusal *domain.ProviderSwitchError
-	if !errors.As(err, &refusal) || refusal.Kind != domain.ProviderSwitchRefusalUnsupported {
-		t.Fatalf("repeated switch error = %v, want an unsupported refusal", err)
+	if !errors.As(err, &refusal) || refusal.Kind != domain.ProviderSwitchRefusalAlreadyActive {
+		t.Fatalf("repeated switch error = %v, want an already-active refusal", err)
 	}
 
 	record, found, err := h.st.GetSession(ctx, testSession)
@@ -139,6 +218,14 @@ func TestProviderSwitchPublishesApproximateBranch(t *testing.T) {
 func TestProviderSwitchFailureRestoresSourceController(t *testing.T) {
 	h, _, driver := newEditHarness(t, false)
 	ctx := context.Background()
+	conversation, err := h.st.ConversationForSession(ctx, testSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reroute := domain.ConversationModelReroute{FromModel: "gpt-selected", ToModel: "gpt-served", At: time.Now().UTC()}
+	if err := h.st.RecordModelReroute(ctx, conversation.ID, reroute); err != nil {
+		t.Fatal(err)
+	}
 	before, err := h.svc.SetTurnSettings(ctx, testSession, domain.ConversationSettings{
 		ApprovalMode: domain.PermissionModeAcceptEdits,
 	})
@@ -165,6 +252,9 @@ func TestProviderSwitchFailureRestoresSourceController(t *testing.T) {
 	if got.Model != before.Model || got.ReasoningEffort != before.ReasoningEffort || got.ApprovalMode != domain.PermissionModeAcceptEdits {
 		t.Fatalf("settings after a failed switch = %+v, want the source's %+v", got, before)
 	}
+	if got := snapshot.Conversation.ModelReroute; got == nil || *got != reroute {
+		t.Fatalf("model reroute after a failed switch = %+v, want the source's %+v", got, reroute)
+	}
 	// The restored source runs with the mode it had, not the one it was launched with.
 	driver.mu.Lock()
 	resumed := driver.resumeCalls[len(driver.resumeCalls)-1]
@@ -178,7 +268,7 @@ func TestProviderSwitchFailureRestoresSourceController(t *testing.T) {
 	if err := h.svc.SwitchProvider(ctx, testSession, request); err == nil || !strings.Contains(err.Error(), "start target provider") {
 		t.Fatalf("replayed failed switch = %v, want target-start failure", err)
 	}
-	conversation, err := h.st.ConversationForSession(ctx, testSession)
+	conversation, err = h.st.ConversationForSession(ctx, testSession)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +288,49 @@ func TestProviderSwitchFailureRestoresSourceController(t *testing.T) {
 	}
 	if activities := switchActivities(); len(activities) != 0 {
 		t.Fatalf("failed switch replay recorded activities = %+v, want none", activities)
+	}
+}
+
+func TestProviderSwitchFromClaudeToCodexClearsPreviousModelReroute(t *testing.T) {
+	h, _, driver := newEditHarness(t, false)
+	ctx := context.Background()
+	if err := h.svc.SwitchProvider(ctx, testSession, domain.ProviderSwitchRequest{
+		TargetHarness: domain.HarnessClaudeCode, Model: "opus",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver.fresh.emit(ports.ChatEvent{
+		Kind: ports.ChatEventModelRerouted,
+		Reroute: &ports.ChatModelReroute{
+			FromModel: "opus", ToModel: "claude-opus-5-5", Reason: "resolved model alias",
+		},
+	})
+	h.awaitSnapshot(t, func(snapshot store.ConversationSnapshot) bool {
+		return snapshot.Conversation.ModelReroute != nil && countActivities(snapshot, domain.ActivityKindSystem) == 2
+	})
+	if err := h.svc.SwitchProvider(ctx, testSession, domain.ProviderSwitchRequest{
+		TargetHarness: domain.HarnessCodex,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := h.svc.Snapshot(ctx, testSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Harness != domain.HarnessCodex || snapshot.Conversation.Settings.Model != "" {
+		t.Fatalf("switched harness = %q, settings = %+v; want Codex on its default model", snapshot.Harness, snapshot.Conversation.Settings)
+	}
+	if got := snapshot.Conversation.ModelReroute; got != nil {
+		t.Fatalf("model reroute after switching to Codex = %+v; want no Claude model override", got)
+	}
+	foundHistory := false
+	for _, activity := range snapshot.Activities {
+		if activity.Summary == "Provider answered with claude-opus-5-5 instead of opus" {
+			foundHistory = true
+		}
+	}
+	if !foundHistory {
+		t.Fatal("switching providers removed the historical model reroute activity")
 	}
 }
 
@@ -328,7 +461,7 @@ type failingProviderSwitchStore struct {
 	err error
 }
 
-func (s failingProviderSwitchStore) CommitProviderSwitch(context.Context, domain.SessionRecord, domain.ConversationBranch, string, domain.ConversationSettings, domain.ConversationActivity) error {
+func (s failingProviderSwitchStore) CommitProviderSwitch(context.Context, domain.SessionRecord, domain.ConversationBranch, string, domain.ConversationSettings, domain.ConversationActivity, *domain.ResolvedAgentAccount) error {
 	return s.err
 }
 
@@ -371,6 +504,7 @@ func TestProviderSwitchTargetPermissionMode(t *testing.T) {
 	}{
 		{"under the chat's mode", domain.HarnessClaudeCode, "", "", ports.PermissionModeBypassPermissions},
 		{"default when it refuses the chat's", domain.HarnessKimi, ports.PermissionModeBypassPermissions, "", ports.PermissionModeDefault},
+		{"stale auto pick", domain.HarnessKimi, ports.PermissionModeAuto, domain.PermissionModeAuto, ports.PermissionModeDefault},
 		{"the mode picked for it", domain.HarnessClaudeCode, "", domain.PermissionModeAcceptEdits, ports.PermissionModeAcceptEdits},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

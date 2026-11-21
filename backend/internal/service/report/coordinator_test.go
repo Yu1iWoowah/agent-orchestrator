@@ -2,6 +2,7 @@ package report
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -147,11 +148,90 @@ func TestCoordinatorBusyOrchestratorDoesNotHoldUpOtherProjects(t *testing.T) {
 	}
 }
 
-func TestReportSessionLinkUsesDisplayName(t *testing.T) {
+func TestCoordinatorNeverInterruptsTerminalOrchestrator(t *testing.T) {
+	for _, mode := range []domain.SessionMode{domain.SessionModeTUI, ""} {
+		now := time.Date(2026, 10, 28, 2, 10, 0, 0, time.UTC)
+		store := newCoordinatorStore(now)
+		store.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: mode}}
+		first := reportAt("stuck-1", "worker", now, now, "cannot continue")
+		first.State = domain.ReportStuck
+		store.add(first)
+		delivery := &coordinatorDelivery{}
+		c := NewCoordinator(CoordinatorDeps{Store: store, Delivery: delivery, Now: func() time.Time { return now }})
+		if _, err := c.RunDue(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(delivery.interrupts) != 0 || len(delivery.submissions) != 1 {
+			t.Fatalf("mode %q: interrupts = %v, submissions = %d", mode, delivery.interrupts, len(delivery.submissions))
+		}
+		repeat := reportAt("stuck-2", "worker", now.Add(time.Minute), now, "still cannot continue")
+		repeat.State = domain.ReportStuck
+		store.add(repeat)
+		if _, err := c.RunDue(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(delivery.interrupts) != 0 || len(delivery.submissions) != 2 {
+			t.Fatalf("mode %q repeat: interrupts = %v, submissions = %d", mode, delivery.interrupts, len(delivery.submissions))
+		}
+	}
+}
+
+func TestCoordinatorRetriesTerminalStuckReportWithoutInterrupt(t *testing.T) {
+	now := time.Date(2026, 10, 28, 2, 10, 0, 0, time.UTC)
+	store := newCoordinatorStore(now)
+	store.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeTUI}}
+	stuck := reportAt("stuck-1", "worker", now, now, "cannot continue")
+	stuck.State = domain.ReportStuck
+	store.add(stuck)
+	delivery := &coordinatorDelivery{submitErr: errors.New("composer is not empty")}
+	c := NewCoordinator(CoordinatorDeps{Store: store, Delivery: delivery, Now: func() time.Time { return now }})
+	for i := 0; i < 3; i++ {
+		_, _ = c.RunDue(context.Background())
+		now = now.Add(time.Minute)
+	}
+	delivery.submitErr = nil
+	if _, err := c.RunDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(delivery.interrupts) != 0 || len(delivery.submissions) != 1 {
+		t.Fatalf("interrupts = %v, submissions = %d", delivery.interrupts, len(delivery.submissions))
+	}
+}
+
+func TestCoordinatorRefusedSubmitDoesNotBlockOtherProjects(t *testing.T) {
+	now := time.Date(2026, 10, 28, 2, 10, 0, 0, time.UTC)
+	store := newCoordinatorStore(now)
+	store.sessions = []domain.SessionRecord{
+		{ID: "refusing", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeTUI},
+		{ID: "healthy", ProjectID: "q", Kind: domain.KindOrchestrator, Mode: domain.SessionModeTUI},
+	}
+	stuck := reportAt("stuck-1", "worker", now, now, "cannot continue")
+	stuck.State = domain.ReportStuck
+	done := reportAt("done-1", "other-worker", now.Add(time.Second), now.Add(time.Second), "finished")
+	done.ProjectID = "q"
+	store.add(stuck, done)
+	delivery := &coordinatorDelivery{submitErrFor: map[domain.SessionID]error{"refusing": errors.New("prompt submission was not observed")}}
+	c := NewCoordinator(CoordinatorDeps{Store: store, Delivery: delivery, Now: func() time.Time { return now }})
+	for i := 0; i < 5; i++ {
+		_, _ = c.RunDue(context.Background())
+		now = now.Add(10 * time.Second)
+	}
+	if len(delivery.submissions) != 1 || delivery.submissions[0].target != "healthy" {
+		t.Fatalf("submissions = %#v, want one delivery to the healthy project", delivery.submissions)
+	}
+	if len(delivery.interrupts) != 0 {
+		t.Fatalf("interrupts = %v", delivery.interrupts)
+	}
+	if store.reports[0].DeliveryState != domain.ReportPending || store.reports[0].LastError != "prompt submission was not observed" {
+		t.Fatalf("refused report = %s / %q, want pending with the refusal recorded", store.reports[0].DeliveryState, store.reports[0].LastError)
+	}
+}
+
+func TestReportSessionLinkUsesStableSessionID(t *testing.T) {
 	got := reportSessionLink(domain.ReportRecord{
-		SessionID: "worker/1", ProjectID: "proj 1", SessionDisplayName: "Backend [worker]",
+		SessionID: "worker/1", ProjectID: "proj 1",
 	})
-	want := `[Backend \[worker\]](ao://sessions/proj%201/worker%2F1)`
+	want := `[worker/1](ao://sessions/proj%201/worker%2F1)`
 	if got != want {
 		t.Fatalf("link = %q, want %q", got, want)
 	}
@@ -189,17 +269,413 @@ func TestCoordinatorAcceptanceAndPiggybackFencing(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRetriesStopAtConfiguredLimit(t *testing.T) {
+	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	store := newCoordinatorStore(now)
+	store.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
+	store.add(reportAt("rep-1", "worker", now, now, "progress"))
+	delivery := &coordinatorDelivery{submitErr: ErrUnacknowledgedDelivery}
+	c := NewCoordinator(CoordinatorDeps{
+		Store:               store,
+		Delivery:            delivery,
+		Now:                 func() time.Time { return now },
+		RetryDelay:          5 * time.Second,
+		MaxDeliveryAttempts: 3,
+		Expiry:              time.Hour,
+	})
+
+	// Attempt 1
+	if _, err := c.RunDue(context.Background()); err == nil {
+		t.Fatal("attempt 1 should fail")
+	}
+	if store.reports[0].DeliveryState != domain.ReportPending || store.reports[0].DeliveryAttempts != 1 {
+		t.Fatalf("attempt 1: state = %s, attempts = %d", store.reports[0].DeliveryState, store.reports[0].DeliveryAttempts)
+	}
+
+	// Advance time past RetryDelay and retry (Attempt 2)
+	now = now.Add(5 * time.Second)
+	if _, err := c.RunDue(context.Background()); err == nil {
+		t.Fatal("attempt 2 should fail")
+	}
+	if store.reports[0].DeliveryState != domain.ReportPending || store.reports[0].DeliveryAttempts != 2 {
+		t.Fatalf("attempt 2: state = %s, attempts = %d", store.reports[0].DeliveryState, store.reports[0].DeliveryAttempts)
+	}
+
+	// Advance time past RetryDelay and retry (Attempt 3: limit reached)
+	now = now.Add(10 * time.Second)
+	if _, err := c.RunDue(context.Background()); err == nil {
+		t.Fatal("attempt 3 should fail")
+	}
+	if store.reports[0].DeliveryState != domain.ReportFailed {
+		t.Fatalf("after 3 attempts: state = %s, want %s", store.reports[0].DeliveryState, domain.ReportFailed)
+	}
+	if store.reports[0].DeliveryAttempts != 3 {
+		t.Fatalf("attempts = %d, want 3", store.reports[0].DeliveryAttempts)
+	}
+	if store.reports[0].LastError != "prompt submission was not observed" {
+		t.Fatalf("last error = %q, want 'prompt submission was not observed'", store.reports[0].LastError)
+	}
+
+	// Further calls to RunDue must not attempt delivery again
+	now = now.Add(time.Hour)
+	delay, err := c.RunDue(context.Background())
+	if err != nil || delay != -1 {
+		t.Fatalf("delay = %v, err = %v, want -1 and no error (no pending reports left)", delay, err)
+	}
+	if len(delivery.submissions) != 0 {
+		t.Fatalf("submissions = %d, want 0 successful deliveries", len(delivery.submissions))
+	}
+}
+
+func TestCoordinatorExpiryTerminatesDelivery(t *testing.T) {
+	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	store := newCoordinatorStore(now)
+	store.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
+	store.add(reportAt("rep-1", "worker", now, now, "progress"))
+	delivery := &coordinatorDelivery{submitErr: errors.New("service unavailable")}
+	c := NewCoordinator(CoordinatorDeps{
+		Store:               store,
+		Delivery:            delivery,
+		Now:                 func() time.Time { return now },
+		RetryDelay:          time.Minute,
+		MaxDeliveryAttempts: 10,
+		Expiry:              15 * time.Minute,
+	})
+
+	// Attempt 1 at now: fails, within expiry window
+	if _, err := c.RunDue(context.Background()); err == nil {
+		t.Fatal("attempt 1 should fail")
+	}
+	if store.reports[0].DeliveryState != domain.ReportPending {
+		t.Fatalf("state = %s, want pending", store.reports[0].DeliveryState)
+	}
+
+	// Advance time past 15 min expiry
+	now = now.Add(20 * time.Minute)
+	if _, err := c.RunDue(context.Background()); err == nil {
+		t.Fatal("attempt 2 should fail due to expiry")
+	}
+	if store.reports[0].DeliveryState != domain.ReportFailed {
+		t.Fatalf("expired report state = %s, want %s", store.reports[0].DeliveryState, domain.ReportFailed)
+	}
+
+	// Retries have stopped
+	now = now.Add(time.Hour)
+	delay, err := c.RunDue(context.Background())
+	if err != nil || delay != -1 {
+		t.Fatalf("delay = %v, err = %v, want -1", delay, err)
+	}
+}
+
+func TestCoordinatorNormalDeliveryAcknowledgedUnaffected(t *testing.T) {
+	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	store := newCoordinatorStore(now)
+	store.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
+	store.add(reportAt("rep-1", "worker", now, now, "success"))
+	delivery := &coordinatorDelivery{submitErr: errors.New("initial failure")}
+	c := NewCoordinator(CoordinatorDeps{
+		Store:               store,
+		Delivery:            delivery,
+		Now:                 func() time.Time { return now },
+		RetryDelay:          5 * time.Second,
+		MaxDeliveryAttempts: 3,
+		Expiry:              time.Hour,
+	})
+
+	// Attempt 1: fails
+	if _, err := c.RunDue(context.Background()); err == nil {
+		t.Fatal("attempt 1 should fail")
+	}
+	if store.reports[0].DeliveryState != domain.ReportPending || store.reports[0].DeliveryAttempts != 1 {
+		t.Fatalf("attempt 1: state = %s, attempts = %d", store.reports[0].DeliveryState, store.reports[0].DeliveryAttempts)
+	}
+
+	// Recover submit, attempt 2 succeeds
+	now = now.Add(5 * time.Second)
+	delivery.submitErr = nil
+	if _, err := c.RunDue(context.Background()); err != nil {
+		t.Fatalf("attempt 2 failed: %v", err)
+	}
+	if store.reports[0].DeliveryState != domain.ReportAcknowledged {
+		t.Fatalf("state = %s, want acknowledged", store.reports[0].DeliveryState)
+	}
+	if store.acked != 1 {
+		t.Fatalf("acked = %d, want 1", store.acked)
+	}
+}
+
+func TestCoordinatorBusyOrchestratorDoesNotStopAtAttemptLimitUntilExpiry(t *testing.T) {
+	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	store := newCoordinatorStore(now)
+	store.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
+	store.add(reportAt("rep-1", "worker", now, now, "busy test"))
+	delivery := &coordinatorDelivery{submitErr: fmt.Errorf("refused: %w", ErrOrchestratorBusy)}
+	c := NewCoordinator(CoordinatorDeps{
+		Store:               store,
+		Delivery:            delivery,
+		Now:                 func() time.Time { return now },
+		MaxDeliveryAttempts: 2,
+		Expiry:              10 * time.Minute,
+	})
+
+	// Attempt 1
+	delay, err := c.RunDue(context.Background())
+	if err != nil || delay != OrchestratorBusyRetry {
+		t.Fatalf("delay = %v, err = %v, want backoff %v", delay, err, OrchestratorBusyRetry)
+	}
+	if store.reports[0].DeliveryState != domain.ReportPending || store.reports[0].DeliveryAttempts != 1 {
+		t.Fatalf("attempt 1: state = %s, attempts = %d", store.reports[0].DeliveryState, store.reports[0].DeliveryAttempts)
+	}
+
+	// Attempt 2: at limit, but busy does NOT stop
+	now = now.Add(OrchestratorBusyRetry)
+	delay, err = c.RunDue(context.Background())
+	if err != nil || delay != OrchestratorBusyRetry {
+		t.Fatalf("delay = %v, err = %v, want backoff %v", delay, err, OrchestratorBusyRetry)
+	}
+	if store.reports[0].DeliveryState != domain.ReportPending || store.reports[0].DeliveryAttempts != 2 {
+		t.Fatalf("attempt 2: state = %s, want pending", store.reports[0].DeliveryState)
+	}
+
+	// Attempt 3: past attempt limit, still keeps waiting
+	now = now.Add(OrchestratorBusyRetry)
+	delay, err = c.RunDue(context.Background())
+	if err != nil || delay != OrchestratorBusyRetry {
+		t.Fatalf("delay = %v, err = %v, want backoff %v", delay, err, OrchestratorBusyRetry)
+	}
+	if store.reports[0].DeliveryState != domain.ReportPending || store.reports[0].DeliveryAttempts != 3 {
+		t.Fatalf("attempt 3: state = %s, want pending", store.reports[0].DeliveryState)
+	}
+
+	// Advance past expiry window (10 min)
+	now = now.Add(15 * time.Minute)
+	_, _ = c.RunDue(context.Background())
+	if store.reports[0].DeliveryState != domain.ReportFailed {
+		t.Fatalf("state = %s, want %s after expiry", store.reports[0].DeliveryState, domain.ReportFailed)
+	}
+}
+
+func TestCoordinatorUnavailableBacksOffWithoutExhaustingAttempts(t *testing.T) {
+	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	store := newCoordinatorStore(now)
+	store.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
+	store.add(reportAt("rep-1", "worker", now, now, "unavailable test"))
+	delivery := &coordinatorDelivery{submitErr: errors.New("no live chat controller for session")}
+	c := NewCoordinator(CoordinatorDeps{
+		Store:               store,
+		Delivery:            delivery,
+		Now:                 func() time.Time { return now },
+		RetryDelay:          5 * time.Second,
+		MaxDeliveryAttempts: 3,
+		Expiry:              10 * time.Minute,
+	})
+
+	// Attempt 1: backoff factor 1x (5s)
+	delay, err := c.RunDue(context.Background())
+	if err == nil || delay != 5*time.Second {
+		t.Fatalf("attempt 1: delay = %v, want 5s", delay)
+	}
+	if store.reports[0].DeliveryState != domain.ReportPending || store.reports[0].DeliveryAttempts != 1 {
+		t.Fatalf("attempt 1: state = %s, attempts = %d", store.reports[0].DeliveryState, store.reports[0].DeliveryAttempts)
+	}
+
+	// Attempt 2: backoff factor 2x (10s)
+	now = now.Add(5 * time.Second)
+	delay, err = c.RunDue(context.Background())
+	if err == nil || delay != 5*time.Second { // RunDue returns retryDelay on error
+		t.Fatalf("attempt 2 RunDue error: %v", err)
+	}
+	if store.reports[0].AvailableAt.Sub(now) != 10*time.Second {
+		t.Fatalf("attempt 2 deferred availableAt diff = %v, want 10s", store.reports[0].AvailableAt.Sub(now))
+	}
+
+	// Attempt 3: backoff factor 4x (20s)
+	now = now.Add(10 * time.Second)
+	_, _ = c.RunDue(context.Background())
+	if store.reports[0].AvailableAt.Sub(now) != 20*time.Second {
+		t.Fatalf("attempt 3 deferred availableAt diff = %v, want 20s", store.reports[0].AvailableAt.Sub(now))
+	}
+
+	// Attempt 4: attempts = 4 > MaxDeliveryAttempts (3), but does NOT fail because error is transient unavailable
+	now = now.Add(20 * time.Second)
+	_, _ = c.RunDue(context.Background())
+	if store.reports[0].DeliveryState != domain.ReportPending {
+		t.Fatalf("attempt 4 state = %s, want pending", store.reports[0].DeliveryState)
+	}
+	if store.reports[0].DeliveryAttempts != 4 {
+		t.Fatalf("attempts = %d, want 4", store.reports[0].DeliveryAttempts)
+	}
+
+	// Expiry stops it
+	now = now.Add(15 * time.Minute)
+	_, _ = c.RunDue(context.Background())
+	if store.reports[0].DeliveryState != domain.ReportFailed {
+		t.Fatalf("state = %s, want %s after expiry", store.reports[0].DeliveryState, domain.ReportFailed)
+	}
+}
+
+func TestCoordinatorBusyUnavailableToUnacknowledgedTransition(t *testing.T) {
+	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	store := newCoordinatorStore(now)
+	store.sessions = []domain.SessionRecord{{ID: "orch", ProjectID: "p", Kind: domain.KindOrchestrator, Mode: domain.SessionModeChat}}
+	store.add(reportAt("rep-1", "worker", now, now, "transition test"))
+	delivery := &coordinatorDelivery{submitErr: ErrOrchestratorBusy}
+	c := NewCoordinator(CoordinatorDeps{
+		Store:               store,
+		Delivery:            delivery,
+		Now:                 func() time.Time { return now },
+		RetryDelay:          5 * time.Second,
+		MaxDeliveryAttempts: 3,
+		Expiry:              time.Hour,
+	})
+
+	// Attempts 1..3: ErrOrchestratorBusy retries do not count against the unacknowledged attempt budget
+	for i := 1; i <= 3; i++ {
+		delay, err := c.RunDue(context.Background())
+		if err != nil || delay != OrchestratorBusyRetry {
+			t.Fatalf("busy attempt %d: delay = %v, err = %v, want delay %v and nil err", i, delay, err, OrchestratorBusyRetry)
+		}
+		if store.reports[0].DeliveryState != domain.ReportPending {
+			t.Fatalf("busy attempt %d: state = %s, want pending", i, store.reports[0].DeliveryState)
+		}
+		now = now.Add(OrchestratorBusyRetry)
+	}
+	if store.reports[0].DeliveryAttempts != 3 {
+		t.Fatalf("store attempts = %d, want 3", store.reports[0].DeliveryAttempts)
+	}
+
+	// Attempt 4: Transient controller-unavailable error also does not count against the budget
+	delivery.submitErr = errors.New("no live chat controller for session")
+	if _, err := c.RunDue(context.Background()); err == nil {
+		t.Fatal("unavailable attempt should fail")
+	}
+	if store.reports[0].DeliveryState != domain.ReportPending {
+		t.Fatalf("unavailable attempt: state = %s, want pending", store.reports[0].DeliveryState)
+	}
+	if store.reports[0].DeliveryAttempts != 4 {
+		t.Fatalf("store attempts = %d, want 4", store.reports[0].DeliveryAttempts)
+	}
+
+	// Now switch to ErrUnacknowledgedDelivery.
+	// Even though store.reports[0].DeliveryAttempts is 4 (> MaxDeliveryAttempts 3),
+	// the unacknowledged attempt budget is intact and has seen 0 unacknowledged attempts so far.
+	delivery.submitErr = ErrUnacknowledgedDelivery
+
+	// Unacknowledged Attempt 1 (Total claim attempt 5): must remain pending
+	now = store.reports[0].AvailableAt
+	if _, err := c.RunDue(context.Background()); err == nil {
+		t.Fatal("unacknowledged attempt 1 should fail")
+	}
+	if store.reports[0].DeliveryState != domain.ReportPending {
+		t.Fatalf("unacknowledged attempt 1: state = %s, want pending", store.reports[0].DeliveryState)
+	}
+	if store.reports[0].DeliveryAttempts != 5 {
+		t.Fatalf("store attempts = %d, want 5", store.reports[0].DeliveryAttempts)
+	}
+
+	// Unacknowledged Attempt 2 (Total claim attempt 6): must remain pending
+	now = store.reports[0].AvailableAt
+	if _, err := c.RunDue(context.Background()); err == nil {
+		t.Fatal("unacknowledged attempt 2 should fail")
+	}
+	if store.reports[0].DeliveryState != domain.ReportPending {
+		t.Fatalf("unacknowledged attempt 2: state = %s, want pending", store.reports[0].DeliveryState)
+	}
+	if store.reports[0].DeliveryAttempts != 6 {
+		t.Fatalf("store attempts = %d, want 6", store.reports[0].DeliveryAttempts)
+	}
+
+	// Unacknowledged Attempt 3 (Total claim attempt 7: reaches MaxDeliveryAttempts = 3): must transition to failed!
+	now = store.reports[0].AvailableAt
+	if _, err := c.RunDue(context.Background()); err == nil {
+		t.Fatal("unacknowledged attempt 3 should fail")
+	}
+	if store.reports[0].DeliveryState != domain.ReportFailed {
+		t.Fatalf("after 3 unacknowledged attempts: state = %s, want %s", store.reports[0].DeliveryState, domain.ReportFailed)
+	}
+	if store.reports[0].DeliveryAttempts != 7 {
+		t.Fatalf("store attempts = %d, want 7", store.reports[0].DeliveryAttempts)
+	}
+	if store.reports[0].LastError != "prompt submission was not observed" {
+		t.Fatalf("last error = %q, want 'prompt submission was not observed'", store.reports[0].LastError)
+	}
+}
+
+func TestCoordinatorFailDoesNotRecordNoticeWhenStoreFails(t *testing.T) {
+	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	store := newCoordinatorStore(now)
+	store.failReportErr = errors.New("db disk failure")
+	onFailedCalled := false
+	c := NewCoordinator(CoordinatorDeps{
+		Store: store,
+		Now:   func() time.Time { return now },
+		OnBatchFailed: func(ctx context.Context, batch PreparedBatch, cause error) {
+			onFailedCalled = true
+		},
+	})
+	batch := PreparedBatch{
+		ProjectID: "p",
+		Token:     "tok",
+		Reports:   []domain.ReportRecord{reportAt("rep-1", "worker", now, now, "fail")},
+	}
+	err := c.fail(context.Background(), batch, errors.New("underlying error"))
+	if err == nil {
+		t.Fatal("expected error from fail when store fails")
+	}
+	if onFailedCalled {
+		t.Fatal("onBatchFailed should not be called when FailReportBatch fails")
+	}
+}
+
+func TestCoordinatorCallsOnBatchFailedWhenBatchFails(t *testing.T) {
+	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	store := newCoordinatorStore(now)
+	var capturedBatch PreparedBatch
+	var capturedCause error
+	called := false
+	c := NewCoordinator(CoordinatorDeps{
+		Store: store,
+		Now:   func() time.Time { return now },
+		OnBatchFailed: func(ctx context.Context, batch PreparedBatch, cause error) {
+			called = true
+			capturedBatch = batch
+			capturedCause = cause
+		},
+	})
+	batch := PreparedBatch{
+		ProjectID: "p",
+		Token:     "tok",
+		Reports:   []domain.ReportRecord{reportAt("rep-1", "worker", now, now, "fail")},
+	}
+	store.reports = append(store.reports, reportAt("rep-1", "worker", now, now, "fail"))
+	store.reports[0].DeliveryState = domain.ReportClaimed
+	store.reports[0].ClaimToken = "tok"
+	underlying := errors.New("terminal failure")
+	err := c.fail(context.Background(), batch, underlying)
+	if !errors.Is(err, underlying) {
+		t.Fatalf("fail err = %v, want %v", err, underlying)
+	}
+	if !called {
+		t.Fatal("expected OnBatchFailed to be called")
+	}
+	if capturedBatch.Token != "tok" || !errors.Is(capturedCause, underlying) {
+		t.Fatalf("captured batch = %v, cause = %v", capturedBatch, capturedCause)
+	}
+}
+
 type coordinatorStore struct {
-	mu         sync.Mutex
-	now        time.Time
-	reports    []domain.ReportRecord
-	sessions   []domain.SessionRecord
-	interrupts map[domain.SessionID]time.Time
-	acked      int
+	unacknowledgedAttempts map[string]int
+	mu                     sync.Mutex
+	now                    time.Time
+	reports                []domain.ReportRecord
+	sessions               []domain.SessionRecord
+	interrupts             map[domain.SessionID]time.Time
+	acked                  int
+	failReportErr          error
 }
 
 func newCoordinatorStore(now time.Time) *coordinatorStore {
-	return &coordinatorStore{now: now, interrupts: map[domain.SessionID]time.Time{}}
+	return &coordinatorStore{unacknowledgedAttempts: map[string]int{}, now: now, interrupts: map[domain.SessionID]time.Time{}}
 }
 
 func reportAt(id string, worker domain.SessionID, created, available time.Time, note string) domain.ReportRecord {
@@ -209,7 +685,14 @@ func reportAt(id string, worker domain.SessionID, created, available time.Time, 
 func (s *coordinatorStore) add(records ...domain.ReportRecord) {
 	s.reports = append(s.reports, records...)
 }
+func (s *coordinatorStore) setSessions(sessions ...domain.SessionRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions = sessions
+}
 func (s *coordinatorStore) ListSessions(_ context.Context, project domain.ProjectID) ([]domain.SessionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var recs []domain.SessionRecord
 	for _, rec := range s.sessions {
 		if rec.ProjectID == project {
@@ -219,6 +702,8 @@ func (s *coordinatorStore) ListSessions(_ context.Context, project domain.Projec
 	return recs, nil
 }
 func (s *coordinatorStore) GetSession(_ context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, rec := range s.sessions {
 		if rec.ID == id {
 			return rec, true, nil
@@ -241,26 +726,51 @@ func (s *coordinatorStore) ListPendingReportSchedule(context.Context, int64) ([]
 	}
 	return pending, nil
 }
+func (s *coordinatorStore) ListPendingReportsOfDoneProjects(context.Context) ([]domain.ReportRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	done := map[domain.ProjectID]bool{}
+	for _, rec := range s.reports {
+		if rec.DeliveryState == domain.ReportPending && rec.State == domain.ReportDone {
+			done[rec.ProjectID] = true
+		}
+	}
+	var pending []domain.ReportRecord
+	for _, rec := range s.reports {
+		if rec.DeliveryState == domain.ReportPending && done[rec.ProjectID] {
+			pending = append(pending, rec)
+		}
+	}
+	sortReports(pending)
+	return pending, nil
+}
 func (s *coordinatorStore) ClaimPendingReportBatch(_ context.Context, project domain.ProjectID, token string, at time.Time) ([]domain.ReportRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	batchID := ""
-	for i := range s.reports {
-		if s.reports[i].ProjectID == project && s.reports[i].DeliveryState == domain.ReportPending {
-			batchID = s.reports[i].DeliveryBatchID
-			if batchID == "" {
-				batchID = "report-batch:" + s.reports[i].ID
-			}
-			break
+	// Like the store: the project's earliest scheduled report names the batch,
+	// and unbatched reports join it only when that report is unbatched too.
+	var scheduled []domain.ReportRecord
+	for _, rec := range s.reports {
+		if rec.ProjectID == project && rec.DeliveryState == domain.ReportPending {
+			scheduled = append(scheduled, rec)
 		}
+	}
+	if len(scheduled) == 0 {
+		return nil, nil
+	}
+	sortReports(scheduled)
+	batchID := scheduled[0].DeliveryBatchID
+	if batchID == "" {
+		batchID = "report-batch:" + scheduled[0].ID
 	}
 	var claimed []domain.ReportRecord
 	for i := range s.reports {
 		if s.reports[i].ProjectID == project && s.reports[i].DeliveryState == domain.ReportPending {
-			if s.reports[i].DeliveryBatchID != "" && s.reports[i].DeliveryBatchID != batchID {
+			if s.reports[i].DeliveryBatchID != batchID && (s.reports[i].DeliveryBatchID != "" || scheduled[0].DeliveryBatchID != "") {
 				continue
 			}
 			s.reports[i].DeliveryBatchID = batchID
+			s.reports[i].DeliveryAttempts++
 			s.reports[i].DeliveryState, s.reports[i].ClaimToken, s.reports[i].ClaimedAt = domain.ReportClaimed, token, at
 			claimed = append(claimed, s.reports[i])
 		}
@@ -281,18 +791,52 @@ func (s *coordinatorStore) AcknowledgeReportBatch(_ context.Context, project dom
 	s.acked += count
 	return count, nil
 }
-func (s *coordinatorStore) ReleaseReportBatch(_ context.Context, project domain.ProjectID, token string, _ time.Time, _ string) (int, error) {
+func (s *coordinatorStore) ReleaseReportBatch(_ context.Context, project domain.ProjectID, token string, _ time.Time, reason string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	count := 0
 	for i := range s.reports {
 		if s.reports[i].ProjectID == project && s.reports[i].DeliveryState == domain.ReportClaimed && s.reports[i].ClaimToken == token {
 			s.reports[i].DeliveryState, s.reports[i].ClaimToken = domain.ReportPending, ""
+			s.reports[i].LastError = reason
 			count++
 		}
 	}
 	return count, nil
 }
+func (s *coordinatorStore) FailReportBatch(_ context.Context, project domain.ProjectID, token string, _ time.Time, reason string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failReportErr != nil {
+		return 0, s.failReportErr
+	}
+	count := 0
+	for i := range s.reports {
+		if s.reports[i].ProjectID == project && s.reports[i].DeliveryState == domain.ReportClaimed && s.reports[i].ClaimToken == token {
+			s.reports[i].DeliveryState, s.reports[i].ClaimToken = domain.ReportFailed, ""
+			s.reports[i].LastError = reason
+			count++
+		}
+	}
+	return count, nil
+}
+func (s *coordinatorStore) RetryUnacknowledgedReportBatch(ctx context.Context, project domain.ProjectID, token string, at time.Time, limit int, reason string) (int, error) {
+	s.mu.Lock()
+	exceeded := false
+	for _, rec := range s.reports {
+		if rec.ProjectID == project && rec.DeliveryState == domain.ReportClaimed && rec.ClaimToken == token {
+			s.unacknowledgedAttempts[rec.ID]++
+			exceeded = exceeded || s.unacknowledgedAttempts[rec.ID] >= limit
+		}
+	}
+	s.mu.Unlock()
+	if exceeded {
+		return s.FailReportBatch(ctx, project, token, at, reason)
+	}
+	_, err := s.DeferReportBatch(ctx, project, token, at, reason)
+	return 0, err
+}
+
 func (s *coordinatorStore) DeferReportBatch(ctx context.Context, project domain.ProjectID, token string, at time.Time, reason string) (int, error) {
 	count, err := s.ReleaseReportBatch(ctx, project, token, at, reason)
 	if err != nil {
@@ -331,13 +875,18 @@ type coordinatorSubmission struct {
 	message, key string
 }
 type coordinatorDelivery struct {
+	mu           sync.Mutex
 	submissions  []coordinatorSubmission
 	interrupts   []domain.SessionID
 	submitErr    error
 	submitErrFor map[domain.SessionID]error
+	attempts     int
 }
 
 func (d *coordinatorDelivery) Submit(_ context.Context, target domain.SessionID, message, key string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.attempts++
 	if d.submitErr != nil {
 		return d.submitErr
 	}
@@ -346,6 +895,11 @@ func (d *coordinatorDelivery) Submit(_ context.Context, target domain.SessionID,
 	}
 	d.submissions = append(d.submissions, coordinatorSubmission{target, message, key})
 	return nil
+}
+func (d *coordinatorDelivery) submitted() []coordinatorSubmission {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]coordinatorSubmission(nil), d.submissions...)
 }
 func (d *coordinatorDelivery) Interrupt(_ context.Context, target domain.SessionID) error {
 	d.interrupts = append(d.interrupts, target)

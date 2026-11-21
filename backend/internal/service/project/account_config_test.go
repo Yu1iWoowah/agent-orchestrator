@@ -9,7 +9,7 @@ import (
 )
 
 func TestRemoteConfigMutationCannotSelectOrClearLocalAccounts(t *testing.T) {
-	current := domain.ProjectConfig{AgentAccounts: map[domain.AgentAccountProvider]string{domain.AgentAccountProviderCodex: "project-A"}, Worker: domain.RoleOverride{AgentAccountID: "worker-A"}, Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex, AgentAccountID: "review-C"}}, Env: map[string]string{"CODEX_HOME": "/fake/private", "OPENAI_API_KEY": "fake-credential-marker"}}
+	current := domain.ProjectConfig{Worker: domain.RoleOverride{AgentAccountID: "worker-A"}, Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex, AgentAccountID: "review-C"}}, Env: map[string]string{"CODEX_HOME": "/fake/private", "OPENAI_API_KEY": "fake-credential-marker"}}
 	ctx := ports.WithRemoteAccountRequest(context.Background())
 	for _, proposed := range []domain.ProjectConfig{{Worker: domain.RoleOverride{AgentAccountID: "other"}}, {Env: map[string]string{"OPENAI_API_KEY": "marker"}}, {Env: map[string]string{"CODEX_HOME": "/fake/device"}}} {
 		if _, err := accountConfigForMutation(ctx, current, proposed); err == nil {
@@ -19,7 +19,7 @@ func TestRemoteConfigMutationCannotSelectOrClearLocalAccounts(t *testing.T) {
 	projected := current.WithoutLocalAccounts()
 	projected.AgentRules = "remote ordinary edit"
 	got, err := accountConfigForMutation(ctx, current, projected)
-	if err != nil || got.Worker.AgentAccountID != "worker-A" || got.AgentAccounts[domain.AgentAccountProviderCodex] != "project-A" || got.Reviewers[0].AgentAccountID != "review-C" || got.Env["CODEX_HOME"] != "/fake/private" || got.AgentRules != "remote ordinary edit" {
+	if err != nil || got.Worker.AgentAccountID != "worker-A" || got.Reviewers[0].AgentAccountID != "review-C" || got.Env["CODEX_HOME"] != "/fake/private" || got.AgentRules != "remote ordinary edit" {
 		t.Fatalf("remote edit lost local references: %+v %v", got, err)
 	}
 }

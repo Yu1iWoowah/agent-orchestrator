@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { X } from "@/components/app-icons";
 import { useTranslation } from "react-i18next";
 import type { CodexActiveLogin } from "../../hooks/useCodexAccountsQuery";
 import { codexAccountReasonKey } from "../../hooks/codex-accounts-state";

@@ -57,7 +57,7 @@ func (s *Store) readConversationPlanSnapshot(ctx context.Context, conversationID
 		return conversationPlanSnapshot{}, fmt.Errorf("begin plan read: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := gen.New(tx)
+	q := s.txQueries(tx)
 	conversation, err := q.SelectConversationByID(ctx, conversationID)
 	if err != nil {
 		return conversationPlanSnapshot{}, fmt.Errorf("read plan conversation: %w", err)

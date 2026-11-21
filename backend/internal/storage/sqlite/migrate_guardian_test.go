@@ -6,7 +6,7 @@ import (
 )
 
 func TestGuardianMigrationUpgradeDowngradePreservesLedger(t *testing.T) {
-	const previous int64 = 20261030173049692
+	const previous int64 = 20261031143851898 - 1
 	db := openMigratedDatabaseCopy(t, previous)
 	now := time.Now().UTC()
 	statements := []string{

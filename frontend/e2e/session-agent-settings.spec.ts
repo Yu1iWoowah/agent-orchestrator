@@ -106,7 +106,8 @@ async function installSettings(page: Page, mode: "chat" | "tui", harness = "code
 			await route.fulfill({ json: { ...body, model: target.model, reasoningEffort: target.effort, fastMode: target.fastMode === "on" } });
 			await emit(); return;
 		}
-		if (routePath.endsWith("/resume-agent")) { resumedFast = snapshot.settings.fastMode; stopped = false; await route.fulfill({ json: { sessionId, mode: "native" } }); return; }
+		if (routePath.endsWith("/resume-agent") && request.method() === "POST") { resumedFast = snapshot.settings.fastMode; stopped = false; await route.fulfill({ status: 202, json: { ok: true, sessionId } }); return; }
+		if (routePath.endsWith("/resume-agent")) { await route.fulfill({ json: { sessionId, state: resumedFast === undefined ? "running" : "succeeded", resumeMode: "native" } }); return; }
 		if (routePath.endsWith("/conversation/models")) { await route.fulfill({ json: { models: snapshot.capabilities.models.map((model) => ({ id: model.model, displayName: model.model, default: model.isDefault, efforts: model.efforts, supportsFast: true })), selected: { model: snapshot.settings.model } } }); return; }
 		if (routePath.endsWith("/conversation/config-options")) { await route.fulfill({ json: { options: [] } }); return; }
 		if (routePath.endsWith("/conversation/skills")) { await route.fulfill({ json: { skills: [] } }); return; }
@@ -471,7 +472,7 @@ test(`idle ${timing} applied settings synchronize the composer through native SS
 		await expect(message).toHaveText("Preserve this draft across real CDC");
 		await page.screenshot({ path: info.outputPath(`${timing}-${before ? "cdc-before-stale" : "cdc-synchronized"}.png`), fullPage: true });
 		await mkdir(info.outputDir, { recursive: true });
-		await writeFile(info.outputPath("native-cdc-receipt.json"), JSON.stringify({ timing, readsInitial, readsAfterMutation: readsBefore, settingsBeforeCdc, settingsAfterCdc: state.settingsReads(), source: "native EventSource over real HTTP SSE; remaining API/provider data are fake", peers: peers.size, frame, readsBefore, readsAfter: state.conversationReads(), header: await page.getByTestId("agent-settings-header").innerText(), picker: await picker.innerText() }, null, 2));
+		await writeFile(info.outputPath("native-cdc-receipt.json"), JSON.stringify({ timing, readsInitial, readsAfterMutation: readsBefore, settingsBeforeCdc, settingsAfterCdc: state.settingsReads(), source: "real HTTP SSE relayed through the daemonStream bridge; remaining API/provider data are fake", peers: peers.size, frame, readsBefore, readsAfter: state.conversationReads(), header: await page.getByTestId("agent-settings-header").innerText(), picker: await picker.innerText() }, null, 2));
 	} finally {
 		for (const response of peers) response.end();
 		server.closeAllConnections();

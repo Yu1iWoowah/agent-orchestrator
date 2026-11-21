@@ -10,11 +10,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pressly/goose/v3"
 
@@ -111,9 +115,19 @@ func checkLegacyDatabasePath(dataDir string) error {
 		return fmt.Errorf("inspect legacy database: %w", readErr)
 	}
 	if n == len(header) && string(header[:]) == "SQLite format 3\x00" {
-		return fmt.Errorf("legacy SQLite path parsing stored data at %q; refusing to create an empty database at %q: stop AO and recover the legacy database explicitly before retrying", legacy, intended)
+		return fmt.Errorf("legacy SQLite path parsing stored data at %q; refusing to create an empty database at %q: stop Orchestrator and recover the legacy database explicitly before retrying", legacy, intended)
 	}
 	return nil
+}
+
+// timestampFenceTimeout bounds startup repair. A failed fence never publishes
+// readers that could compare legacy timestamps as local wall-clock text.
+const timestampFenceTimeout = 5 * time.Minute
+
+type timestampOpenOptions struct {
+	driver      string
+	fenceBudget time.Duration
+	repairDone  chan<- struct{}
 }
 
 // Open opens (creating if absent) the SQLite database under dataDir and returns
@@ -128,15 +142,25 @@ func checkLegacyDatabasePath(dataDir string) error {
 //   - a READER pool (readDB, MaxOpenConns=maxReaders): all reads scale across
 //     it; WAL readers see the latest committed snapshot.
 func Open(dataDir string) (*Store, error) {
+	return openWithTimestampOptions(dataDir, timestampOpenOptions{driver: "ao-sqlite", fenceBudget: timestampFenceTimeout})
+}
+
+func openWithTimestampOptions(dataDir string, opts timestampOpenOptions) (*Store, error) {
+	if opts.driver == "" {
+		opts.driver = "ao-sqlite"
+	}
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 	if err := checkLegacyDatabasePath(dataDir); err != nil {
 		return nil, err
 	}
+	if err := inspectMigrationLedger(dataDir); err != nil {
+		return nil, err
+	}
 	dsn := databaseURI(dataDir) + pragmas
 
-	writeDB, err := sql.Open("sqlite", dsn)
+	writeDB, err := sql.Open(opts.driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite writer: %w", err)
 	}
@@ -146,16 +170,89 @@ func Open(dataDir string) (*Store, error) {
 		_ = writeDB.Close()
 		return nil, err
 	}
-
-	readDB, err := sql.Open("sqlite", dsn)
+	readDB, err := openTimestampReaders(opts.driver, dsn)
 	if err != nil {
 		_ = writeDB.Close()
+		return nil, err
+	}
+	state := newTimestampRepairState()
+	{
+		started := time.Now()
+		slog.Info("checking legacy timestamps before opening readers")
+		ctx, cancel := context.WithTimeout(context.Background(), opts.fenceBudget)
+		result, repairErr := runTimestampRepairState(ctx, writeDB, readDB, true, state)
+		if repairErr == nil {
+			repairErr = ctx.Err()
+		}
+		cancel()
+		if repairErr != nil {
+			_ = readDB.Close()
+			_ = writeDB.Close()
+			return nil, fmt.Errorf("timestamp startup repair incomplete; committed batches retained: %w", repairErr)
+		}
+		slog.Info("timestamp startup fence completed", "duration", time.Since(started), "repaired", result.Repaired, "skipped", result.Skipped, "deleted", result.Deleted)
+	}
+	store, err := withSearchIndexPools(dataDir, dsn, writeDB, readDB)
+	if err != nil {
+		_ = readDB.Close()
+		_ = writeDB.Close()
+		return nil, err
+	}
+	store.StartTimestampRepair(func(ctx context.Context) error {
+		if opts.repairDone != nil {
+			defer close(opts.repairDone)
+		}
+		_, err := runTimestampRepairState(ctx, writeDB, readDB, false, state)
+		return err
+	})
+
+	return store, nil
+}
+
+func openTimestampReaders(driverName, dsn string) (*sql.DB, error) {
+	readDB, err := sql.Open(driverName, dsn)
+	if err != nil {
 		return nil, fmt.Errorf("open sqlite reader: %w", err)
 	}
 	readDB.SetMaxOpenConns(maxReaders)
 	readDB.SetMaxIdleConns(maxReaders)
+	return readDB, nil
+}
 
-	return sqlitestore.NewStore(writeDB, readDB), nil
+// withSearchIndex opens the reader pool beside an open, migrated writer, then
+// the optional session search index (search_db.go).
+//
+// The index never decides whether the store opens: one that cannot be opened
+// is recorded on the store (SessionSearchUnavailable) and search stays off,
+// while every other read and write works as usual.
+func withSearchIndex(dataDir, dsn string, writeDB *sql.DB) (*Store, error) {
+	readDB, err := openTimestampReaders("ao-sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	return withSearchIndexPools(dataDir, dsn, writeDB, readDB)
+}
+
+func withSearchIndexPools(dataDir, dsn string, writeDB, readDB *sql.DB) (*Store, error) {
+	store := sqlitestore.NewStore(writeDB, readDB)
+
+	if sessionSearchSwitchedOff() {
+		store.SetSearchUnavailable(errSessionSearchOff)
+		return store, nil
+	}
+	searchDB, reset, err := openSearchWriter(dataDir, writeDB)
+	if err != nil {
+		store.SetSearchUnavailable(fmt.Errorf("open session search index: %w", err))
+		return store, nil
+	}
+	searchReaders, err := openSearchReaders(dataDir, dsn)
+	if err != nil {
+		_ = searchDB.Close()
+		store.SetSearchUnavailable(fmt.Errorf("open session search readers: %w", err))
+		return store, nil
+	}
+	store.SetSearchIndex(searchDB, searchReaders, reset)
+	return store, nil
 }
 
 // OpenReadOnly opens an existing SQLite database under dataDir without creating
@@ -163,7 +260,7 @@ func Open(dataDir string) (*Store, error) {
 func OpenReadOnly(ctx context.Context, dataDir string) (*Store, error) {
 	dsn := databaseURI(dataDir) + readOnlyPragmas
 
-	writeDB, err := sql.Open("sqlite", dsn)
+	writeDB, err := sql.Open("ao-sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite read-only writer: %w", err)
 	}
@@ -174,7 +271,7 @@ func OpenReadOnly(ctx context.Context, dataDir string) (*Store, error) {
 		return nil, fmt.Errorf("open sqlite read-only writer: %w", err)
 	}
 
-	readDB, err := sql.Open("sqlite", dsn)
+	readDB, err := sql.Open("ao-sqlite", dsn)
 	if err != nil {
 		_ = writeDB.Close()
 		return nil, fmt.Errorf("open sqlite read-only reader: %w", err)
@@ -259,7 +356,7 @@ func OpenPreMigrated(dataDir string) (*Store, error) {
 
 	dsn := databaseURI(dataDir) + pragmas
 
-	writeDB, err := sql.Open("sqlite", dsn)
+	writeDB, err := sql.Open("ao-sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite writer: %w", err)
 	}
@@ -282,18 +379,88 @@ func OpenPreMigrated(dataDir string) (*Store, error) {
 		)
 	}
 
-	readDB, err := sql.Open("sqlite", dsn)
+	store, err := withSearchIndex(dataDir, dsn, writeDB)
 	if err != nil {
 		_ = writeDB.Close()
-		return nil, fmt.Errorf("open sqlite reader: %w", err)
+		return nil, err
 	}
-	readDB.SetMaxOpenConns(maxReaders)
-	readDB.SetMaxIdleConns(maxReaders)
-
-	return sqlitestore.NewStore(writeDB, readDB), nil
+	return store, nil
 }
 
-func migrate(db *sql.DB) error {
+// inspectMigrationLedger checks the on-disk receipts before the writer opens
+// the database with journal-mode pragmas or performs any repair.
+func inspectMigrationLedger(dataDir string) error {
+	if _, err := os.Stat(filepath.Join(dataDir, "ao.db")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("inspect migration ledger: %w", err)
+	}
+	db, err := sql.Open("sqlite", databaseURI(dataDir)+readOnlyPragmas)
+	if err != nil {
+		return fmt.Errorf("open migration ledger read-only: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+	var ledger bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_schema
+		WHERE type='table' AND name='goose_db_version')`).Scan(&ledger); err != nil || !ledger {
+		return err
+	}
+
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("read embedded migration manifest: %w", err)
+	}
+	known := make(map[int64]struct{}, len(entries))
+	for _, entry := range entries {
+		versionText, _, _ := strings.Cut(entry.Name(), "_")
+		version, err := strconv.ParseInt(versionText, 10, 64)
+		if err != nil {
+			return fmt.Errorf("read migration manifest entry %q: %w", entry.Name(), err)
+		}
+		known[version] = struct{}{}
+	}
+	rows, err := db.Query(`SELECT DISTINCT version_id FROM goose_db_version ORDER BY version_id`)
+	if err != nil {
+		return fmt.Errorf("read migration receipts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var version int64
+		if err := rows.Scan(&version); err != nil {
+			return err
+		}
+		if _, ok := known[version]; ok || legacyMigrationReceipt(version) {
+			continue
+		}
+		if version == 20261120084919464 {
+			return fmt.Errorf("unapproved schema: withdrawn report delivery migration %d", version)
+		}
+		return fmt.Errorf("unapproved schema: migration %d is outside the embedded manifest", version)
+	}
+	return rows.Err()
+}
+
+// These pre-manifest receipts are already recognized by the runner. They are
+// accepted as upgrade inputs, not counted among the canonical migrations.
+func legacyMigrationReceipt(version int64) bool {
+	switch version {
+	case 0:
+		return true // Goose's sentinel.
+	case 22, 203:
+		return true // Burned releases without an embedded file.
+	case 45, 46, 50, 51:
+		return true // Editions described by the existing burned-schema repair.
+	case 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65:
+		return true // The original Chat sequence recognized by the renumber repair.
+	case 201, 216, computerUseBranchMigrationVersion:
+		return true // Existing provider-switch/usage-limit and computer-use aliases.
+	default:
+		return false
+	}
+}
+
+func migrate(db *sql.DB) (err error) {
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
 	goose.SetBaseFS(migrationsFS)
@@ -301,6 +468,24 @@ func migrate(db *sql.DB) error {
 	if err := goose.SetDialect("sqlite3"); err != nil {
 		return fmt.Errorf("set goose dialect: %w", err)
 	}
+	migrations, err := goose.CollectMigrations("migrations", 0, goose.MaxVersion)
+	if err != nil {
+		return fmt.Errorf("collect migrations: %w", err)
+	}
+	versions := make([]int64, len(migrations))
+	for i, migration := range migrations {
+		versions[i] = migration.Version
+	}
+	ctx := context.Background()
+	triggers, err := prepareTimestampSchemaMigration(ctx, db, versions)
+	if err != nil {
+		return fmt.Errorf("prepare timestamp tracking for schema migrations: %w", err)
+	}
+	defer func() {
+		if restoreErr := restoreTimestampProgressTriggers(ctx, db, triggers); restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("restore timestamp repair triggers: %w", restoreErr))
+		}
+	}()
 	if err := repairRenumberedAgentInstallJobsMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered agent-install-jobs migration history: %w", err)
 	}
@@ -321,6 +506,9 @@ func migrate(db *sql.DB) error {
 	}
 	if err := repairRenumberedUsageLimitMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered usage-limit migration history: %w", err)
+	}
+	if err := repairRenumberedComputerUseMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered computer-use migration history: %w", err)
 	}
 	if err := prepareCancelledConversationTurnsMigration(db); err != nil {
 		return fmt.Errorf("prepare cancelled conversation-turn migration: %w", err)
@@ -361,6 +549,9 @@ func migrate(db *sql.DB) error {
 	if err := prepareSessionReviewerAgentConfigMigration(db); err != nil {
 		return fmt.Errorf("prepare session reviewer agent-config migration: %w", err)
 	}
+	if err := prepareRemoveProjectAgentAccounts(db); err != nil {
+		return fmt.Errorf("prepare project agentAccounts removal: %w", err)
+	}
 	// Builds can advance a database past a migration that is added or
 	// renumbered later (notably across fast-moving Nightly releases). Apply
 	// those embedded migrations instead of permanently wedging daemon startup
@@ -369,6 +560,37 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	return reconcileSchema(db)
+}
+
+const (
+	computerUseBranchMigrationVersion int64 = 20261021135126673
+	computerUseMigrationVersion       int64 = 20261023123504180
+)
+
+// repairRenumberedComputerUseMigrationHistory keeps development databases that
+// ran this branch before its app_settings.computer_use migration moved from
+// 20261021135126673 to 20261023123504180, after main's migrations. Such a
+// database has the column and a receipt under the old number; the receipt
+// moves to the new number so goose does not add the column twice.
+func repairRenumberedComputerUseMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+	var column int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('app_settings') WHERE name = 'computer_use'`).Scan(&column); err != nil {
+		return err
+	}
+	if column == 0 {
+		return nil
+	}
+	_, err := db.Exec(`UPDATE goose_db_version SET version_id = ?
+WHERE version_id = ? AND NOT EXISTS (SELECT 1 FROM goose_db_version WHERE version_id = ?)`,
+		computerUseMigrationVersion, computerUseBranchMigrationVersion, computerUseMigrationVersion)
+	return err
 }
 
 const (
@@ -1612,6 +1834,17 @@ SELECT COALESCE((
 	if applied117 == 0 {
 		return nil
 	}
+	// The upstream open-kind migration deliberately removes the enumerated
+	// kimi/kimi_wire CHECKs. Its receipt supersedes this legacy shape probe;
+	// replaying 0117 would rewrite a healthy ledger on every startup.
+	var openKindsApplied int
+	if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version
+ WHERE version_id=20261103030401452 ORDER BY id DESC LIMIT 1),0)`).Scan(&openKindsApplied); err != nil {
+		return err
+	}
+	if openKindsApplied != 0 {
+		return nil
+	}
 
 	var kimiUsageShape int
 	if err := db.QueryRow(`
@@ -1624,6 +1857,19 @@ SELECT (SELECT COUNT(*) FROM sqlite_master
 		return err
 	}
 	if kimiUsageShape == 2 {
+		return nil
+	}
+	var openUsageShape int
+	if err := db.QueryRow(`
+SELECT (SELECT COUNT(*) FROM sqlite_master
+        WHERE type = 'table' AND name = 'usage_bindings'
+          AND instr(COALESCE(sql, ''), 'trim(harness)') > 0)
+     + (SELECT COUNT(*) FROM sqlite_master
+        WHERE type = 'table' AND name = 'usage_sources'
+          AND instr(COALESCE(sql, ''), 'trim(kind)') > 0)`).Scan(&openUsageShape); err != nil {
+		return err
+	}
+	if openUsageShape == 2 {
 		return nil
 	}
 
@@ -2028,6 +2274,10 @@ BEGIN
 	// this column, so repair field databases that recorded 0132 without adding it.
 	{version: 132, table: "conversations", column: "opencode_mode",
 		addDDL: `ALTER TABLE conversations ADD COLUMN opencode_mode TEXT NOT NULL DEFAULT ''`},
+	// 0199_conversation_message_continuation.sql. Fork builds recorded 199 for
+	// another migration first, and generated message reads select this column.
+	{version: 199, table: "conversation_messages", column: "continuation",
+		addDDL: `ALTER TABLE conversation_messages ADD COLUMN continuation INTEGER NOT NULL DEFAULT 0 CHECK (continuation IN (0, 1))`},
 }
 
 // reconcileSchema verifies that the columns in schemaRepairs physically exist
@@ -2071,7 +2321,7 @@ func reconcileSchema(db *sql.DB) error {
 		return fmt.Errorf("schema verification: inspect session revision fence: %w", err)
 	}
 	if revisionColumn > 0 && revisionTrigger != 1 {
-		return errors.New("schema verification: sessions_revision_update trigger is missing; restore the session revision trigger before starting AO")
+		return errors.New("schema verification: sessions_revision_update trigger is missing; restore the session revision trigger before starting Orchestrator")
 	}
 	return nil
 }
@@ -2136,7 +2386,18 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 		if _, err := db.Exec(`UPDATE sqlite_master SET sql = replace(sql, '''hermes'', ', '') WHERE type = 'table' AND name = 'sessions'`); err != nil {
 			return fmt.Errorf("schema repair: normalize Hermes constraint: %w", err)
 		}
+		schema = strings.ReplaceAll(schema, "'hermes', ", "")
 		needsNativeAssistant = true
+	}
+	// B's immutable tail migrations can already have widened a known older
+	// CHECK. Carry the exact suffix through the historical repairs.
+	const harnessTail = "'fake'))"
+	tail := harnessTail
+	for _, harness := range []string{"tau", "open-interpreter", "minimax-code", "docker-agent", "stakpak"} {
+		widened := "'" + harness + "', " + tail
+		if strings.Contains(schema, widened) {
+			tail = widened
+		}
 	}
 	type replacement struct {
 		old string
@@ -2254,6 +2515,10 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 		repairs = append(repairs, replacement{"'fake'))", "'memcode', 'fake'))"})
 	}
 	for _, r := range repairs {
+		if strings.HasPrefix(r.old, "CHECK (harness IN (") {
+			r.old = strings.Replace(r.old, harnessTail, tail, 1)
+			r.new = strings.Replace(r.new, harnessTail, tail, 1)
+		}
 		if _, err := db.Exec(
 			`UPDATE sqlite_master
 SET sql = replace(sql, ?, ?)

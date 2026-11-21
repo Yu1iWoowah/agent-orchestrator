@@ -42,11 +42,11 @@ RUN apt-get update && \
         build-essential debhelper docbook-to-man fakeroot && \
     rm -rf /var/lib/apt/lists/*
 ADD --checksum=sha256:b5ad165baca0f2f2ac2a02b6b4b66d68ee890f582df398da9f86399679ca9c29 \
-    https://deb.debian.org/debian/pool/main/e/expat/expat_2.9.0-1.dsc ./
+    https://snapshot.debian.org/archive/debian/20261006T024027Z/pool/main/e/expat/expat_2.9.0-1.dsc ./
 ADD --checksum=sha256:6e8ce7b52ebbaa423c59becc7cf1e6875c42e49228c062ac8123c10e700cec27 \
-    https://deb.debian.org/debian/pool/main/e/expat/expat_2.9.0.orig.tar.gz ./
+    https://snapshot.debian.org/archive/debian/20261006T024027Z/pool/main/e/expat/expat_2.9.0.orig.tar.gz ./
 ADD --checksum=sha256:d23e632b05f10e269ee5426ff1ea962b4aec17fcd179c4dec14390a6793da764 \
-    https://deb.debian.org/debian/pool/main/e/expat/expat_2.9.0-1.debian.tar.xz ./
+    https://snapshot.debian.org/archive/debian/20261006T024027Z/pool/main/e/expat/expat_2.9.0-1.debian.tar.xz ./
 COPY test/expat-buffer-bounds.c /build/
 RUN dpkg-source -x expat_2.9.0-1.dsc source && \
     cd source && \
@@ -75,10 +75,10 @@ ADD --checksum=sha256:10973f4b4199eafa1d5735ef661ddb2ec2f97319ee9fd1824d4aabe08c
     https://deb.debian.org/debian/pool/main/b/brotli/brotli_1.1.0.orig.tar.gz ./
 ADD --checksum=sha256:3d913a3740bcad9a294007575a6beb1846beadbd62b44fb2bf9fdaeddea3236f \
     https://deb.debian.org/debian/pool/main/b/brotli/brotli_1.1.0-2.debian.tar.xz ./
-ADD --checksum=sha256:d6f962509000223def7062958229bd08457e5e032e7ed0d1d94fb790b054b1fc \
-    https://github.com/google/brotli/commit/0ed4268a4401abcb4472096340477cf4af7d1a2b.patch?full_index=1 \
-    ./0ed4268a44-detect-invalid-stream-earlier.patch
-RUN dpkg-source -x brotli_1.1.0-2.dsc source && \
+# Use the checked-in patch from the upstream Git commit as build input.
+COPY patches/0ed4268a44-detect-invalid-stream-earlier.patch ./
+RUN echo '418ab26eee529b6f809e478b28e1abac009fa085d0b96eb03e61c8032fe4e4d2  0ed4268a44-detect-invalid-stream-earlier.patch' | sha256sum -c - && \
+    dpkg-source -x brotli_1.1.0-2.dsc source && \
     cd source && \
     mv /build/0ed4268a44-detect-invalid-stream-earlier.patch debian/patches/ && \
     echo 0ed4268a44-detect-invalid-stream-earlier.patch >> debian/patches/series && \

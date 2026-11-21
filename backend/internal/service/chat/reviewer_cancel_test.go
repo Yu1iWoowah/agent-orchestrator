@@ -2,6 +2,7 @@ package chat_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -109,5 +110,64 @@ func TestSidebarReviewCancelKeepsChatUsableAndWorkerIsolated(t *testing.T) {
 	}
 	if !closed.Load() || svc.HasLiveControllerForOwner(owner) || !svc.HasLiveChatController(testSession) {
 		t.Fatal("Archive teardown must close only the reviewer")
+	}
+}
+
+type preservingReviewStopConversation struct {
+	*fakeConversation
+	terminated bool
+}
+
+func (*preservingReviewStopConversation) PreservesProviderOnClose() bool { return true }
+
+func (c *preservingReviewStopConversation) Terminate() error {
+	c.terminated = true
+	return c.Close()
+}
+
+func TestStopReviewGenerationRequiresProviderTermination(t *testing.T) {
+	for _, detach := range []bool{false, true} {
+		t.Run(fmt.Sprintf("detached=%t", detach), func(t *testing.T) {
+			ctx := t.Context()
+			st := openStore(t)
+			now := time.Now().UTC()
+			owner := domain.ReviewConversationOwner("review-native-stop")
+			if err := st.UpsertReview(ctx, domain.Review{ID: owner.ID, SessionID: testSession, ProjectID: testProject,
+				Harness: domain.ReviewerCodex, InterfaceMode: domain.ReviewerInterfaceChat, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			provider := &preservingReviewStopConversation{fakeConversation: newFakeConversation()}
+			var ids atomic.Uint64
+			svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Reader: fullSnapshotReader(st), Log: slog.New(slog.DiscardHandler),
+				NewID: func() string { return fmt.Sprintf("review-native-stop-%d", ids.Add(1)) },
+				Drivers: fakeRegistry{driver: fakeDriver{start: func(ports.ChatStartConfig) (ports.ChatConversation, error) {
+					return provider, nil
+				}}}})
+			controller, err := svc.Start(ctx, chatsvc.StartConfig{Owner: owner, SessionID: testSession, ProjectID: testProject,
+				Harness: domain.HarnessCodex, WorkspacePath: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = svc.StopForOwner(context.Background(), owner) })
+			row, ok, err := st.GetReviewByID(ctx, owner.ID)
+			if err != nil || !ok || row.ControllerGeneration == "" {
+				t.Fatalf("missing exact controller generation: %+v (%v)", row, err)
+			}
+			if detach {
+				if err := controller.Close(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = svc.StopReviewGeneration(ctx, owner.ID, row.ControllerGeneration)
+			if detach {
+				// The closing controller can be removed before the exact-generation lookup.
+				unconfirmed := errors.Is(err, ports.ErrChatRecoveryInconclusive) || errors.Is(err, chatsvc.ErrNoController)
+				if !unconfirmed || provider.terminated {
+					t.Fatalf("detach counted as native termination: err=%v terminated=%v", err, provider.terminated)
+				}
+			} else if err != nil || !provider.terminated {
+				t.Fatalf("native reviewer termination not confirmed: err=%v terminated=%v", err, provider.terminated)
+			}
+		})
 	}
 }

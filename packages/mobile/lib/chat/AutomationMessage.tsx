@@ -319,7 +319,7 @@ function ArtifactLine({ path, update, hostId }: { path: string; update: WorkerUp
 		<Pressable
 			accessibilityRole="link"
 			accessibilityLabel={`Open ${name}`}
-			onPress={() => { haptics.tap(); router.push({ pathname: "/artifact/[sessionId]", params: { sessionId, entry, hostId: hostId ?? config?.hostId } }); }}
+			onPress={() => { haptics.tap(); router.push({ pathname: "/artifact/[sessionId]", params: { sessionId, path: entry, hostId: hostId ?? config?.hostId } }); }}
 			style={({ pressed }) => [styles.artifact, pressed && styles.pressed]}
 		>
 			{content}
@@ -391,7 +391,7 @@ function PullRequestEvent({ automation, createdAt }: { automation: PullRequestAu
 			break;
 		}
 		case "changesRequested":
-			heading = <><Text style={styles.strong}>{automation.author ? `@${automation.author}` : "AO reviewer"}</Text> requested changes on {prLink}</>;
+			heading = <><Text style={styles.strong}>{automation.author ? `@${automation.author}` : "Built-in reviewer"}</Text> requested changes on {prLink}</>;
 			detail = automation.body ? <Folded><ChatMarkdown text={safeMarkdown(automation.body)} /></Folded> : null;
 			break;
 		case "mergeConflict":
@@ -490,7 +490,7 @@ function FileChip({ path, line, end }: { path: string; line?: number; end?: numb
 			accessibilityRole={files ? "button" : undefined}
 			accessibilityLabel={`Open ${path}`}
 			disabled={!files}
-			onPress={() => { haptics.tap(); files?.openFile(path); }}
+			onPress={() => { haptics.tap(); files?.openFile(path, undefined, line); }}
 			style={({ pressed }) => [styles.chip, pressed && styles.pressed]}
 		>
 			<Feather name="file-text" size={12} color={t.textTertiary} />

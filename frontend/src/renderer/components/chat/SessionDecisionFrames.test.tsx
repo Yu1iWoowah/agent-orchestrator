@@ -25,7 +25,7 @@ beforeEach(() => {
 	get.mockImplementation((_host, path, request) => {
 		const session = request.params.path.sessionId;
 		let question = questions.get(session);
-		if (!question) { question = sessionQuestionFixture({ originSessionId: session }); questions.set(session, question); }
+		if (!question) { question = sessionQuestionFixture({ originSessionId: session, projectId: "" }); questions.set(session, question); }
 		const data = path.endsWith("/plan") ? { state: "absent", activeBranchId: "root" } : path.endsWith("/questions/{questionId}") ? question : path.endsWith("/questions") ? {
 			items: request.params.query.state === "history" ? (question.state === "open" ? [] : [question]) : question.state === "open" ? [question] : [],
 			open: question.state === "open" ? 1 : 0, unread: question.state === "open" && !question.read ? 1 : 0, history: question.state === "open" ? 0 : 1, hasMoreBefore: false, nextBeforeSequence: 0,
@@ -46,7 +46,7 @@ function Subject({ session = "session" }: { session?: string }) {
 	return <QueryClientProvider client={client}><QuestionAnswerRuntime /><TooltipProvider><SessionConversationFrames sessionId={session} activeBranchId="root" sourceAgent="claude-code" surfaceRef={{ current: surface }} composerRef={{ current: null }} onLocateAttention={locate} /></TooltipProvider></QueryClientProvider>;
 }
 
-it("counts a two-question envelope as one item and opens every row as a decision", async () => {
+it("counts a standalone two-question envelope as one item and opens every row as a decision", async () => {
 	render(<Subject />);
 	const row = await screen.findByRole("button", { name: /Open decision: Choose a deployment/ });
 	const frame = screen.getByRole("region", { name: "Awaiting you" });

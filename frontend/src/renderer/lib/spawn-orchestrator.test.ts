@@ -8,13 +8,14 @@ import {
 } from "./spawn-orchestrator";
 import { apiClient } from "./api-client";
 import { captureRendererEvent } from "./telemetry";
+import { RESUME_WATCH_INTERVAL_MS } from "./resume-watch";
 
 const { notificationShowMock } = vi.hoisted(() => ({
 	notificationShowMock: vi.fn(),
 }));
 
 vi.mock("./api-client", () => ({
-	apiClient: { POST: vi.fn() },
+	apiClient: { POST: vi.fn(), GET: vi.fn() },
 	apiErrorCode: (error: unknown) =>
 		typeof error === "object" && error !== null && "code" in error
 			? String((error as { code: unknown }).code)
@@ -97,7 +98,7 @@ describe("spawnOrchestrator", () => {
 		});
 		await spawnOrchestrator("proj", "sidebar");
 		expect(captureMock).not.toHaveBeenCalledWith("ao.renderer.orchestrator_spawn_requested", expect.anything());
-		expect(captureMock).toHaveBeenCalledWith("ao.renderer.orchestrator_spawn_succeeded", {
+		expect(captureMock).toHaveBeenCalledWith("ao.orchestrators.spawned", {
 			project_id: "proj",
 			source: "sidebar",
 		});
@@ -120,11 +121,13 @@ describe("spawnOrchestrator", () => {
 			response: { status: 500 },
 		});
 		await expect(spawnOrchestrator("proj", "topbar")).rejects.toThrow("boom");
-		expect(captureMock).toHaveBeenCalledWith("ao.renderer.orchestrator_spawn_failed", {
+		expect(captureMock).toHaveBeenCalledWith("ao.orchestrators.spawn_failed", {
 			project_id: "proj",
 			source: "topbar",
+			error_code: undefined,
+			http_status: 500,
 		});
-		expect(captureMock).not.toHaveBeenCalledWith("ao.renderer.orchestrator_spawn_succeeded", expect.anything());
+		expect(captureMock).not.toHaveBeenCalledWith("ao.orchestrators.spawned", expect.anything());
 	});
 
 	it("surfaces daemon spawn error messages and codes", async () => {
@@ -211,19 +214,27 @@ describe("resumeOrchestrator", () => {
 		});
 	});
 
-	it("warns when resume falls back to the saved prompt", async () => {
-		postMock.mockResolvedValue({
-			data: { resumeMode: "saved_prompt" },
-			error: undefined,
+	it("warns once the background resume falls back to the saved prompt", async () => {
+		vi.useFakeTimers();
+		postMock.mockResolvedValue({ data: { ok: true, sessionId: "proj-1-orch" }, error: undefined, response: { status: 202 } } as never);
+		vi.mocked(apiClient.GET).mockResolvedValue({
+			data: { sessionId: "proj-1-orch", state: "succeeded", resumeMode: "saved_prompt" },
 			response: { status: 200 },
 		} as never);
 
-		await resumeOrchestrator("proj-1-orch");
+		try {
+			await resumeOrchestrator("proj-1-orch");
+			expect(notificationShowMock).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(RESUME_WATCH_INTERVAL_MS);
+		} finally {
+			vi.useRealTimers();
+		}
 
+		expect(apiClient.GET).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", expect.objectContaining({ params: { path: { sessionId: "proj-1-orch" } } }));
 		expect(notificationShowMock).toHaveBeenCalledWith({
-			id: expect.stringMatching(/^resume-agent-fallback:proj-1-orch:/),
+			id: expect.stringMatching(/^resume-agent-fallback:local:proj-1-orch:/),
 			title: "Started from saved prompt",
-			body: "AO could not resume the native agent session, so it started a new conversation from the saved prompt.",
+			body: "The native agent session could not be resumed, so a new conversation was started from the saved prompt.",
 		});
 	});
 

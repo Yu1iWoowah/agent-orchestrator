@@ -1,29 +1,30 @@
-import { BrowserIcon } from "./icons";
+import { keptArtifactsQueryKey, useKeptArtifacts } from "../hooks/useKeptArtifacts";
+import { FilterChip, ToolbarSearch } from "./PageToolbar";
+import { hidesShellTopbar } from "../lib/platform";
 import {
-	ChevronDown,
-	Clock,
-	Cloud,
+	ChevronDown, Filter, SelectMultiple,
 	File,
-	FileText,
-	Folder,
 	LayoutGrid,
 	List,
 	Loader2,
 	Pin,
 	Plus,
-	Search,
 	RefreshCw,
-} from "lucide-react";
+} from "@/components/app-icons";
 import { ScrollArea } from "radix-ui";
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { artifactFileIcon } from "./artifact-file-icon";
+import { useProjectAvatars } from "../hooks/useProjectAvatars";
+import { ProjectIcon } from "./ProjectIcon";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useCloudCp } from "../hooks/useCloudCp";
+import { useCloudMeUserId } from "../hooks/useCloudMeUserId";
 import { useTranslation } from "react-i18next";
 import { isCatalogIncomplete, isUninitializedSharedSource } from "../lib/artifact-catalog";
 import { useShallow } from "zustand/react/shallow";
 import { DocumentReadError } from "../lib/document-read";
 import { useCloudOffering } from "../hooks/useCloudOffering";
 import { useCreateArtifactSession } from "../hooks/useCreateArtifactSession";
-import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
-import type { ArtifactRow } from "../lib/artifacts";
 import {
 	catalogArtifactGroup,
 	filterGalleryGroups,
@@ -31,6 +32,7 @@ import {
 	galleryLegacyKey,
 	isCatalogArtifact,
 	legacyGalleryGroups,
+	withKeptGalleryGroups,
 	newestGalleryFirst,
 	migratableGalleryRows,
 	type GalleryRow,
@@ -44,9 +46,28 @@ import {
 } from "../lib/document-reading-context";
 import { DocumentSheet } from "./chat/DocumentSheet";
 import { CatalogArtifactCard } from "./CatalogArtifactCard";
+import { deleteSessionArtifactFile } from "../hooks/useSessionWorkspaceFiles";
+import { cloudSessionsQueryKey, useRemoteWorkspaces, useWorkspaceQuery, workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
+import {
+	ARTIFACT_SHARINGS,
+	ARTIFACT_TYPES,
+	artifactChangeError,
+	artifactContext,
+	artifactLocation,
+	withKeptArtifacts,
+	canChangeSessionArtifacts,
+	groupArtifactsByProject,
+	withShareAccess, artifactType, artifactSharing,
+	hostArtifactLocation,
+	type ArtifactLocation,
+	type ArtifactRow,
+	type ArtifactSharing,
+	type ArtifactType,
+} from "../lib/artifacts";
 import { formatTimeCompact } from "../lib/format-time";
+import { LOCAL_HOST } from "../lib/hosts";
+import { useShellMaybe } from "../lib/shell-context";
 import { useNavigateToSession } from "../lib/navigate-to-session";
-import { hidesShellTopbar } from "../lib/platform";
 import { cn } from "../lib/utils";
 import {
 	defaultGalleryPreferences,
@@ -56,25 +77,44 @@ import {
 } from "../stores/artifacts-view-store";
 import { useUiStore } from "../stores/ui-store";
 import { CLOUD_PROJECT_KIND, STANDALONE_WORKSPACE_ID, type WorkspaceSummary } from "../types/workspace";
-import { ArtifactActionsMenu } from "./ArtifactActionsMenu";
-import { ArtifactGalleryCard } from "./ArtifactGalleryCard";
+import { DeferredArtifactActionsMenu } from "./ArtifactActionsMenu";
+import { useArtifactShareFile, useHostShareLinks, useReconciledShareLinks } from "./ShareArtifactPopover";
+import { ArtifactGalleryCard, type ArtifactCardSelection } from "./ArtifactGalleryCard";
+import { ArtifactShareMark } from "./ArtifactShareMark";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { Checkbox } from "./ui/checkbox";
 import { ArtifactPreviewModal } from "./ArtifactPreviewModal";
-import { TopbarButton, topbarProjectLabelClass } from "./TopbarButton";
 import { Button } from "./ui/button";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
 	DropdownMenuItem,
-	DropdownMenuLabel,
 	DropdownMenuRadioGroup,
 	DropdownMenuRadioItem,
+	DropdownMenuLabel,
+	DropdownMenuCheckboxItem,
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
-import { Input } from "./ui/input";
+import { Pressable } from "./ui/pressable";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
-const ARTIFACT_GRID_CLASS = "grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-4";
+// Three previews a row; narrow panels drop to two, then one.
+const ARTIFACT_GRID_CLASS = "grid grid-cols-1 gap-4 @lg:grid-cols-2 @2xl:grid-cols-3";
+/** How many selected names the bulk delete confirmation lists before "+N more". */
+const MAX_CONFIRM_NAMES = 5;
+
+/**
+ * A project's icon as the sidebar draws it: its repository owner's avatar or
+ * colour-coded letter tile, or a folder with avatars off.
+ */
+function ArtifactProjectIcon({ workspace, avatarUrl }: { workspace: Pick<WorkspaceSummary, "id" | "name" | "path">; avatarUrl?: string }) {
+	return (
+		<span aria-hidden="true" className="inline-flex size-icon-md shrink-0 items-center justify-center">
+			<ProjectIcon avatarUrl={avatarUrl} expanded={false} name={workspace.name} seed={workspace.path || workspace.id} />
+		</span>
+	);
+}
 
 /**
  * Every artifact agents have written, grouped by project: on this machine, and
@@ -97,6 +137,16 @@ function ArtifactsGallery() {
 	const cloudArtifacts = useCloudOffering().artifacts;
 	const workspaceQuery = useWorkspaceQuery({ includeCloud: cloudArtifacts });
 	const workspaces = workspaceQuery.data;
+	// Every saved remote host, so an offline host's last list still shows.
+	const remoteHosts = useShellMaybe()?.remoteHosts;
+	const remoteHostIds = useMemo(() => remoteHosts?.map((host) => host.hostId), [remoteHosts]);
+	const remote = useRemoteWorkspaces({ cachedHostIds: remoteHostIds });
+	const remoteWorkspaces = remote.data;
+	const hostLabels = useMemo(() => new Map((remoteHosts ?? []).map((host) => [host.hostId, host.label])), [remoteHosts]);
+	const shareAccess = useReconciledShareLinks();
+	const hostShareLinks = useHostShareLinks(shareAccess);
+	const kept = useKeptArtifacts().data;
+	const noProjectName = t("artifacts.noProject");
 	const catalog = useArtifactCatalogs(workspaces);
 	const { query, projectId, source, archive, visibleCount } = useArtifactsViewStore(
 		useShallow((state) => {
@@ -129,9 +179,10 @@ function ArtifactsGallery() {
 		row: ArtifactRow & { connection: GalleryRow["connection"] };
 		projectName: string;
 	} | null>(null);
+    const publishedRows = useMemo(() => withShareAccess(groupArtifactsByProject(workspaces ?? [], t("artifacts.source.orchestrator")), shareAccess).flatMap((group) => group.rows), [workspaces, shareAccess, t]);
 	const groups = useMemo(
 		() =>
-			[
+			withKeptGalleryGroups([
 				...catalog.projects.map((project) =>
 					catalogArtifactGroup(
 						project,
@@ -139,8 +190,14 @@ function ArtifactsGallery() {
 						catalog.data?.find((entry) => entry.projectId === project.id)?.items ?? [],
 					),
 				),
-				...legacyGalleryGroups(workspaces ?? [], catalog.connection),
-			].sort((a, b) =>
+				...legacyGalleryGroups([...(workspaces ?? []), ...remoteWorkspaces], catalog.connection, hostShareLinks),
+			], catalog.connection, withKeptArtifacts([], kept, workspaces ?? [], noProjectName)).map((group) => ({ ...group, rows: group.rows.flatMap((row) => {
+                if (!isCatalogArtifact(row) || row.connection.kind !== "local" || row.target.kind !== "artifact") return [row];
+                const sessionId = row.target.sessionId;
+                const published = publishedRows.find((entry) => entry.sessionId === sessionId && (entry.path === row.path || (entry.bundle && row.path.startsWith(entry.bundle.path + "/"))));
+                if (published?.bundle && published.path !== row.path) return [];
+                return [{ ...row, name: published?.name ?? row.name, sessionTitle: published?.sessionTitle ?? row.sessionTitle }];
+            }) })).sort((a, b) =>
 				a.rows[0] && b.rows[0]
 					? newestGalleryFirst(a.rows[0], b.rows[0])
 					: a.rows.length
@@ -149,7 +206,7 @@ function ArtifactsGallery() {
 							? 1
 							: a.id.localeCompare(b.id),
 			),
-		[catalog.projects, catalog.connection, catalog.data, workspaces],
+		[catalog.projects, catalog.connection, catalog.data, workspaces, remoteWorkspaces, hostShareLinks, publishedRows, kept, noProjectName],
 	);
 	const allRows = useMemo(() => groups.flatMap((group) => group.rows), [groups]);
 	const complete = catalog.data !== undefined && catalog.data.every((entry) => !entry.loading);
@@ -162,19 +219,43 @@ function ArtifactsGallery() {
 		() => new Map(migrationRows.map((row) => [galleryLegacyKey(row), galleryArtifactKey(row)])),
 		[migrationRows],
 	);
+    const artifactFor = useCallback((row: GalleryRow): ArtifactRow | undefined => {
+        if (!isCatalogArtifact(row)) return { ...row, shareAccess: row.shareUrl ? shareAccess.get(row.shareUrl) ?? row.shareAccess : row.shareAccess };
+        const target = row.target;
+        if (target.kind !== "artifact") return undefined;
+        const known = row.connection.kind === "local" ? publishedRows.find((entry) => entry.sessionId === target.sessionId && entry.path === row.path) : undefined;
+        if (known) return { ...known, updatedAt: row.updatedAt ?? known.updatedAt };
+        return { name: row.name, path: row.path, kind: /\.html?$/i.test(row.path) ? "html" : /\.(md|markdown)$/i.test(row.path) ? "markdown" : "file", updatedAt: row.updatedAt ?? "", sessionId: target.sessionId, sessionTitle: row.sessionTitle ?? "", projectId: row.target.projectId };
+    }, [publishedRows, shareAccess]);
+    const [projectIds, setProjectIds] = useState<readonly string[]>(() => projectId ? [projectId] : []);
+	useEffect(() => {
+		const saved = useArtifactsViewStore.getState().galleryPreferences[catalog.contextKey]?.projectId;
+		setProjectIds(saved ? [saved] : []);
+	}, [catalog.contextKey]);
+    const [location, setLocation] = useState<ArtifactLocation | undefined>();
+    const [types, setTypes] = useState<readonly ArtifactType[]>([]);
+    const [sharings, setSharings] = useState<readonly ArtifactSharing[]>([]);
 	const scratchpadName = t("standalone.workspaceName");
 	const visibleGroups = useMemo(
-		() => filterGalleryGroups(groups, { query, projectId, source, archive }, scratchpadName),
-		[groups, query, projectId, source, archive, scratchpadName],
+		() => filterGalleryGroups(groups, { query, projectId: "", source, archive }, scratchpadName)
+            .filter((group) => projectIds.length === 0 || projectIds.includes(group.id))
+            .map((group) => ({ ...group, rows: group.rows.filter((row) => {
+                const artifact = artifactFor(row);
+                const sharing = artifact ? artifactSharing(artifact) : "private";
+                return (!location || artifactLocation({ hostId: group.hostId }, group) === location)
+                    && (types.length === 0 || types.includes(artifactType(row)))
+                    && (sharings.length === 0 || Boolean(sharing && sharings.includes(sharing)));
+            }) })).filter((group) => group.rows.length > 0),
+		[groups, query, source, archive, scratchpadName, projectIds, location, types, sharings, artifactFor],
 	);
 	const cards = useMemo(
 		() =>
 			visibleGroups
 				.flatMap((group) =>
-					group.rows.map((row) => ({ row, projectName: group.isScratchpad ? scratchpadName : group.name })),
+					group.rows.map((row) => ({ row, projectName: withHostLabel(group.isScratchpad ? scratchpadName : group.name, group.hostId && hostLabels.get(group.hostId)) })),
 				)
 				.sort((a, b) => newestGalleryFirst(a.row, b.row)),
-		[visibleGroups, scratchpadName],
+		[visibleGroups, scratchpadName, hostLabels],
 	);
 	const pinnedCards = useMemo(() => {
 		const byId = new Map(cards.map((card) => [galleryArtifactKey(card.row), card]));
@@ -183,35 +264,177 @@ function ArtifactsGallery() {
 			return card ? [card] : [];
 		});
 	}, [cards, pins]);
-	const shown = new Set(cards.slice(0, visibleCount).map(({ row }) => galleryArtifactKey(row)));
-	const showProjectSections = visibleGroups.length > 1;
+	const pinnedKeys = new Set(pinnedCards.map(({ row }) => galleryArtifactKey(row)));
+	const orderedCards = [...pinnedCards, ...cards.filter(({ row }) => !pinnedKeys.has(galleryArtifactKey(row)))];
+    const livePreviews = new Set(orderedCards.filter(({ row }) => {
+        const artifact = artifactFor(row);
+        return artifact && ((artifact.kind === "html" && (artifact.cloud || (artifact.rawUrl && (artifact.inlineUrl || artifact.hostId)))) || (/\.pdf$/i.test(row.path) && (artifact.cloud || artifact.rawUrl)));
+    }).slice(0, 4).map(({ row }) => galleryArtifactKey(row)));
+    const previewRows = preview?.row.hostId ? allRows.filter((row): row is ArtifactRow & { connection: GalleryRow["connection"] } => !isCatalogArtifact(row)) : publishedRows;
+    const previewRow = preview ? { ...preview, row: { ...(previewRows.find((row) => row.sessionId === preview.row.sessionId && row.path === preview.row.path && row.hostId === preview.row.hostId && row.cloud?.orgId === preview.row.cloud?.orgId) ?? preview.row), connection: preview.row.connection } } : null;
 	const openPreview = (row: GalleryRow, projectName: string) => {
 		if (isCatalogArtifact(row)) {
 			if (reader) openReadingDocument(reader, row.target);
 		} else setPreview({ row, projectName });
 	};
+	const locationOptions: { value: ArtifactLocation | undefined; label: string }[] = [
+		{ value: undefined, label: t("artifacts.locationAll") },
+		{ value: "local", label: t("artifacts.locationLocal") },
+		// One per saved remote host, under the name the host is listed by.
+		...(remoteHosts ?? []).map((host) => ({ value: hostArtifactLocation(host.hostId), label: host.label })),
+		// Cloud artifacts show only where the control plane keeps them.
+		...(cloudArtifacts ? [{ value: "cloud" as const, label: t("artifacts.locationCloud") }] : []),
+	];
+	// Machines whose list did not load, among those shown: said so, with a retry, instead of
+	// leaving their artifacts silently missing.
+	const failedHosts = (remoteHosts ?? []).filter((host) => remote.failedHostIds.includes(host.hostId)
+		&& (location === undefined || location === hostArtifactLocation(host.hostId)));
+	const queryClient = useQueryClient();
+	const { client: cloudClient } = useCloudCp(cloudArtifacts);
+	const cloudUserId = useCloudMeUserId(cloudArtifacts);
+	// Another member's cloud session files are view only, so they cannot be selected.
+	// A bundle row stands for one of its files, so deleting it would leave the
+	// rest of the bundle behind; it has no Delete in its menu either.
+    const deleteBlockedReason = (row: GalleryRow) => {
+        const artifact = artifactFor(row);
+        if (!artifact || (isCatalogArtifact(row) && row.connection.kind !== "local")) return t("artifacts.viewOnly");
+        if (artifact.bundle) return t("artifacts.bundleNotDeletable");
+        return canChangeSessionArtifacts(artifact.cloud, cloudUserId) ? undefined : t("artifacts.viewOnly");
+    };
+	const [selecting, setSelecting] = useState(false);
+	const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
+	const [confirmingBulkDelete, setConfirmingBulkDelete] = useState(false);
+	// A selected file deleted elsewhere leaves the selection as the list
+	// refreshes, so a later file at the same path starts unselected. The
+	// check runs against every artifact, not the filtered cards: the
+	// selection outlives the filters, so the confirmation names every file.
+	useEffect(() => {
+		const present = new Set(groups.flatMap((group) => group.rows.map(galleryArtifactKey)));
+		setSelectedIds((current) => {
+			const kept = [...current].filter((id) => present.has(id));
+			return kept.length === current.size ? current : new Set(kept);
+		});
+	}, [groups]);
+	const selectedRows = useMemo(
+		() => groups.flatMap((group) => group.rows).filter((row) => selectedIds.has(galleryArtifactKey(row))),
+		[groups, selectedIds],
+	);
+	const selectableVisibleIds = cards.filter(({ row }) => !deleteBlockedReason(row)).map(({ row }) => galleryArtifactKey(row));
+	const allVisibleSelected = selectableVisibleIds.length > 0 && selectableVisibleIds.every((id) => selectedIds.has(id));
+	const toggleSelected = (id: string) => setSelectedIds((current) => {
+		const next = new Set(current);
+		if (!next.delete(id)) next.add(id);
+		return next;
+	});
+	const toggleAllVisible = () => setSelectedIds((current) => {
+		const next = new Set(current);
+		for (const id of selectableVisibleIds) {
+			if (allVisibleSelected) next.delete(id);
+			else next.add(id);
+		}
+		return next;
+	});
+	const stopSelecting = () => {
+		setSelecting(false);
+		setSelectedIds(new Set());
+	};
+	// Each file is deleted on its own; the ones that fail stay selected so
+	// the person can retry them.
+	const bulkDelete = useMutation({
+		mutationFn: async (rows: readonly GalleryRow[]) => {
+            const results = await Promise.allSettled(rows.map((row) => {
+                const blocked = deleteBlockedReason(row);
+                const artifact = artifactFor(row);
+                if (blocked || !artifact) return Promise.reject(new Error(blocked ?? t("artifacts.viewOnly")));
+                return artifact.cloud
+                    ? cloudClient.deleteSessionArtifact(artifact.cloud.orgId, artifact.sessionId, artifact.path).catch((error: unknown) => { throw artifactChangeError(error, t("artifacts.viewOnly")); })
+                    : deleteSessionArtifactFile({ path: artifact.path, sessionId: artifact.sessionId, hostId: artifact.hostId });
+            }));
+			const deleted = rows.filter((_, index) => results[index]?.status === "fulfilled").map(galleryArtifactKey);
+			const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+			const { unpinArtifact } = useArtifactsViewStore.getState();
+			for (const id of deleted) unpinArtifact(id);
+			setSelectedIds((current) => new Set([...current].filter((id) => !deleted.includes(id))));
+			const hostIds = new Set(rows.flatMap((row) => !isCatalogArtifact(row) && row.hostId && !row.cloud ? [row.hostId] : []));
+			await Promise.all([
+				queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost() }),
+				...[...hostIds].map((hostId) => queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) })),
+				...(rows.some((row) => !isCatalogArtifact(row) && row.kept) ? [queryClient.invalidateQueries({ queryKey: keptArtifactsQueryKey })] : []),
+                queryClient.invalidateQueries({ queryKey: ["artifact-catalogs", catalog.connection.kind, catalog.connection.identity] }),
+				...(rows.some((row) => !isCatalogArtifact(row) && row.cloud) ? [queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey })] : []),
+			]);
+			if (failures.length > 0) {
+				const reason = failures[0];
+				throw new Error(t("artifacts.bulkDeleteFailed", {
+					failed: failures.length,
+					total: rows.length,
+					message: reason instanceof Error ? reason.message : String(reason),
+				}));
+			}
+		},
+		onSuccess: () => {
+			setConfirmingBulkDelete(false);
+			stopSelecting();
+		},
+	});
+	const confirmBulkDelete = () => {
+		bulkDelete.reset();
+		setConfirmingBulkDelete(true);
+	};
+	useEffect(() => {
+		if (!selecting || confirmingBulkDelete) return;
+		const onKeyDown = (event: KeyboardEvent) => {
+			// Escape inside search or an open menu closes that first.
+			if (event.key !== "Escape" || event.defaultPrevented) return;
+			setSelecting(false);
+			setSelectedIds(new Set());
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, [selecting, confirmingBulkDelete]);
+	const selectionFor = (row: GalleryRow, projectName: string): ArtifactCardSelection | undefined => {
+		if (!selecting) return undefined;
+		const id = galleryArtifactKey(row);
+		return {
+			selected: selectedIds.has(id),
+			disabledReason: deleteBlockedReason(row),
+			label: t("artifacts.selectArtifact", { name: row.name }),
+			description: `${projectName} · ${row.sessionTitle} · ${row.path}`,
+			onToggle: () => toggleSelected(id),
+		};
+	};
+
 	const card = (row: GalleryRow, projectName: string) => {
 		const key = galleryArtifactKey(row),
 			legacy = galleryLegacyKey(row);
 		const alias = legacy && legacyPins.get(legacy) === key ? legacy : undefined;
-		return isCatalogArtifact(row) ? (
+		const target = isCatalogArtifact(row) ? row.target : undefined;
+        const published = row.connection.kind === "local" && target?.kind === "artifact"
+            ? publishedRows.find((entry) => entry.sessionId === target.sessionId && entry.path === row.path)
+            : undefined;
+        const rendered = published ?? (row as ArtifactRow);
+        return isCatalogArtifact(row) && !published ? (
 			<CatalogArtifactCard
 				key={key}
 				row={row}
 				projectName={projectName}
 				view={view}
 				legacyPin={alias}
+                selection={selectionFor(row, projectName)}
 				onOpen={() => openPreview(row, projectName)}
 			/>
 		) : (
 			<ArtifactCard
 				key={key}
-				row={row}
+				row={{ ...rendered, connection: row.connection, shareAccess: rendered.shareUrl ? shareAccess.get(rendered.shareUrl) ?? rendered.shareAccess : undefined }}
+                previewLive={livePreviews.has(key)}
+                pinId={key}
 				projectName={projectName}
 				view={view}
-				showProjectName={!showProjectSections}
+				showProjectName
 				legacyPin={alias}
-				onPreview={openPreview}
+                selection={selectionFor(row, projectName)}
+				onPreview={published ? openPreview : () => openPreview(row, projectName)}
 			/>
 		);
 	};
@@ -221,7 +444,12 @@ function ArtifactsGallery() {
 		setPreferences(catalog.contextKey, { ...change, scrollTop: 0, visibleCount: 200 });
 		if (viewport.current) viewport.current.scrollTop = 0;
 	};
-	const clearFilters = () => changeFilters({ query: "", projectId: "", source: "all", archive: "all" });
+	const selectProjects = (ids: readonly string[]) => {
+		setProjectIds(ids);
+		// The fork remembers a single project; U's multi-selection is view-local.
+		changeFilters({ projectId: ids.length === 1 ? ids[0] : "" });
+	};
+	const clearFilters = () => { setProjectIds([]); setLocation(undefined); setTypes([]); setSharings([]); changeFilters({ query: "", projectId: "", source: "all", archive: "all" }); };
 	useLayoutEffect(() => {
 		if (restored.current === catalog.contextKey) return;
 		const top = useArtifactsViewStore.getState().galleryPreferences[catalog.contextKey]?.scrollTop ?? 0;
@@ -263,50 +491,48 @@ function ArtifactsGallery() {
 	return (
 		<div ref={surface} className="relative flex min-h-0 flex-1 flex-col bg-background">
 			<header className="workspace-topbar-container center-panel-titlebar flex h-toolbar shrink-0 items-center justify-between gap-3 border-b border-border-strong pr-[calc((var(--size-toolbar)-var(--size-topbar-control))/2)]">
-				<h1 className={showPageTitle ? cn(topbarProjectLabelClass, "inline-flex items-center gap-1.5") : "sr-only"}>
+				<h1 className={showPageTitle ? "inline-flex items-center gap-1.5 text-subtitle font-semibold" : "sr-only"}>
 					{showPageTitle ? <File className="size-icon-md" aria-hidden="true" /> : null}
 					{t("artifacts.title")}
 				</h1>
 				<div className="workspace-topbar-actions flex min-w-0 flex-1 items-center justify-end gap-2">
-					<label className="relative block w-56 min-w-0 shrink">
-						<Search
-							aria-hidden="true"
-							className="pointer-events-none absolute start-2.5 top-1/2 size-icon-sm -translate-y-1/2 text-passive"
-						/>
-						<Input
-							aria-label={t("artifacts.search")}
-							className="inspector-field-input ps-8"
-							type="search"
-							value={query}
-							placeholder={t("artifacts.search")}
-							onChange={(event) => changeFilters({ query: event.target.value })}
-						/>
-					</label>
-					<DropdownMenu>
-						<DropdownMenuTrigger asChild>
-							<TopbarButton variant="secondary" aria-label={t("artifacts.projectFilter")} className="max-w-44">
-								<Folder aria-hidden="true" className="size-icon-sm" />
-								<span className="truncate">
-									{groups.find((group) => group.id === projectId)?.isScratchpad
-										? scratchpadName
-										: (groups.find((group) => group.id === projectId)?.name ?? t("artifacts.allProjects"))}
-								</span>
-								<ChevronDown className="size-icon-xs" />
-							</TopbarButton>
-						</DropdownMenuTrigger>
-						<DropdownMenuContent align="end">
-							<DropdownMenuRadioGroup value={projectId} onValueChange={(value) => changeFilters({ projectId: value })}>
-								<DropdownMenuRadioItem value="">{t("artifacts.allProjects")}</DropdownMenuRadioItem>
-								<DropdownMenuSeparator />
-								{groups.map((group) => (
-									<DropdownMenuRadioItem key={group.id} value={group.id}>
-										{group.isScratchpad ? scratchpadName : group.name}
-									</DropdownMenuRadioItem>
-								))}
-							</DropdownMenuRadioGroup>
-						</DropdownMenuContent>
-					</DropdownMenu>
-					<div role="group" aria-label={t("artifacts.view")} className="inline-flex shrink-0 items-center">
+													<DropdownMenu>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<DropdownMenuTrigger asChild>
+												<Button type="button" size="icon-sm" variant="quiet" aria-label={t("artifacts.filter")} data-active={(projectIds.length || types.length || sharings.length) ? "true" : undefined}>
+													<Filter aria-hidden="true" className="size-icon-sm" />
+												</Button>
+											</DropdownMenuTrigger>
+										</TooltipTrigger>
+										<TooltipContent side="bottom">{t("artifacts.filter")}</TooltipContent>
+									</Tooltip>
+									<DropdownMenuContent align="end" className="max-h-[min(36rem,80vh)] min-w-52 overflow-y-auto" data-browser-native-overlay="true">
+										<DropdownMenuLabel>{t("artifacts.filterProject")}</DropdownMenuLabel>
+										<FilterOption checked={projectIds.length === 0} onToggle={() => selectProjects([])}>{t("artifacts.allProjects")}</FilterOption>
+										{groups
+											.filter((group) => !location || artifactLocation({ hostId: group.hostId }, group) === location)
+											.map((group) => (
+												<FilterOption key={group.id} checked={projectIds.includes(group.id)} onToggle={() => selectProjects(toggled(projectIds, group.id))}>
+															<span className="truncate">{withHostLabel(group.isScratchpad ? scratchpadName : group.name, group.hostId && hostLabels.get(group.hostId))}</span>
+												</FilterOption>
+											))}
+										<DropdownMenuSeparator />
+										<DropdownMenuLabel>{t("artifacts.filterType")}</DropdownMenuLabel>
+										<FilterOption checked={types.length === 0} onToggle={() => setTypes([])}>{t("artifacts.allTypes")}</FilterOption>
+										{ARTIFACT_TYPES.map((value) => (
+											<FilterOption key={value} checked={types.includes(value)} onToggle={() => setTypes(toggled(types, value))}>{t(`artifacts.type.${value}`)}</FilterOption>
+										))}
+										<DropdownMenuSeparator />
+										<DropdownMenuLabel>{t("artifacts.filterSharing")}</DropdownMenuLabel>
+										{ARTIFACT_SHARINGS.map((value) => (
+											<FilterOption key={value} checked={sharings.includes(value)} onToggle={() => setSharings(toggled(sharings, value))}>{t(`artifacts.sharing.${value}`)}</FilterOption>
+										))}
+										<FilterOption checked={sharings.length === 0} onToggle={() => setSharings([])}>{t("artifacts.allSharing")}</FilterOption>
+									</DropdownMenuContent>
+								</DropdownMenu>
+<ToolbarSearch label={t("artifacts.search")} query={query} onQueryChange={(query) => changeFilters({ query })} />
+					{!selecting && <><div role="group" aria-label={t("artifacts.view")} className="inline-flex shrink-0 items-center">
 						{(
 							[
 								{ value: "gallery", label: t("artifacts.galleryView"), Icon: LayoutGrid },
@@ -315,15 +541,16 @@ function ArtifactsGallery() {
 						).map(({ value, label, Icon }) => (
 							<Tooltip key={value}>
 								<TooltipTrigger asChild>
-									<TopbarButton
-										variant="icon"
+									<Button
+										variant="quiet"
+										size="icon-sm"
 										aria-label={label}
 										aria-pressed={view === value}
 										onClick={() => setView(value)}
 										className={cn(view === value && "bg-interactive-active")}
 									>
 										<Icon className="size-icon-sm" />
-									</TopbarButton>
+									</Button>
 								</TooltipTrigger>
 								<TooltipContent>{label}</TooltipContent>
 							</Tooltip>
@@ -336,7 +563,7 @@ function ArtifactsGallery() {
 						label="new"
 						align="end"
 						localDisabledReason={createArtifact.agentReady ? undefined : t("artifacts.noAgent.description")}
-					/>
+					/></>}
 				</div>
 			</header>
 			<div data-conversation-frame-avoid="" className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2">
@@ -397,6 +624,23 @@ function ArtifactsGallery() {
 				) : null}
 				<DocumentSheet surfaceRef={surface} />
 			</div>
+            <div className="flex flex-wrap items-center gap-2 px-4 py-2">
+                {([
+                    [t("artifacts.filterProject"), projectIds.map((id) => { const group = groups.find((entry) => entry.id === id); return group?.isScratchpad ? scratchpadName : group?.name ?? id; }), () => selectProjects([])],
+                    [t("artifacts.filterType"), types.map((value) => t(`artifacts.type.${value}`)), () => setTypes([])],
+                    [t("artifacts.filterSharing"), sharings.map((value) => t(`artifacts.sharing.${value}`)), () => setSharings([])],
+                ] as const).map(([label, values, clear]) => values.length ? <FilterChip key={label} label={label} value={values.join(", ")} removeLabel={t("artifacts.removeFilter", { filter: `${label}: ${values.join(", ")}` })} onRemove={clear} /> : null)}
+                <div role="group" aria-label={t("artifacts.location")}>
+                    {locationOptions.map(({ value, label }) => <Button key={value ?? "all"} type="button" variant="ghost" size="sm" aria-pressed={location === value} onClick={() => setLocation(value)}>{label}</Button>)}
+                </div>
+                {selecting ? <div role="group" aria-label={t("artifacts.selection")} className="flex items-center gap-2">
+                    <span aria-live="polite">{t("artifacts.selectedCount", { count: selectedRows.length })}</span>
+                    <Button type="button" size="sm" variant="quiet" disabled={!selectableVisibleIds.length} onClick={toggleAllVisible}>{t(allVisibleSelected ? "artifacts.deselectAll" : "artifacts.selectAll")}</Button>
+                    <Button type="button" size="sm" variant="destructive" disabled={!selectedRows.length} onClick={confirmBulkDelete}>{t("artifacts.deleteSelected")}</Button>
+                    <Button type="button" size="sm" variant="quiet" onClick={stopSelecting}>{t("artifacts.cancelSelection")}</Button>
+                </div> : hasArtifacts ? <Button type="button" size="sm" variant="quiet" onClick={() => setSelecting(true)}><SelectMultiple aria-hidden="true" />{t("artifacts.select")}</Button> : null}
+            </div>
+
 			<ScrollArea.Root asChild type="hover" scrollHideDelay={500}>
 				<main className="relative min-h-0 flex-1 overflow-hidden">
 					<ScrollArea.Viewport
@@ -413,6 +657,12 @@ function ArtifactsGallery() {
 						}}
 					>
 						<div className="px-4 pb-4">
+							{failedHosts.map((host) => (
+								<div key={host.hostId} role="alert" className="mt-2 flex items-center gap-2 text-xs text-destructive">
+									<span className="min-w-0 truncate">{t("artifacts.hostLoadFailed", { host: host.label })}</span>
+									<Button type="button" size="sm" variant="quiet" onClick={() => void remote.refetch()}>{t("artifacts.hostLoadRetry")}</Button>
+								</div>
+							))}
 							{catalog.isFetching || workspaceQuery.isLoading ? (
 								<p role="status" className="py-2 text-sm text-muted-foreground">
 									{t("artifacts.loading")}
@@ -453,7 +703,7 @@ function ArtifactsGallery() {
 							) : null}
 							{!hasArtifacts && !incomplete && !workspaceQuery.isLoading ? (
 								<EmptyArtifacts workspaces={workspaces ?? []} />
-							) : cards.length === 0 && !catalog.isFetching ? (
+							) : cards.length === 0 && location && failedHosts.length > 0 ? null : cards.length === 0 && !catalog.isFetching ? (
 								<div className="py-8 text-center">
 									<p>{t(incomplete ? "artifacts.noLoadedMatches" : "artifacts.noMatches")}</p>
 									<Button variant="ghost" onClick={clearFilters}>
@@ -461,42 +711,9 @@ function ArtifactsGallery() {
 									</Button>
 								</div>
 							) : (
-								<>
-									{pinnedCards.length > 0 ? (
-										<ArtifactSection sectionId="pinned" name={t("artifacts.pinned")} icon={Pin} view={view}>
-											{pinnedCards.map(({ row, projectName }) => card(row, projectName))}
-										</ArtifactSection>
-									) : null}
-									{showProjectSections ? (
-										<ArtifactSection sectionId="recent" name={t("artifacts.recent")} icon={Clock} view={view}>
-											{cards.slice(0, 3).map(({ row, projectName }) => card(row, projectName))}
-										</ArtifactSection>
-									) : null}
-									{visibleGroups.map((group) => {
-										const rows = group.rows.filter((row) => shown.has(galleryArtifactKey(row)));
-										return rows.length ? (
-											<ArtifactSection
-												key={group.id}
-												sectionId={`project:${group.id}`}
-												name={group.isScratchpad ? scratchpadName : group.name}
-												icon={group.isScratchpad ? File : group.cloud ? Cloud : Folder}
-												view={view}
-												collapsible={showProjectSections}
-												updatedAt={group.rows[0]?.updatedAt ?? undefined}
-											>
-												{rows.map((row) => card(row, group.isScratchpad ? scratchpadName : group.name))}
-											</ArtifactSection>
-										) : null;
-									})}
-									{cards.length > visibleCount ? (
-										<Button
-											variant="ghost"
-											onClick={() => setPreferences(catalog.contextKey, { visibleCount: visibleCount + 200 })}
-										>
-											{t("artifacts.loadMore")}
-										</Button>
-									) : null}
-								</>
+                                <ul aria-label={t("artifacts.title")} className={view === "gallery" ? ARTIFACT_GRID_CLASS : "grid gap-2"}>
+                                    {orderedCards.slice(0, visibleCount).map(({ row, projectName }) => card(row, projectName))}
+                                </ul>
 							)}
 						</div>
 					</ScrollArea.Viewport>
@@ -507,114 +724,152 @@ function ArtifactsGallery() {
 			</ScrollArea.Root>
 			<DocumentReadingContext.Provider value={null}>
 				<ArtifactPreviewModal
-					artifact={preview?.row ?? null}
+					artifact={previewRow?.row ?? null}
 					projectName={preview?.projectName ?? ""}
 					pinId={preview ? galleryArtifactKey(preview.row) : undefined}
 					onClose={() => setPreview(null)}
 				/>
 			</DocumentReadingContext.Provider>
+			<ConfirmDialog
+				busy={bulkDelete.isPending}
+				confirmLabel={t("artifacts.bulkDeleteConfirm", { count: selectedRows.length })}
+				description={t("artifacts.bulkDeleteDescription")}
+				destructive
+				error={bulkDelete.error?.message ?? null}
+				onConfirm={() => bulkDelete.mutate(selectedRows)}
+				onOpenChange={setConfirmingBulkDelete}
+				open={confirmingBulkDelete}
+				title={t("artifacts.bulkDeleteTitle", { count: selectedRows.length })}
+			>
+				<ul aria-label={t("artifacts.selection")} className="space-y-0.5 text-control text-foreground">
+					{selectedRows.slice(0, MAX_CONFIRM_NAMES).map((row) => <li key={galleryArtifactKey(row)} className="truncate">{row.name}</li>)}
+					{selectedRows.length > MAX_CONFIRM_NAMES ? (
+						<li className="text-muted-foreground">{t("artifacts.bulkDeleteMore", { count: selectedRows.length - MAX_CONFIRM_NAMES })}</li>
+					) : null}
+				</ul>
+			</ConfirmDialog>
 		</div>
 	);
 }
 
-function ArtifactSection({ sectionId, name, icon: Icon, updatedAt, children, view, collapsible = true }: {
-	sectionId: string;
-	name: string;
-	icon: typeof Folder;
-	updatedAt?: string;
-	children: ReactNode;
-	view: ArtifactViewMode;
-	collapsible?: boolean;
-}) {
-	const { t } = useTranslation();
-	const expanded = useArtifactsViewStore((state) => !collapsible || !state.collapsedSections.includes(sectionId));
-	const toggleSection = useArtifactsViewStore((state) => state.toggleSection);
-	const gridId = useId();
-	const headerContent = <>
-		<span className={cn(topbarProjectLabelClass, "inline-flex min-w-0 items-center gap-1.5")}>
-			<Icon aria-hidden="true" className="size-icon-md shrink-0" />
-			<span className="truncate">{name}</span>
-		</span>
-		{updatedAt ? (
-			<time dateTime={updatedAt} title={new Date(updatedAt).toLocaleString()} className="shrink-0 text-caption font-normal tabular-nums text-muted-foreground">
-				{t("shell.updatedAt", { time: formatTimeCompact(updatedAt) })}
-			</time>
-		) : null}
-	</>;
+/** A remote host's project name with the host's, so equal names on two machines tell apart. */
+function withHostLabel(name: string, hostLabel: string | false | undefined): string {
+	return hostLabel ? `${name} · ${hostLabel}` : name;
+}
+
+/** `values` with `value` added, or removed when it is already there. */
+function toggled<T>(values: readonly T[], value: T): readonly T[] {
+	return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+}
+
+/**
+ * One value of a filter. Choosing it keeps the menu open, so several values,
+ * in one filter or several, are picked in one go.
+ */
+function FilterOption({ checked, onToggle, children }: { checked: boolean; onToggle: () => void; children: ReactNode }) {
 	return (
-		<section aria-label={name} className={expanded ? "mb-3" : undefined}>
-			<header>
-				<h2 aria-label={name}>
-					{collapsible ? <button
-						type="button"
-						aria-label={name}
-						aria-expanded={expanded}
-						aria-controls={gridId}
-						onClick={() => toggleSection(sectionId)}
-						className="flex min-h-11 w-full min-w-0 cursor-pointer items-center gap-3 rounded-md text-left transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-					>
-						{headerContent}
-						<ChevronDown aria-hidden="true" className={cn("size-icon-sm shrink-0 text-muted-foreground", !expanded && "-rotate-90")} />
-					</button> : <div className="flex min-h-11 min-w-0 items-center gap-3">{headerContent}</div>}
-				</h2>
-			</header>
-			<ul id={gridId} aria-label={name} hidden={!expanded} className={expanded ? (view === "gallery" ? ARTIFACT_GRID_CLASS : "grid gap-2") : "hidden"}>
-				{children}
-			</ul>
-		</section>
+		<DropdownMenuCheckboxItem checked={checked} onCheckedChange={onToggle} onSelect={(event) => event.preventDefault()}>
+			{children}
+		</DropdownMenuCheckboxItem>
 	);
 }
 
-function ArtifactCard({ row, projectName, view, showProjectName = false, legacyPin, onPreview }: { row: ArtifactRow & { connection: GalleryRow["connection"] }; projectName: string; view: ArtifactViewMode; showProjectName?: boolean; legacyPin?: string; onPreview: (row: GalleryRow, projectName: string) => void }) {
+const ArtifactCard = memo(function ArtifactCard({ row, pinId, projectName, view, showProjectName = false, legacyPin, previewLive = true, selection, onPreview }: { row: ArtifactRow & { connection: GalleryRow["connection"] }; pinId?: string; projectName: string; view: ArtifactViewMode; showProjectName?: boolean; legacyPin?: string; previewLive?: boolean; selection?: ArtifactCardSelection; onPreview: (row: GalleryRow, projectName: string) => void }) {
 	const { t } = useTranslation();
-	const id = galleryArtifactKey(row);
+	const id = pinId ?? galleryArtifactKey(row);
 	const pinned = useArtifactsViewStore((state) => state.pinnedArtifactIds.includes(id));
 	const togglePinnedArtifact = useArtifactsViewStore((state) => state.togglePinnedArtifact);
+	const share = useArtifactShareFile(row);
 	const requestWorkspaceFileOpen = useUiStore((state) => state.requestWorkspaceFileOpen);
 	const navigateToSession = useNavigateToSession();
-	const KindIcon = row.kind === "html" ? BrowserIcon : row.kind === "markdown" ? FileText : File;
+	const KindIcon = artifactFileIcon(row);
+	const selectionDescriptionId = useId();
+	const context = artifactContext(t, row, projectName);
 
 	const open = () => {
 		onPreview(row, projectName);
 	};
 	const openInSession = () => {
-		requestWorkspaceFileOpen(row.sessionId, row.path, undefined, "artifact");
-		navigateToSession(row.projectId, row.sessionId);
+		requestWorkspaceFileOpen(row.sessionId, row.path, row.hostId, "artifact");
+		navigateToSession(row.projectId, row.sessionId, row.hostId ?? LOCAL_HOST);
 	};
 
 	if (view === "list") {
+		const toggle = selection && !selection.disabledReason ? selection.onToggle : undefined;
 		return (
 			<li>
-				<div className="group/artifact relative flex min-h-11 items-center gap-2.5 rounded-md bg-card px-3 transition-none hover:bg-accent focus-within:bg-accent">
-					<button
-						type="button"
-						className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch text-left outline-none after:absolute after:inset-0 after:z-[1] after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-ring/60"
-						onClick={open}
-						title={`${row.sessionTitle} · ${row.path}`}
+				{/* Name and context truncate; the Published mark, the time and the
+				    actions never shrink, so the time stays visible in a narrow
+				    panel. The actions keep their space while hidden, so hovering
+				    a row moves nothing. Below @3xl the context drops under the
+				    name; below @lg Pin and Open in session live in the ⋯ menu. */}
+				<div className={cn(
+					// The hovered row stacks the interactive layer on the hover surface:
+					// the hover surface alone is only a shade off the row's own.
+					"group/artifact relative flex min-h-12 items-center gap-3 rounded-md bg-card py-1.5 ps-4 pe-2 transition-none hover:bg-accent focus-within:bg-accent @max-3xl:min-h-14",
+					"before:pointer-events-none before:absolute before:inset-0 before:rounded-md hover:before:bg-interactive-active focus-within:before:bg-interactive-active",
+					selection?.selected && "ring-2 ring-primary",
+				)}>
+					{selection ? <span id={selectionDescriptionId} className="sr-only">{selection.description}</span> : null}
+					{selection ? (
+						<Checkbox
+							aria-describedby={selectionDescriptionId}
+							aria-label={selection.label}
+							checked={selection.selected}
+							className="relative z-[2] transition-none duration-0"
+							disabled={Boolean(selection.disabledReason)}
+							onCheckedChange={toggle}
+							title={selection.disabledReason}
+						/>
+					) : null}
+					<Pressable
+						className={cn(
+							"flex min-w-0 flex-1 items-center gap-3 self-stretch after:absolute after:inset-0 after:z-[1] after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-ring/60",
+							selection?.disabledReason && "cursor-not-allowed",
+						)}
+						onClick={selection ? toggle : open}
+						title={selection?.disabledReason ?? `${context} · ${row.path}`}
+						{...(selection ? { tabIndex: -1, "aria-hidden": true } : {})}
 					>
-						{row.generating ? (
-							<Loader2 aria-label={t("artifacts.generating")} className="relative z-[1] size-icon-sm shrink-0 animate-spin text-status-working motion-reduce:animate-none" />
-						) : <KindIcon aria-hidden="true" className="relative z-[1] size-icon-sm shrink-0 text-muted-foreground" />}
-						<span className="relative z-[1] min-w-0 shrink py-2 text-control font-medium text-foreground"><span className="block truncate">{row.name}</span><span className="block break-all font-mono text-xs font-normal text-muted-foreground">{row.path}</span></span>
-						<span className="relative z-[1] min-w-0 flex-1 truncate text-xs text-muted-foreground">
-							{showProjectName ? `${projectName} · ${row.sessionTitle}` : row.sessionTitle}
+						<KindIcon aria-hidden="true" className="relative z-[1] size-icon-sm shrink-0 text-muted-foreground" />
+						<span className="relative z-[1] flex min-w-0 flex-1 flex-col @3xl:flex-row @3xl:items-baseline @3xl:gap-2.5">
+							<span className="flex min-w-0 items-center gap-1.5 @3xl:max-w-[60%] @3xl:shrink-0">
+								{pinned ? (
+									<span role="img" aria-label={t("artifacts.pinned")} className="inline-flex shrink-0 text-passive">
+										<Pin aria-hidden="true" className="size-3" />
+									</span>
+								) : null}
+								<span className="min-w-0 truncate text-control font-medium text-foreground">{row.name}</span>
+							</span>
+							<span className="min-w-0 truncate text-xs text-muted-foreground">{context}</span>
 						</span>
-					</button>
-					<div className="relative z-[2] ms-auto flex shrink-0 items-center gap-1">
-						<ArtifactActionsMenu
+					</Pressable>
+					<div className="relative z-[2] flex shrink-0 items-center gap-3">
+						{/* Empty for an unshared artifact, so every row's time lines up. */}
+						<span className="inline-flex size-icon-sm items-center justify-center">
+							<ArtifactShareMark row={row} iconClassName="size-icon-sm" />
+						</span>
+						{/* "14h ago", and "Updated 14h ago" while the row is hovered or focused.
+						    A title, not a Tooltip: one per row costs too much to mount in a long list. */}
+						<time dateTime={row.updatedAt} title={new Date(row.updatedAt).toLocaleString()} className="min-w-14 whitespace-nowrap text-right text-xs tabular-nums text-passive group-hover/artifact:text-foreground group-focus-within/artifact:text-foreground">
+							<span className="@lg:group-hover/artifact:hidden @lg:group-focus-within/artifact:hidden">{formatTimeCompact(row.updatedAt)}</span>
+							<span className="hidden @lg:group-hover/artifact:inline @lg:group-focus-within/artifact:inline">{t("shell.updatedAt", { time: formatTimeCompact(row.updatedAt) })}</span>
+						</time>
+					</div>
+					{selection ? null : <div className="relative z-[2] flex shrink-0 items-center gap-1 @max-lg:[&>button]:hidden">
+						{row.bundle ? null : <DeferredArtifactActionsMenu
 							artifact={row}
 						pinId={id}
+							hostId={row.hostId}
 							session={{ id: row.sessionId, cloud: row.cloud }}
 							iconOnly
-							onOpenInSession={openInSession}
+							share={share}
+							onOpenInSession={row.kept ? undefined : openInSession}
 							pinned={pinned}
 							onTogglePin={() => togglePinnedArtifact(id, legacyPin)}
 							className="bg-[var(--solid-bg-secondary,var(--color-bg-secondary))] hover:bg-[var(--solid-accent,var(--accent))] dark:hover:bg-[var(--solid-accent,var(--accent))] transition-none duration-0 [@media(hover:hover)]:opacity-0 group-hover/artifact:opacity-100 group-focus-within/artifact:opacity-100 data-[state=open]:opacity-100"
-						/>
-					</div>
-					<time dateTime={row.updatedAt} className="pointer-events-none relative z-[1] w-20 shrink-0 text-right text-xs tabular-nums text-passive">
-						{formatTimeCompact(row.updatedAt)}
-					</time>
+						/>}
+					</div>}
 				</div>
 			</li>
 		);
@@ -623,30 +878,31 @@ function ArtifactCard({ row, projectName, view, showProjectName = false, legacyP
 	return (
 		<ArtifactGalleryCard
 			row={row}
-			detail={row.path}
-			context={showProjectName ? `${projectName} · ${row.sessionTitle}` : row.sessionTitle}
+						context={showProjectName ? `${projectName} · ${row.sessionTitle}` : row.sessionTitle}
+			previewLive={previewLive}
 			onPreview={open}
-			actions={
-				<ArtifactActionsMenu
+			selection={selection}
+			actions={selection || row.bundle ? null : (
+				<DeferredArtifactActionsMenu
 					artifact={row}
 							pinId={id}
+					hostId={row.hostId}
 					session={{ id: row.sessionId, cloud: row.cloud }}
 					iconOnly
-					onOpenInSession={openInSession}
+					share={share}
+					onOpenInSession={row.kept ? undefined : openInSession}
 					pinned={pinned}
 					onTogglePin={() => togglePinnedArtifact(id, legacyPin)}
 					className="bg-[var(--solid-bg-secondary,var(--color-bg-secondary))] hover:bg-[var(--solid-accent,var(--accent))] dark:hover:bg-[var(--solid-accent,var(--accent))] transition-none duration-0 [@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100"
 				/>
-			}
+			)}
 		/>
 	);
-}
+});
 
 function EmptyArtifacts({ workspaces }: { workspaces: readonly WorkspaceSummary[] }) {
 	const { t } = useTranslation();
 	const openGlobalSettings = useUiStore((state) => state.openGlobalSettings);
-	// Developer mode moves account management to the Harness page.
-	const agentsSection = useUiStore((state) => state.developerMode) ? "harness" : "agents";
 	const { agentReady, create, pending } = useCreateArtifactSession();
 	const hasCloudProject = workspaces.some((workspace) => workspace.kind === CLOUD_PROJECT_KIND && Boolean(workspace.cloudOrgId));
 
@@ -656,7 +912,7 @@ function EmptyArtifacts({ workspaces }: { workspaces: readonly WorkspaceSummary[
 			<div className="flex flex-col items-center gap-1 py-24 text-center">
 				<h2 className="text-heading-sm font-semibold text-foreground">{t("artifacts.noAgent.title")}</h2>
 				<p className="max-w-72 text-xs text-muted-foreground">{t("artifacts.noAgent.description")}</p>
-				<Button variant="ghost" size="sm" className="mt-2" onClick={() => openGlobalSettings(agentsSection)}>
+				<Button variant="ghost" size="sm" className="mt-2" onClick={() => openGlobalSettings("harness")}>
 					{t("artifacts.noAgent.action")}
 				</Button>
 			</div>
@@ -701,6 +957,7 @@ function CreateArtifactMenu({
 	localDisabledReason?: string;
 }) {
 	const { t } = useTranslation();
+	const projectAvatars = useProjectAvatars(workspaces);
 	// Cloud workspaces are listed only when the control plane keeps artifacts.
 	const projects = workspaces.filter(
 		(workspace) =>
@@ -714,20 +971,19 @@ function CreateArtifactMenu({
 	const disabled = pending || Boolean(disabledReason);
 	const trigger =
 		label === "new" ? (
-			// Anchors the menu, so it must not scale on press.
-			<TopbarButton
-				variant="primary"
-				className={cn("topbar-control--labeled topbar-control--static-press", className)}
+			<Button type="button" size="icon-sm"
+				variant="quiet"
+				className={className}
 				disabled={disabled}
 				aria-busy={pending}
+				aria-label={pending ? t("artifacts.creating") : t("artifacts.new")}
 			>
 				{pending ? (
-					<Loader2 aria-hidden="true" className="size-icon-md animate-spin motion-reduce:animate-none" />
+					<Loader2 aria-hidden="true" className="size-icon-sm animate-spin motion-reduce:animate-none" />
 				) : (
-					<Plus aria-hidden="true" className="size-icon-md" />
+					<Plus aria-hidden="true" className="size-icon-sm" />
 				)}
-				{pending ? t("artifacts.creating") : t("artifacts.new")}
-			</TopbarButton>
+			</Button>
 		) : (
 			<Button size="sm" className={className} disabled={disabled} aria-busy={pending}>
 				{pending ? <Loader2 aria-hidden="true" className="size-icon-sm animate-spin text-status-working motion-reduce:animate-none" /> : null}
@@ -749,7 +1005,16 @@ function CreateArtifactMenu({
 	}
 	return (
 		<DropdownMenu>
-			<DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+			{label === "new" ? (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">{t("artifacts.new")}</TooltipContent>
+				</Tooltip>
+			) : (
+				<DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+			)}
 			<DropdownMenuContent align={align} className="min-w-56">
 				{/* Says why Scratchpad and local projects are disabled while cloud ones are not. */}
 				{localBlocked ? <DropdownMenuLabel className="max-w-64 text-xs font-normal text-muted-foreground">{localDisabledReason}</DropdownMenuLabel> : null}
@@ -764,11 +1029,7 @@ function CreateArtifactMenu({
 						disabled={localBlocked && project.kind !== CLOUD_PROJECT_KIND}
 						onSelect={() => void create(project.id, project.kind === CLOUD_PROJECT_KIND ? project.cloudOrgId : undefined)}
 					>
-						{project.kind === CLOUD_PROJECT_KIND ? (
-							<Cloud aria-hidden="true" className="size-icon-sm" />
-						) : (
-							<Folder aria-hidden="true" className="size-icon-sm" />
-						)}
+						<ArtifactProjectIcon avatarUrl={projectAvatars.get(project.id)} workspace={project} />
 						<span className="truncate">{project.name}</span>
 					</DropdownMenuItem>
 				))}

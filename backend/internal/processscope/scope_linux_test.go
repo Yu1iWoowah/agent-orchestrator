@@ -4,13 +4,94 @@ package processscope
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+func TestAdapterExitedWaitsForThreadsAfterLeaderBecomesZombie(t *testing.T) {
+	cc, err := exec.LookPath("cc")
+	if err != nil {
+		t.Skip("C compiler required for the pthread fixture")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	bin := filepath.Join(t.TempDir(), "adapter")
+	compile := exec.CommandContext(ctx, cc, "-pthread", "-x", "c", "-o", bin, "-")
+	compile.Stdin = strings.NewReader(`
+#include <pthread.h>
+#include <unistd.h>
+
+static void *run(void *unused) {
+  char release;
+  read(STDIN_FILENO, &release, 1);
+  return NULL;
+}
+
+int main(void) {
+  pthread_t sibling;
+  if (pthread_create(&sibling, NULL, run, NULL) != 0) return 2;
+  pthread_exit(NULL);
+}
+`)
+	if out, err := compile.CombinedOutput(); err != nil {
+		t.Fatalf("compile pthread fixture: %v\n%s", err, out)
+	}
+	cmd := exec.CommandContext(ctx, bin)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	release, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = release.Close(); _ = cmd.Wait() })
+	scope := Capture(cmd.Process.Pid)
+	if scope == nil {
+		t.Fatal("could not capture adapter identity")
+	}
+	statPath := fmt.Sprintf("/proc/%d/stat", cmd.Process.Pid)
+	for {
+		raw, err := os.ReadFile(statPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Wait for the exact kernel state under review. Stdin is still open,
+		// leaving the second thread blocked and therefore alive.
+		fields := strings.Fields(string(raw)[strings.LastIndexByte(string(raw), ')')+1:])
+		if len(fields) > 17 && fields[0] == "Z" && fields[17] == "2" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("leader did not become a zombie with a live sibling")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if AdapterExited(scope) {
+		t.Fatal("reported adapter exit while the zombie leader still had a live sibling")
+	}
+	if err := release.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Waitid(unix.P_PID, cmd.Process.Pid, nil, unix.WEXITED|unix.WNOWAIT, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !AdapterExited(scope) {
+		t.Fatal("the adapter still appeared alive after all threads exited")
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestCaptureOriginalProcessGroup(t *testing.T) {
 	cmd := exec.Command("sleep", "60")

@@ -83,14 +83,14 @@ export function conversationFrameSafeRect({
 			visible.top + visible.height,
 			composer.top,
 		) - 16;
-	// Collapsed entries must not permanently cover an inline document's controls.
+	// Reserve both collapsed entries and their gap, including the lower Plan entry.
 	for (const toolbar of [...avoid].sort((a, b) => a.top - b.top)) {
 		if (
 			toolbar.width > 0 &&
 			toolbar.height > 0 &&
 			toolbar.left < right &&
 			toolbar.left + toolbar.width > right - 160 &&
-			toolbar.top < top + 32 &&
+			toolbar.top < top + 2 * 32 + frameGap &&
 			toolbar.top + toolbar.height > top
 		)
 			top = Math.min(bottom, toolbar.top + toolbar.height + 16);

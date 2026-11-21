@@ -26,13 +26,8 @@ func TestMigrateTUISettingsPreservesEveryExistingFactAndRoundTrips(t *testing.T)
 	for _, table := range tables {
 		before[table] = migrationTableFacts(t, db, table)
 	}
-	for i := 0; i < 2; i++ {
-		if err := migrate(db); err != nil {
-			t.Fatal(err)
-		}
-		if err := migrate(db); err != nil {
-			t.Fatal(err)
-		}
+	assertFacts := func() {
+		t.Helper()
 		for _, table := range tables {
 			after := migrationTableFacts(t, db, table)
 			if len(after) != len(before[table]) {
@@ -50,11 +45,17 @@ func TestMigrateTUISettingsPreservesEveryExistingFactAndRoundTrips(t *testing.T)
 		if err := db.QueryRow("SELECT settings_operation_id FROM session_interface_transitions WHERE id='old-handoff'").Scan(&marker); err != nil || marker != "" {
 			t.Fatalf("invented settings owner: %q %v", marker, err)
 		}
+	}
+	for i := 0; i < 2; i++ {
+		upTo(t, db, 20261029193014190)
+		upTo(t, db, 20261029193014190)
+		assertFacts()
 		downTo(t, db, tuiSettingsBaseVersion)
 	}
 	if err := migrate(db); err != nil {
 		t.Fatal(err)
 	}
+	assertFacts()
 	var integrity string
 	if err := db.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
 		t.Fatalf("integrity=%s %v", integrity, err)
@@ -65,9 +66,7 @@ func TestMigrateTUISettingsRecoveryOwnsGateAndHistoryCannotBeDiscarded(t *testin
 	for _, phase := range []string{"completed", "recovery_required"} {
 		t.Run(phase, func(t *testing.T) {
 			db := openMigratedDatabaseCopy(t, tuiSettingsBaseVersion)
-			if err := migrate(db); err != nil {
-				t.Fatal(err)
-			}
+			upTo(t, db, 20261029193014190)
 			if _, err := db.Exec(`INSERT INTO projects(id,path,registered_at) VALUES('p','/fake',CURRENT_TIMESTAMP);
   INSERT INTO sessions(id,project_id,num,harness,session_mode,activity_last_at,created_at,updated_at) VALUES('worker','p',1,'codex','tui',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
   INSERT INTO session_agent_settings_operations(id,session_id,idempotency_key,request_json,phase,apply_mode,created_at,updated_at) VALUES('restart','worker','key','{}','pending','restart',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);`); err != nil {

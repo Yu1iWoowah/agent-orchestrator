@@ -11,7 +11,7 @@ import (
 
 func sessionTopServer(t *testing.T, memoryStatus int, memoryBody string) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions":
@@ -143,7 +143,7 @@ func TestFormatBytes(t *testing.T) {
 // must print a dash where an idle row prints how long it has been quiet.
 func TestSessionTop_ActiveSessionShowsNoIdleTime(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/sessions":

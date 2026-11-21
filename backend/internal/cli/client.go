@@ -10,12 +10,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/caller"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
-	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 )
 
 // commandTimeout bounds a mutating daemon call. Calls do real work (tmux
@@ -42,11 +43,18 @@ type apiResponseError struct {
 	ErrorBody  apiError
 }
 
-var errDaemonUnavailable = errors.New("AO daemon unavailable")
+// daemonRequestError distinguishes a business API attempt from a failed probe.
+// Its underlying error remains available to envelope and transport callers.
+type daemonRequestError struct{ cause error }
+
+func (e daemonRequestError) Error() string { return e.cause.Error() }
+func (e daemonRequestError) Unwrap() error { return e.cause }
+
+var errDaemonUnavailable = errors.New("the Orchestrator daemon is unavailable")
 
 // errDaemonNotRunning distinguishes a missing/stale run file from transport
 // failures so hooks can keep expected restart noise out of the agent's stderr.
-var errDaemonNotRunning = errors.New("AO daemon is not running")
+var errDaemonNotRunning = errors.New("the Orchestrator daemon is not running")
 
 // daemonUnavailableError keeps the established user-facing diagnostics while
 // giving the few idempotent CLI operations that can safely retry a typed signal.
@@ -111,11 +119,8 @@ func (c *commandContext) getJSON(ctx context.Context, path string, out any) erro
 	return c.doJSON(ctx, http.MethodGet, path, nil, out)
 }
 
-// postJSON sends body as JSON to POST /api/v1/<path> on the running daemon and
-// decodes a 2xx response into out (out may be nil). A non-2xx response becomes
-// an error built from the API error envelope. A missing run-file or a stale one
-// (dead PID) yields a clear "not running" message rather than a
-// connection-refused dump.
+// postJSON verifies daemon HTTP identity/readiness before sending the body to
+// POST /api/v1/<path>. A non-2xx response preserves the API error envelope.
 func (c *commandContext) postJSON(ctx context.Context, path string, body, out any) error {
 	return c.doJSON(ctx, http.MethodPost, path, body, out)
 }
@@ -174,20 +179,16 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 	body, out any,
 	headers map[string]string,
 	timeout time.Duration,
-) error {
-	cfg, err := config.Load()
+) (retErr error) {
+	st, err := c.inspectDaemonConnection(ctx)
 	if err != nil {
 		return err
 	}
-	info, err := runfile.Read(cfg.RunFilePath)
-	if err != nil {
-		return err
+	if st.State == stateStopped {
+		return daemonUnavailableError{message: "AO daemon is not running: no run-file — start it with `ao start`", cause: errDaemonNotRunning}
 	}
-	if info == nil {
-		return daemonUnavailableError{message: "AO daemon is not running — start it with `ao start`", cause: errDaemonNotRunning}
-	}
-	if !c.deps.ProcessAlive(info.PID) {
-		return daemonUnavailableError{message: fmt.Sprintf("AO daemon is not running (stale run-file at %s) — start it with `ao start`", cfg.RunFilePath), cause: errDaemonNotRunning}
+	if st.State != stateReady {
+		return daemonUnavailableError{message: fmt.Sprintf("AO daemon endpoint is %s: %s", st.State, st.Error), cause: st.probeErr}
 	}
 
 	var reader io.Reader = http.NoBody
@@ -198,7 +199,7 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		}
 		reader = bytes.NewReader(payload)
 	}
-	url := fmt.Sprintf("http://%s:%d%s", config.LoopbackHost, info.Port, path)
+	url := fmt.Sprintf("http://%s:%d%s", config.LoopbackHost, st.Port, path)
 	req, err := http.NewRequestWithContext(ctx, method, url, reader) // #nosec G704 -- daemon host is fixed loopback; path is an internal API route.
 	if err != nil {
 		return err
@@ -210,14 +211,23 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		req.Header.Set(name, value)
 	}
 	applySettingsIdentity(req, os.Getenv)
+
+	if callerID := callerSession(); callerID != "" {
+		req.Header.Set(caller.Header, callerID)
+	}
 	if sideID := os.Getenv("AO_SIDE_CONVERSATION_ID"); sideID != "" {
 		req.Header.Set("X-AO-Side-Conversation", sideID)
 	}
 
-	// Reuse the injected client's transport (keeps it stubbable in tests) but
-	// give daemon API calls far more headroom than the 2s status-probe timeout.
-	client := *c.deps.HTTPClient
-	client.Timeout = timeout
+	client := c.daemonHTTPClient(timeout)
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		defer transport.CloseIdleConnections()
+	}
+	defer func() {
+		if retErr != nil {
+			retErr = daemonRequestError{cause: retErr}
+		}
+	}()
 	resp, err := client.Do(req) // #nosec G704 -- request target is the fixed loopback daemon URL above.
 	if err != nil {
 		return daemonUnavailableError{message: fmt.Sprintf("call daemon: %v", err), cause: err}
@@ -282,4 +292,14 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
+}
+
+// callerSession is the agent session running this command, so the daemon can
+// file the action it takes under that agent's running turn. A shell the user
+// opened in the session's terminal tab has none.
+func callerSession() string {
+	if os.Getenv(caller.ShellTerminalEnv) != "" {
+		return ""
+	}
+	return strings.TrimSpace(os.Getenv("AO_SESSION_ID"))
 }

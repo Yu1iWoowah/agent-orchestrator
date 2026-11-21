@@ -82,6 +82,7 @@ func TestProviderSwitchRouteMapsRefusalsToStatusAndCode(t *testing.T) {
 		{&domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalUnsupported, Detail: "no"}, http.StatusBadRequest, "PROVIDER_SWITCH_unsupported"},
 		{fmt.Errorf("wrapped: %w", &domain.ProviderSwitchError{Kind: domain.ProviderSwitchRefusalUnavailable, Detail: "down"}), http.StatusServiceUnavailable, "PROVIDER_SWITCH_unavailable"},
 		{ports.ErrSessionNotFound, http.StatusNotFound, "SESSION_NOT_FOUND"},
+		{fmt.Errorf("wrapped: %w", ports.ErrChatPermissionModeUnsupported), http.StatusBadRequest, "CHAT_PERMISSION_MODE_UNSUPPORTED"},
 	} {
 		status, body := providerSwitchRouteRequest(t, &fakeConversationService{switchErr: tc.err},
 			http.MethodPost, "/sessions/p1-1/provider-switch", `{"targetHarness":"codex"}`)
@@ -249,5 +250,22 @@ func TestChatPermissionModesRouteListsEachAgentsModes(t *testing.T) {
 	want := `{"agents":[{"agent":"pi","modes":["bypass-permissions"]},{"agent":"kimi","modes":["default"]}]}`
 	if status != http.StatusOK || string(bytes.TrimSpace(body)) != want {
 		t.Fatalf("permission modes = %d %s\nwant 200 %s", status, body, want)
+	}
+}
+
+func TestProviderSwitchRejectsInvalidPermissionBeforeDispatch(t *testing.T) {
+	svc := &fakeConversationService{}
+	status, body := providerSwitchRouteRequest(t, svc, http.MethodPost, "/sessions/p1-1/provider-switch",
+		`{"targetHarness":"codex","permissionMode":"bypass"}`)
+	if status != http.StatusBadRequest || svc.switchRequest.TargetHarness != "" {
+		t.Fatalf("invalid mode = %d %s, switch request %+v", status, body, svc.switchRequest)
+	}
+}
+
+func TestProviderSwitchReportsWhatAForcedSwitchStopped(t *testing.T) {
+	svc := &fakeConversationService{switchResult: domain.ProviderSwitchResult{StoppedTurn: true, CancelledQueued: 2, FailedApprovals: true}}
+	status, body := providerSwitchRouteRequest(t, svc, http.MethodPost, "/sessions/p1-1/provider-switch", `{"targetHarness":"codex","force":true}`)
+	if status != http.StatusOK || string(bytes.TrimSpace(body)) != `{"status":"ok","stoppedTurn":true,"cancelledQueuedMessages":2,"failedPendingApprovals":true}` {
+		t.Fatalf("switch = %d %s", status, body)
 	}
 }

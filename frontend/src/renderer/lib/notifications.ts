@@ -1,8 +1,10 @@
+import { apiErrorException } from "./api-error-exception";
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import type { components } from "../../api/schema";
 import { aoBridge } from "./bridge";
-import { apiClient, apiErrorMessage, getApiBaseUrl, subscribeApiBaseUrl } from "./api-client";
+import { apiClient, getApiBaseUrl, subscribeApiBaseUrl } from "./api-client";
 import { computeSseRetryDelayMs } from "./sse-backoff";
+import { hasDaemonEventStreams, openDaemonEventSource, type DaemonEventSource } from "./daemon-event-source";
 
 export type NotificationDTO = components["schemas"]["NotificationResponse"];
 export type NotificationsPage = components["schemas"]["ListNotificationsResponse"];
@@ -82,7 +84,7 @@ export async function fetchNotificationsPage(
 			},
 		},
 	});
-	if (error) throw new Error(apiErrorMessage(error, "Could not load notifications"));
+	if (error) throw apiErrorException(error, "Could not load notifications");
 	const notifications = sortNotifications(data?.notifications ?? []);
 	return {
 		notifications,
@@ -103,13 +105,13 @@ export async function markAllNotificationsRead(ids: string[]): Promise<number> {
 	const { data, error } = await apiClient.POST("/api/v1/notifications/read-all", {
 		body: ids.length === 0 ? {} : { ids },
 	});
-	if (error) throw new Error(apiErrorMessage(error, "Could not mark notifications read"));
+	if (error) throw apiErrorException(error, "Could not mark notifications read");
 	return data?.updatedCount ?? 0;
 }
 
 export async function clearAllNotifications(): Promise<ClearNotificationsResult> {
 	const { data, error } = await apiClient.DELETE("/api/v1/notifications");
-	if (error || !data) throw new Error(apiErrorMessage(error, "Could not clear notifications"));
+	if (error || !data) throw apiErrorException(error, "Could not clear notifications");
 	return data;
 }
 
@@ -121,7 +123,7 @@ export async function deleteNotification(notification: NotificationDTO): Promise
 	// this one. The requested end state already holds, so confirm the optimistic
 	// removal instead of rolling it back and showing an error.
 	if (response.status === 404) return notification;
-	if (error || !data) throw new Error(apiErrorMessage(error, "Could not clear notification"));
+	if (error || !data) throw apiErrorException(error, "Could not clear notification");
 	return data.notification;
 }
 
@@ -508,7 +510,7 @@ export function createNotificationsTransport(
 	return {
 		connect() {
 			let retryTimer: ReturnType<typeof setTimeout> | undefined;
-			let source: EventSource | undefined;
+			let source: DaemonEventSource | undefined;
 			let sourceBaseUrl: string | undefined;
 			let snapshotRefresh:
 				| {
@@ -637,7 +639,8 @@ export function createNotificationsTransport(
 			};
 
 			const connectSource = () => {
-				if (typeof EventSource === "undefined") return;
+				// Without the desktop preload (browser preview, dev:web) no stream opens.
+				if (!hasDaemonEventStreams()) return;
 				const baseUrl = getApiBaseUrl();
 				if (source && sourceBaseUrl === baseUrl && source.readyState !== EVENTSOURCE_CLOSED) return;
 				// A new daemon port is a fresh target; it should not inherit the
@@ -647,7 +650,8 @@ export function createNotificationsTransport(
 				source = undefined;
 				sourceBaseUrl = baseUrl;
 				try {
-					source = new EventSource(`${baseUrl.replace(/\/+$/, "")}/api/v1/notifications/stream`);
+					source = openDaemonEventSource("/api/v1/notifications/stream");
+					if (!source) return;
 					source.onopen = () => {
 						retries = 0;
 						invalidateNotifications();

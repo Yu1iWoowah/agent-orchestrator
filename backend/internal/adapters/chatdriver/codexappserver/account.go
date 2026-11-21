@@ -286,7 +286,7 @@ func (c *accountClient) Read(ctx context.Context, refreshToken bool) (ports.Code
 	params := codexproto.GetAccountParams{RefreshToken: &refresh}
 	var response codexproto.GetAccountResponse
 	if err := c.conn.request(ctx, codexproto.MethodAccountRead, params, &response); err != nil {
-		if isRevokedOAuthTokenError(err) {
+		if isRevokedOAuthTokenError(err) || isRevokedRefreshTokenError(err) {
 			return ports.CodexAccountObservation{}, ports.ErrCodexOAuthTokenRevoked
 		}
 		return ports.CodexAccountObservation{}, err
@@ -311,6 +311,16 @@ func (c *accountClient) Read(ctx context.Context, refreshToken bool) (ports.Code
 		method = domain.CodexAuthMethodAPIKey
 	}
 	return ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: method, Email: safeCodexAccountEmail(response.Account.Email)}, nil
+}
+
+// isRevokedRefreshTokenError matches only the account/read failure Codex
+// returns once the provider revoked the saved refresh token ("...because your
+// refresh token was revoked..."). A generic 401, a refresh failure without
+// that phrase or a rotated token ("was already used") can be transient, so it
+// stays an unknown failure.
+func isRevokedRefreshTokenError(err error) bool {
+	var providerError *rpcError
+	return errors.As(err, &providerError) && strings.Contains(strings.ToLower(providerError.Message), "refresh token was revoked")
 }
 
 // Logout asks Codex to own the complete sign-out operation, including OAuth

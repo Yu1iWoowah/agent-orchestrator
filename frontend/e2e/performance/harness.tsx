@@ -23,6 +23,7 @@ import { setApiBaseUrl } from "../../src/renderer/lib/api-client";
 import type { ConversationMessage } from "../../src/renderer/types/conversation";
 import type { ReviewTarget } from "../../src/renderer/hooks/useSessionWorkspaceFiles";
 import "../../src/renderer/styles.css";
+import { chatRenderCostWorkload } from "./chat-render-cost";
 
 const root = createRoot(document.getElementById("performance-root")!);
 const client = new QueryClient({
@@ -58,6 +59,7 @@ function assistant(text: string, streaming = true): ConversationMessage {
 }
 
 export const performanceHarness = {
+	chatRenderCost: chatRenderCostWorkload(render, frame),
 	async largeReview() {
 		const [{ WorkspaceReviewPane }, { largeReviewFiles, largeReviewPatch }] = await Promise.all([
 			import("../../src/renderer/components/diffs/WorkspaceReviewPane"),
@@ -82,32 +84,28 @@ export const performanceHarness = {
 		render(<WorkspaceReviewPane annotation={{ targets: [], status: "idle", error: "", begin: noop, draftFor: () => "", statusFor: () => "idle", setDraft: noop, cancel: noop, submit: async () => {} }} target={target} filter="" sessionId="large-review" split={false} />);
 	},
 	async events() {
-		const original = window.EventSource;
-		const sources: BenchSource[] = [];
-		class BenchSource {
-			readyState = 1;
-			onopen: (() => void) | null = null;
-			onerror: (() => void) | null = null;
-			onmessage: ((event: Event) => void) | null = null;
-			listeners = new Map<string, EventListener[]>();
-			constructor(public url: string) {
-				sources.push(this);
+		// The app opens local streams through the preload `daemonStream` bridge,
+		// which this page lacks; stand in for it for the duration of the run.
+		const streams = new Map<string, { path: string; listener?: (event: { type: "chunk"; data: string }) => void }>();
+		(window as unknown as { ao?: unknown }).ao = {
+			daemonStream: {
+				openStream: async ({ path }: { path: string }) => {
+					const streamId = `bench-${streams.size}`;
+					streams.set(streamId, { path });
+					return { streamId };
+				},
+				closeStream: () => undefined,
+				onStreamEvent: (streamId: string, listener: (event: { type: "chunk"; data: string }) => void) => {
+					streams.get(streamId)!.listener = listener;
+					return () => undefined;
+				},
+			},
+		};
+		const emit = (data: string) => {
+			for (const stream of streams.values()) {
+				if (stream.path.startsWith("/api/v1/events")) stream.listener?.({ type: "chunk", data: `event: session_updated\ndata: ${data}\n\n` });
 			}
-			addEventListener(type: string, listener: EventListener) {
-				this.listeners.set(type, [
-					...(this.listeners.get(type) ?? []),
-					listener,
-				]);
-			}
-			close() {
-				this.readyState = 2;
-			}
-			emit(data: string) {
-				for (const listener of this.listeners.get("session_updated") ?? [])
-					listener(new MessageEvent("session_updated", { data }));
-			}
-		}
-		window.EventSource = BenchSource as unknown as typeof EventSource;
+		};
 		setApiBaseUrl("http://127.0.0.1:8080");
 		const queryClient = new QueryClient();
 		const queryKey = ["conversation", "performance-session"];
@@ -134,11 +132,8 @@ export const performanceHarness = {
 			flushes.length = 0;
 			completions.length = 0;
 			started = performance.now();
-			const source = sources.find((entry) =>
-				entry.url.includes("/api/v1/events"),
-			)!;
 			for (let index = 0; index < 20; index++) {
-				source.emit(
+				emit(
 					JSON.stringify({
 						sessionId: "performance-session",
 						payload: { conversationId: "performance-conversation" },
@@ -161,7 +156,7 @@ export const performanceHarness = {
 			disconnect();
 			unsubscribe();
 			queryClient.clear();
-			window.EventSource = original;
+			delete (window as unknown as { ao?: unknown }).ao;
 		}
 	},
 	async streaming() {
@@ -306,3 +301,4 @@ export const performanceHarness = {
 ).performanceHarness = performanceHarness;
 
 if (new URLSearchParams(window.location.search).get("workload") === "largeReview") void performanceHarness.largeReview();
+if (new URLSearchParams(window.location.search).get("workload") === "chatRenderCost") void performanceHarness.chatRenderCost();

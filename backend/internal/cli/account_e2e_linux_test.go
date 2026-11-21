@@ -527,7 +527,9 @@ waiting:
 		}
 	}
 	api("POST", "/projects", map[string]any{"path": repo, "projectId": "accounts", "name": "Fake account scopes", "config": map[string]any{"defaultBranch": "main", "worker": map[string]string{"agent": "codex"}, "orchestrator": map[string]string{"agent": "claude-code"}, "reviewers": []map[string]string{{"harness": "claude-code"}, {"harness": "codex"}}}})
-	run("account", "use", a, "--project", "accounts")
+	if out, code := runCode("account", "use", a, "--project", "accounts"); code != 2 || !strings.Contains(out, "--role") {
+		t.Fatalf("project provider default was removed; --project without --role must be a usage error: %d %s", code, out)
+	}
 	run("account", "use", a, "--project", "accounts", "--role", "worker")
 	run("account", "use", b, "--project", "accounts", "--role", "orchestrator")
 	run("account", "use", c, "--project", "accounts", "--role", "reviewer", "--reviewer", "claude-code")

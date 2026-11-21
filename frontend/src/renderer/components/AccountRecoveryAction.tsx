@@ -1,7 +1,8 @@
+import { apiErrorException } from "../lib/api-error-exception";
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { apiClient } from "../lib/api-client";
 import { agentAccountsQueryKey } from "../hooks/useAgentAccounts";
 import { sessionInterfaceTransitionQueryKey } from "../hooks/useSessionInterfaceTransition";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -20,7 +21,7 @@ export function AccountRecoveryAction({ sessionId }: { sessionId: string }) {
 			const response = await apiClient.POST("/api/v1/sessions/{sessionId}/account-recovery", {
 				params: { path: { sessionId } },
 			});
-			if (response.error) throw new Error(apiErrorMessage(response.error));
+			if (response.error) throw apiErrorException(response.error);
 			if (!response.data?.confirmed) {
 				setError(t("settings.agentAccounts.recoveryFailed"));
 				return;

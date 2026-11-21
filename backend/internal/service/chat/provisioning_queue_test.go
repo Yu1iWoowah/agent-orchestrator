@@ -64,6 +64,30 @@ func provisioningServiceOver(t *testing.T, store chatsvc.Store, st *sqlite.Store
 	})
 }
 
+func TestQueueUserMessageExcludesSpawnOpeningPromptFromUsage(t *testing.T) {
+	st, id := openProvisioningStore(t, domain.SessionProvisionProvisioning)
+	st.SetUsageTelemetryAllowed(func() bool { return true })
+	svc := provisioningService(t, st)
+	ctx := context.Background()
+	if _, err := svc.QueueUserMessage(ctx, id, ports.ChatUserMessage{
+		Text: "spawn task brief", Origin: domain.MessageOriginHuman, SpawnOpeningPrompt: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if batches, err := st.DrainUsageMessages(ctx, 10, false, "install-one"); err != nil || len(batches) != 0 {
+		t.Fatalf("opening prompt batches = %+v, err=%v", batches, err)
+	}
+	if _, err := svc.QueueUserMessage(ctx, id, ports.ChatUserMessage{
+		Text: "direct follow-up", Origin: domain.MessageOriginHuman, ClientMessageID: "direct-follow-up",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	batches, err := st.DrainUsageMessages(ctx, 10, false, "install-one")
+	if err != nil || len(batches) != 1 || batches[0].Count != 1 {
+		t.Fatalf("direct message batches = %+v, err=%v", batches, err)
+	}
+}
+
 type staleProvisioningReader struct{ record domain.SessionRecord }
 
 func (r staleProvisioningReader) GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error) {
@@ -209,6 +233,163 @@ func TestSendWithoutControllerStillRefusedWhenNotProvisioning(t *testing.T) {
 	})
 	if !errors.Is(err, chatsvc.ErrNoController) {
 		t.Fatalf("err = %v, want ErrNoController", err)
+	}
+}
+
+func startAccountMove(t *testing.T, st *sqlite.Store, id domain.SessionID, phase domain.SessionInterfaceTransitionPhase) {
+	t.Helper()
+	now := time.Now().UTC()
+	if _, created, err := st.CreateSessionInterfaceTransition(context.Background(), domain.SessionInterfaceTransition{
+		ID: "move-1", SessionID: id, SourceMode: domain.SessionModeChat, TargetMode: domain.SessionModeChat,
+		Policy: domain.SessionInterfaceTransitionDrain, HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
+		Phase: phase, SourceAccountID: "old-account", TargetAccountID: "new-account", CreatedAt: now, UpdatedAt: now,
+	}); err != nil || !created {
+		t.Fatalf("create account move: created=%v err=%v", created, err)
+	}
+}
+
+func TestSendWhileAccountMoveDrainsIsRefusedWithoutQueueing(t *testing.T) {
+	st, id := openProvisioningStore(t, domain.SessionProvisionReady)
+	svc := provisioningService(t, st)
+	startAccountMove(t, st, id, domain.SessionInterfaceTransitionDraining)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := svc.Send(ctx, id, ports.ChatUserMessage{Text: "sent while the turn drains", Origin: domain.MessageOriginHuman})
+	if !errors.Is(err, chatsvc.ErrNoController) {
+		t.Fatalf("send while the old agent drains = %v, want an immediate ErrNoController", err)
+	}
+	snapshot, err := svc.Snapshot(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Turns) != 0 {
+		t.Fatalf("turns = %+v, want nothing queued for the old agent", snapshot.Turns)
+	}
+}
+
+func TestSendDuringAccountMoveQueuesForTheNewAgent(t *testing.T) {
+	st, id := openProvisioningStore(t, domain.SessionProvisionReady)
+	svc := provisioningService(t, st)
+	ctx := context.Background()
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), id) })
+	startAccountMove(t, st, id, domain.SessionInterfaceTransitionSourceStopped)
+
+	turn, err := svc.Send(ctx, id, ports.ChatUserMessage{Text: "sent during the move", Origin: domain.MessageOriginHuman})
+	if err != nil || turn.State != domain.TurnStateQueued {
+		t.Fatalf("send during account move = %+v, err = %v; want queued", turn, err)
+	}
+	if _, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: id, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ControllerReady: func(chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			return chatsvc.ControllerCommit{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("start the new agent: %v", err)
+	}
+	snapshot, err := svc.Snapshot(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Turns) != 1 || snapshot.Turns[0].State == domain.TurnStateFailed {
+		t.Fatalf("turns after the new agent started = %+v, want the queued message kept", snapshot.Turns)
+	}
+}
+
+func TestAccountMoveDrainsOnlyWithTheCommittedTargetOwner(t *testing.T) {
+	for _, recoveryCode := range []string{"", "DAEMON_RESTARTED", "TRANSITION_STATE_FAILED"} {
+		name := recoveryCode
+		if name == "" {
+			name = "normal_activation"
+		}
+		t.Run(name, func(t *testing.T) {
+			restart := recoveryCode != ""
+			ctx := t.Context()
+			st, id := openProvisioningStore(t, domain.SessionProvisionReady)
+			now := time.Now()
+			for _, account := range []string{"old-account", "new-account"} {
+				if err := st.CreateAgentAccount(ctx, domain.AgentAccount{ID: account, Provider: domain.AgentAccountProviderCodex, Home: t.TempDir(), ProfileKind: domain.AgentAccountProfileExternal, CreatedAt: now}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bind := func(account string) {
+				t.Helper()
+				if err := st.BindSessionAgentAccount(ctx, id, domain.AgentAccountProviderCodex, account, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bind("old-account")
+			startAccountMove(t, st, id, domain.SessionInterfaceTransitionSourceStopped)
+			conversation := newFakeConversation()
+			var providerID string
+			if restart {
+				providerID = conversation.ProviderConversationID()
+				rec, found, err := st.GetSession(ctx, id)
+				if err != nil || !found {
+					t.Fatalf("read fixture session: %v, %v", found, err)
+				}
+				rec.Metadata.ProviderConversationID = providerID
+				rec.Metadata.ControllerGeneration = "target-before-reconnect"
+				if err := st.UpdateSession(ctx, rec); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := st.CreateConversation(ctx, "account-move-root", domain.ConversationScopeSession, testProject, id, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			svc := chatsvc.New(chatsvc.Options{Store: st, Sessions: st, Reader: fullSnapshotReader(st), Drivers: fakeRegistry{driver: fakeDriver{conv: conversation}}, Log: slog.New(slog.DiscardHandler), NewID: sequentialIDs("account-move")})
+			t.Cleanup(func() { _ = svc.Stop(context.Background(), id) })
+			queued, err := svc.Send(ctx, id, ports.ChatUserMessage{Text: "post-switch task", ClientMessageID: "during-move"})
+			if err != nil || queued.State != domain.TurnStateQueued {
+				t.Fatalf("queued input: %+v, %v", queued, err)
+			}
+			if restart {
+				bind("new-account")
+				moved, err := st.AdvanceSessionInterfaceTransition(ctx, "move-1", domain.SessionInterfaceTransitionSourceStopped, domain.SessionInterfaceTransitionRecovery, providerID, recoveryCode, "", time.Now())
+				if err != nil || !moved {
+					t.Fatalf("persist restart recovery: %v, %v", moved, err)
+				}
+			}
+			targetCtx := ports.WithAgentAccount(ctx, domain.ResolvedAgentAccount{AccountID: "new-account", Provider: domain.AgentAccountProviderCodex})
+			controller, err := svc.Start(targetCtx, chatsvc.StartConfig{
+				SessionID: id, ProjectID: testProject, Kind: domain.KindWorker, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+				ProviderConversationID: providerID,
+				ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+					rec, _, err := st.GetSession(ctx, id)
+					if err != nil {
+						return chatsvc.ControllerCommit{}, err
+					}
+					rec.Metadata.ProviderConversationID = result.ProviderConversationID
+					rec.Metadata.ControllerGeneration = result.ControllerGeneration
+					return chatsvc.ControllerCommit{}, st.UpdateSession(ctx, rec)
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !restart {
+				_ = svc.DrainQueued(ctx, id)
+				if len(conversation.sentMessages()) != 0 {
+					t.Fatal("provider received queued input before account commit")
+				}
+				bind("new-account")
+				if err := svc.DrainQueued(ctx, id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := conversation.sentMessages(); len(got) != 1 || got[0].Text != "post-switch task" {
+				t.Fatalf("provider did not receive the accepted input once: %+v", got)
+			}
+			sent, err := st.TurnByID(ctx, queued.ID)
+			if err != nil || sent.State != domain.TurnStateRunning || sent.AgentSettings == nil || sent.AgentSettings.Owner == nil ||
+				sent.AgentSettings.Owner.AccountID != "new-account" || sent.AgentSettings.Owner.ControllerGeneration != controller.Generation() || sent.AgentSettings.Revision == nil {
+				t.Fatalf("dispatched with an unqualified target owner: %+v, %v", sent.AgentSettings, err)
+			}
+			if restart && (sent.AgentSettings.Owner.ProviderConversationID != providerID || sent.AgentSettings.Owner.ControllerGeneration == "target-before-reconnect") {
+				t.Fatalf("reconnect did not dispatch from the new owner of the same conversation: %+v", sent.AgentSettings.Owner)
+			}
+		})
 	}
 }
 

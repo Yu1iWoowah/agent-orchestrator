@@ -76,7 +76,7 @@ func TestDeviceClaudeSpawnDoesNotUseManagedIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 			runtime := &bindingRuntime{}
-			svc, _, lc, err := startSession(ctx, config.Config{DataDir: data, StateDir: data, Agent: "claude-code"}, runtime, st, lifecycle.New(st, nil), nil, newSessionMessenger(st, runtime, log), telemetryadapter.NoopSink{}, nil, agents, catalog, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, accounts, log)
+			svc, _, lc, err := startSession(ctx, config.Config{DataDir: data, StateDir: data, Agent: "claude-code"}, runtime, st, lifecycle.New(st, nil), nil, newSessionMessenger(st, runtime, log), telemetryadapter.NoopSink{}, nil, agents, catalog, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, accounts, nil, log)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -253,7 +253,7 @@ func TestWiringConcurrentAccountBindingsSurviveDefaultsAndRestore(t *testing.T) 
 	}
 	runtime := &bindingRuntime{}
 	cfg := config.Config{DataDir: data, StateDir: data, Agent: "codex"}
-	svc, reviews, lc, err := startSession(ctx, cfg, runtime, st, lifecycle.New(st, nil), nil, newSessionMessenger(st, runtime, log), telemetryadapter.NoopSink{}, nil, agents, catalog, nil, nil, nil, nil, nil, nil, nil, nil, nil, reviewers, nil, accounts, log)
+	svc, reviews, lc, err := startSession(ctx, cfg, runtime, st, lifecycle.New(st, nil), nil, newSessionMessenger(st, runtime, log), telemetryadapter.NoopSink{}, nil, agents, catalog, nil, nil, nil, nil, nil, nil, nil, nil, nil, reviewers, nil, accounts, nil, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +383,7 @@ func TestWiringConcurrentAccountBindingsSurviveDefaultsAndRestore(t *testing.T) 
 			t.Fatal(e)
 		}
 	}
-	_, _, newLC, e := startSession(ctx, cfg, runtime, st, lifecycle.New(st, nil), nil, newSessionMessenger(st, runtime, log), telemetryadapter.NoopSink{}, nil, agents, catalog, nil, nil, nil, nil, nil, nil, nil, nil, nil, reviewers, nil, restored, log)
+	_, _, newLC, e := startSession(ctx, cfg, runtime, st, lifecycle.New(st, nil), nil, newSessionMessenger(st, runtime, log), telemetryadapter.NoopSink{}, nil, agents, catalog, nil, nil, nil, nil, nil, nil, nil, nil, nil, reviewers, nil, restored, nil, log)
 	if e != nil {
 		t.Fatal(e)
 	}

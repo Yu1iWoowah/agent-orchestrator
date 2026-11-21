@@ -18,7 +18,7 @@ import {
 } from "./api";
 import type { ServerConfig } from "./config";
 import { conversationErrorIsPermanent } from "./chat/conversationErrors";
-import { reviewBatchAction, reviewForPullRequest, reviewPrimaryAction, reviewStatusLabel, reviewVerdictLabel } from "./reviewView";
+import { latestAutoReviewFailure, reviewBatchAction, reviewFailureDetail, reviewForPullRequest, reviewPrimaryAction, reviewRunSendable, reviewStatusLabel, reviewVerdictLabel } from "./reviewView";
 
 const cfg: ServerConfig = { host: "ao.test", httpPort: "3011", muxPort: "3011", secure: false, password: "secret12" };
 const sessionId = "worker/1";
@@ -88,6 +88,25 @@ describe("mobile review lifecycle", () => {
 		vi.stubGlobal("fetch", daemon.fetch);
 	});
 	afterEach(() => vi.unstubAllGlobals());
+
+	it("uses completed daemon results and bodyless automatic failures across review endpoints", async () => {
+		const completed = run({ status: "completed" });
+		const failed = run({ id: "failed", prUrl: pr2, status: "failed", triggerSource: "auto", verdict: "", body: "", failureReason: "process_exited" });
+		const legacy = run({ id: "legacy", status: "delivered" });
+		daemon.state.runs = [completed, failed, legacy];
+		daemon.state.reviews = [
+			review(pr1, 41, { status: "up_to_date", latestRun: completed, previousRun: legacy }),
+			review(pr2, 42, { latestRun: failed }),
+		];
+		for (const response of [await getSessionReviews(cfg, sessionId), await switchSessionReviewer(cfg, sessionId, "codex")]) {
+			expect(response.runs.map(reviewRunSendable)).toEqual([true, false, true]);
+			expect(reviewRunSendable(response.reviews[0]!.latestRun!)).toBe(true);
+			expect(reviewRunSendable(response.reviews[0]!.previousRun!)).toBe(true);
+			const autoFailure = latestAutoReviewFailure(response.reviews, true);
+			expect(autoFailure).toEqual(failed);
+			expect(reviewFailureDetail(autoFailure!)).toBe("process exited");
+		}
+	});
 
 	it("moves a multi-PR batch from no reviews through running and cancellation", async () => {
 		expect((await getSessionReviews(cfg, sessionId)).reviews).toEqual([]);

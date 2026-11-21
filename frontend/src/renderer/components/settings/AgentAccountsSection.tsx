@@ -1,41 +1,29 @@
-import { LoaderCircle, Plus, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { Info, LoaderCircle, Plus, RefreshCw, RotateCcw, Trash2, TriangleAlert, X } from "@/components/app-icons";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-	agentAccountErrorMessage,
-	useAgentAccountUsageOwners,
-	agentAccountName,
-	agentAccountProviderNames,
-	useAgentAccountActions,
-	useAgentAccounts,
-	useAgentAccountUsage,
-	type AgentAccount,
-	type AgentAccountLimitWindow,
-	type AgentAccountLogin,
-	type AgentAccountProvider,
-} from "../../hooks/useAgentAccounts";
+import { agentAccountErrorMessage, useAgentAccountUsageOwners, agentAccountName, agentAccountLabel, agentAccountProviderFor, agentAccountProviderNames, describeAccountProblem, useAgentAccountActions, useAgentAccounts, useAgentAccountUsage, withoutSameLogins, type AgentAccount, type AgentAccountLimitWindow, type AgentAccountLogin, type AgentAccountProvider } from "../../hooks/useAgentAccounts";
 import type { TerminalSessionState } from "../../hooks/useTerminalSession";
+import { baseUrlForHost } from "../../lib/host-clients";
 import { useNavigateToSession } from "../../lib/navigate-to-session";
-import { useUiStore } from "../../stores/ui-store";
 import { useShellMaybe } from "../../lib/shell-context";
-import { useResolvedTheme } from "../../stores/ui-store";
+import { formatRelativeTime } from "../../lib/usage-format";
+import { cn } from "../../lib/utils";
+import { useSettings, useUpdateAccountHandoff } from "../../hooks/useSettings";
+import { createTerminalMux, muxUrlFromApiBase } from "../../lib/terminal-mux";
+import { useResolvedTheme, useUiStore } from "../../stores/ui-store";
+import { CodexAccountsSection } from "./CodexAccountsSection";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { TerminalPane } from "../TerminalPane";
 import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
-import { HarnessDetailGroup } from "./harness/harness-ui";
-import {
-	formatCompactNumber,
-	formatPercentage,
-	formatPlanName,
-	formatResetTime,
-} from "./CodexAccountDetails";
+import { HarnessDetailGroup, HarnessDetailRow } from "./harness/harness-ui";
 
 const providerNames = agentAccountProviderNames;
 
-// One sign-in per provider, kept outside the page so leaving Settings does not
-// lose a browser sign-in in progress.
-let pendingLogins: Partial<Record<AgentAccountProvider, AgentAccountLogin>> = {};
+// One sign-in per host and provider, kept outside the page so leaving Settings
+// does not lose a browser sign-in in progress.
+let pendingLogins: Partial<Record<string, AgentAccountLogin>> = {};
 
 /** The CLI's own login signs in and out through the harness's login terminal. */
 export type CliLoginControls = {
@@ -46,23 +34,16 @@ export type CliLoginControls = {
 	onLogout: () => void;
 };
 
-/** Every Claude Code and Codex account with all of its limits. Each account is
- * a config folder of the CLI itself; "This computer" is the CLI's own login. */
 /** One CLI's subscription accounts on its Harness Account tab: the CLI's own
  * login and the accounts added in AO, with their limits, default and sign-in. */
-export function AgentAccountsPanel({
-	provider,
-	cliLogin,
-}: {
-	provider: AgentAccountProvider;
-	cliLogin?: CliLoginControls;
-}) {
+export function AgentAccountsPanel({ provider, cliLogin, hostId }: { provider: AgentAccountProvider; cliLogin?: CliLoginControls; hostId?: string }) {
 	const { t } = useTranslation();
+	const accounts = useAgentAccounts(true, hostId);
+	const usage = useAgentAccountUsage(30, hostId);
+	const actions = useAgentAccountActions(hostId);
+	const loginKey = `${hostId ?? ""}|${provider}`;
 	const navigateToSession = useNavigateToSession();
 	const closeSettings = useUiStore((state) => state.closeSettings);
-	const accounts = useAgentAccounts();
-	const usage = useAgentAccountUsage();
-	const actions = useAgentAccountActions();
 	const [logins, setLogins] = useState(() => pendingLogins);
 	const [loginNote, setLoginNote] = useState("");
 	const [loginSaved, setLoginSaved] = useState(false);
@@ -71,15 +52,17 @@ export function AgentAccountsPanel({
 	const cancelling = useRef(false);
 	const [busy, setBusy] = useState<string | null>(null);
 	const [error, setError] = useState("");
+	const [legacyOpen, setLegacyOpen] = useState(false);
 	const [loggingOut, setLoggingOut] = useState<AgentAccount | null>(null);
 	const addTrigger = useRef<HTMLButtonElement>(null);
 	const [removing, setRemoving] = useState<AgentAccount | null>(null);
 	const owners = useAgentAccountUsageOwners(removing?.id);
-	const tokensByAccount = new Map(
-		(usage.data ?? []).map((row) => [row.accountId, row.inputTokens + row.outputTokens]),
-	);
-	const rows = (accounts.data ?? []).filter((account) => account.provider === provider);
-	const login = logins[provider];
+	const tokensByAccount = new Map((usage.data ?? []).map((row) => [row.accountId, row.inputTokens + row.outputTokens]));
+	const providerAccounts = (accounts.data ?? []).filter((account) => account.provider === provider);
+	const hasMultipleAccounts = withoutSameLogins(providerAccounts).filter((account) => !account.device || account.signedIn).length > 1;
+	const rows = withoutSameLogins(providerAccounts, providerAccounts.find((account) => account.default)?.id);
+	const cliTwinOf = (account: AgentAccount) => account.device ? undefined : providerAccounts.find((other) => other.sameLoginAs === account.id && !rows.includes(other));
+	const login = logins[loginKey];
 	useLayoutEffect(() => {
 		if (!login && busy === null && returnFocus.current) {
 			returnFocus.current = false;
@@ -100,7 +83,7 @@ export function AgentAccountsPanel({
 	}, []);
 
 	const setLogin = (next: AgentAccountLogin | undefined) => {
-		pendingLogins = { ...pendingLogins, [provider]: next };
+		pendingLogins = { ...pendingLogins, [loginKey]: next };
 		setLogins(pendingLogins);
 	};
 	// accountId signs that saved account in again, in its own folder.
@@ -118,33 +101,29 @@ export function AgentAccountsPanel({
 	const verifying = useRef(false);
 	const checkLogin = (current: AgentAccountLogin) => {
 		// A closed sign-in's terminal still reports its exit; there is nothing left to check.
-		if (pendingLogins[provider]?.operationId !== current.operationId || verifying.current) return;
+		if (pendingLogins[loginKey]?.operationId !== current.operationId || verifying.current) return;
 		void verifyLogin(current);
 	};
-	const verifyLogin = (current: AgentAccountLogin) =>
-		run(`verify:${provider}`, async () => {
-			verifying.current = true;
-			const result = await actions.verifyLogin(current.operationId).finally(() => {
-				verifying.current = false;
-			});
-			if (result.status === "waiting") setLoginNote(t("settings.agentAccounts.loginWaiting"));
-			else {
-				returnFocus.current = true;
-				setLogin(undefined);
-				if (result.status === "duplicate")
-					setError(
-						t("settings.agentAccounts.loginDuplicate", {
-							email: result.account?.email ?? "",
-						}),
-					);
-				if (result.status === "mismatch")
-					setError(
-						t("settings.agentAccounts.loginMismatch", {
-							email: result.account?.email ?? "",
-						}),
-					);
+	const verifyLogin = (current: AgentAccountLogin) => run(`verify:${provider}`, async () => {
+		verifying.current = true;
+		const result = await actions.verifyLogin(current.operationId).finally(() => { verifying.current = false; });
+		if (result.status === "waiting") setLoginNote(t("settings.agentAccounts.loginWaiting"));
+		else if (result.status === "not_subscription") setLoginNote(t("settings.agentAccounts.loginNotSubscription"));
+		else {
+			returnFocus.current = true;
+			setLogin(undefined);
+			if (result.status === "duplicate") setError(t("settings.agentAccounts.loginDuplicate", { email: result.account?.email ?? "" }));
+			if (result.status === "mismatch") setError(t("settings.agentAccounts.loginMismatch", { email: [result.account?.email, result.account?.orgName].filter(Boolean).join(" · ") }));
+			if (result.status === "complete") {
+				// A chat turn that sent the user here to log in gets them back.
+				const ui = useUiStore.getState();
+				const waiting = ui.loginReturn;
+				if (waiting && agentAccountProviderFor(waiting.agentId) === provider) {
+					ui.completeLoginReturn(waiting.agentId, hostId, result.account?.id);
+				}
 			}
-		});
+		}
+	});
 	const closeLogin = (current: AgentAccountLogin) => {
 		if (cancelling.current) return;
 		cancelling.current = true;
@@ -160,6 +139,15 @@ export function AgentAccountsPanel({
 			cancelling.current = false;
 		});
 	};
+	const requestedLogin = useUiStore((state) => state.accountLogin);
+	useEffect(() => {
+		if (hostId) return;
+		const account = providerAccounts.find((row) => row.id === requestedLogin);
+		if (!account || (account.device && (!cliLogin || cliLogin.disabled))) return;
+		useUiStore.setState({ accountLogin: null });
+		if (account.device) cliLogin?.onSignIn();
+		else void startLogin(account.id);
+	}, [requestedLogin, accounts.data, cliLogin?.disabled, hostId]);
 
 	return (
 		<>
@@ -219,7 +207,7 @@ export function AgentAccountsPanel({
 				{login ? (
 					<div className="px-3 py-2.5">
 						<LoginTerminal
-							login={login}
+							login={login} hostId={hostId}
 							note={loginNote}
 							pending={busy === `verify:${provider}`}
 							onCheck={checkLogin}
@@ -242,11 +230,17 @@ export function AgentAccountsPanel({
 						{t("settings.agentAccounts.loading")}
 					</p>
 				) : null}
+			{/* The CLI login does not wait on the list: a cold read can take a while, and a failed one has no row. */}
+			{cliLogin && !providerAccounts.some((account) => account.device) ? <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+				<p className="truncate text-sm font-medium text-foreground">{t("settings.agentAccounts.cliLoginOf", { provider: providerNames[provider] })}</p>
+				<Button type="button" size="sm" variant="ghost" data-terminal-focus-handoff="true" disabled={busy !== null || cliLogin.disabled} onClick={cliLogin.onSignIn}>{t("settings.harness.login")}</Button>
+			</div> : null}
 				{rows.map((account) => (
 					<AccountRow
 						key={account.id}
 						account={account}
-						aoTokens={tokensByAccount.get(account.id)}
+                        name={agentAccountLabel(account, rows, t)}
+						aoTokens={(tokensByAccount.get(account.id) ?? 0) + (cliTwinOf(account) ? tokensByAccount.get(cliTwinOf(account)!.id) ?? 0 : 0) || undefined}
 						busy={busy}
 						cliLogin={account.device ? cliLogin : undefined}
 						onMakeDefault={() =>
@@ -264,7 +258,17 @@ export function AgentAccountsPanel({
 						}}
 					/>
 				))}
+                {!hostId && hasMultipleAccounts ? <AccountHandoffRow /> : null}
 			</HarnessDetailGroup>
+			{provider === "codex" && !hostId ? <div>
+				<Button type="button" variant="ghost" aria-expanded={legacyOpen} aria-controls="legacy-codex-logins" onClick={() => setLegacyOpen(!legacyOpen)}>
+					{t("settings.agentAccounts.manageLegacyAccounts")}
+				</Button>
+				{legacyOpen ? <div id="legacy-codex-logins" className="mt-3 space-y-3">
+					<p className="text-sm text-muted-foreground">{t("settings.agentAccounts.legacyAccountsDescription")}</p>
+					<CodexAccountsSection title={t("settings.agentAccounts.legacyAccountsTitle")} />
+				</div> : null}
+			</div> : null}
 			{loggingOut ? (
 				<ConfirmDialog
 					open
@@ -296,6 +300,7 @@ export function AgentAccountsPanel({
 						email: agentAccountName(removing, t),
 					})}
 					confirmLabel={t("settings.agentAccounts.remove")}
+                    busyLabel={t("settings.agentAccounts.removing")}
 					busy={busy === `remove:${removing.id}`}
 					error={error || undefined}
 					onConfirm={() =>
@@ -379,6 +384,7 @@ export function AgentAccountsPanel({
 
 function AccountRow({
 	account,
+	name,
 	aoTokens,
 	busy,
 	cliLogin,
@@ -389,6 +395,7 @@ function AccountRow({
 	onRemove,
 }: {
 	account: AgentAccount;
+	name: string;
 	aoTokens: number | undefined;
 	busy: string | null;
 	/** Only on the CLI's own login, which has no folder of its own to remove. */
@@ -404,7 +411,7 @@ function AccountRow({
 	const resets = account.limits?.resetCredits ?? 0;
 	const meta = [
 		plan ? t("settings.codexAccounts.planLabel", { name: plan }) : null,
-		account.signedIn || account.problem ? null : t("settings.agentAccounts.signedOut"),
+		account.signedIn || account.problem ? null : account.loggedIn ? t("settings.agentAccounts.noSubscription") : t("settings.agentAccounts.signedOut"),
 		aoTokens
 			? t("settings.agentAccounts.aoUsage", {
 					tokens: formatCompactNumber(aoTokens, i18n.language),
@@ -418,10 +425,10 @@ function AccountRow({
 			<div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
 				<div className="min-w-0">
 					<p
-						title={agentAccountName(account, t)}
+						title={name}
 						className="truncate text-sm font-medium text-foreground"
 					>
-						{agentAccountName(account, t)}
+						{name}
 					</p>
 					<p className="mt-0.5 truncate text-xs text-muted-foreground">{meta}</p>
 				</div>
@@ -499,7 +506,7 @@ function AccountRow({
 						</Button>
 					) : null}
 					{account.device ? (
-						cliLogin?.canLogout && account.signedIn ? (
+						cliLogin?.canLogout && account.loggedIn ? (
 							<Button
 								type="button"
 								size="sm"
@@ -536,17 +543,60 @@ function AccountRow({
 					})}
 				</p>
 			) : null}
-			{account.problem ? (
-				<p className="mt-2 text-xs text-warning">
-					{agentAccountErrorMessage(account.problem, account.email)}
-				</p>
-			) : null}
+			{account.problem && /^account_[a-z_]+$/.test(account.problem) ? (
+                <p className="mt-2 text-xs text-warning">{agentAccountErrorMessage(account.problem, account.email)}</p>
+            ) : account.problemKind || account.problem ? <AccountProblemNote account={account} /> : null}
 			<AccountLimits account={account} />
 		</div>
 	);
 }
 
-/** The account's limit meters, shared by the Accounts page and the session summary. */
+/** Why the account's last check failed, in plain words. A failure that clears
+ * on its own reads as a muted note beside the age of the numbers still shown;
+ * one that needs the user is a warning. The CLI's own error is under Details. */
+export function AccountProblemNote({ account }: { account: AgentAccount }) {
+	const { t, i18n } = useTranslation();
+	const problem = describeAccountProblem(account, t);
+	if (!problem) return null;
+	const fetchedAt = account.limits?.windows.length ? account.limits.fetchedAt : undefined;
+	const age = !problem.actionable && fetchedAt ? t("settings.agentAccounts.updatedAt", { value: formatRelativeTime(fetchedAt, new Date(), i18n.language) }) : null;
+	return <p className={cn("mt-2 flex items-start gap-1.5 text-xs", problem.actionable ? "text-warning" : "text-muted-foreground")} data-account-problem={account.problemKind ?? "unavailable"}>
+		{problem.actionable ? <TriangleAlert aria-hidden="true" className="mt-px size-icon-sm shrink-0" /> : null}
+		<span className="min-w-0">
+			{age ? `${age} · ${problem.text}` : problem.text}
+			{problem.detail ? <> <Tooltip><TooltipTrigger asChild><button type="button" className="text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground focus-visible:text-foreground">{t("settings.agentAccounts.problemDetails")}</button></TooltipTrigger><TooltipContent className="max-w-sm break-words font-mono">{problem.detail}</TooltipContent></Tooltip></> : null}
+		</span>
+	</p>;
+}
+
+function AccountHandoffRow() {
+	const { t } = useTranslation();
+	const { settings, isLoading } = useSettings();
+	const { update, saving, error } = useUpdateAccountHandoff();
+	return <>
+		<HarnessDetailRow label={<span className="inline-flex items-center gap-1.5">
+			{t("settings.agentAccounts.handoff")}
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<Button type="button" size="icon-xs" variant="quiet" aria-label={t("settings.agentAccounts.problemDetails")}>
+						<Info className="size-icon-sm" aria-hidden="true" />
+					</Button>
+				</TooltipTrigger>
+				<TooltipContent className="max-w-sm">{t("settings.agentAccounts.handoffDescription")}</TooltipContent>
+			</Tooltip>
+		</span>}>
+			<Switch
+				aria-label={t("settings.agentAccounts.handoff")}
+				checked={settings?.accountHandoff ?? false}
+				disabled={isLoading || saving || !settings}
+				onCheckedChange={update}
+			/>
+		</HarnessDetailRow>
+		{error ? <p role="alert" className="px-3 pb-2 text-xs text-error">{error}</p> : null}
+	</>;
+}
+
+/** The account's limit meters, shared by the Harness Account tab and the session summary. */
 export function AccountLimits({ account }: { account: AgentAccount }) {
 	const { t, i18n } = useTranslation();
 	const windows = account.limits?.windows ?? [];
@@ -588,6 +638,34 @@ export function AccountLimits({ account }: { account: AgentAccount }) {
 	);
 }
 
+export function formatPlanName(plan: string | null | undefined): string | null {
+	const value = plan?.trim();
+	if (!value) return null;
+	const known: Record<string, string> = { free: "Free", plus: "Plus", pro: "Pro", max: "Max", team: "Team", business: "Business", enterprise: "Enterprise" };
+	return known[value.toLowerCase()] ?? value;
+}
+
+function formatPercentage(value: number, locale?: string): string {
+	return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value)}%`;
+}
+
+function formatCompactNumber(value: number, locale: string): string {
+	return new Intl.NumberFormat(locale, { notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
+/** A reset time: the hour today, or day and hour later; `full` is the tooltip. */
+function formatResetTime(value: string | null | undefined, locale: string): { visible: string; full: string } | null {
+	if (!value) return null;
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return null;
+	const now = new Date();
+	const sameDay = date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+	return {
+		visible: new Intl.DateTimeFormat(locale, sameDay ? { hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(date),
+		full: new Intl.DateTimeFormat(locale, { dateStyle: "full", timeStyle: "long" }).format(date),
+	};
+}
+
 /** Formats an amount in the server's currency. A code Intl does not know
  * throws, so it falls back to the bare number and the code. */
 function formatMoney(value: number, currency: string | undefined, locale: string): string {
@@ -603,44 +681,22 @@ function formatMoney(value: number, currency: string | undefined, locale: string
 
 function LimitRow({ window, locale }: { window: AgentAccountLimitWindow; locale: string }) {
 	const { t } = useTranslation();
-	const remaining = Math.max(0, Math.min(100, 100 - window.usedPercent));
-	const value = formatPercentage(remaining, locale);
+	// The provider reports consumed capacity; the meter fills as usage grows.
+	const used = Math.max(0, Math.min(100, window.usedPercent));
+	const value = formatPercentage(used, locale);
 	const reset = formatResetTime(window.resetsAt, locale);
-	const fill = remaining <= 0 ? "bg-error" : remaining <= 25 ? "bg-warning" : "bg-foreground/80";
-	return (
-		<>
-			<p className="whitespace-nowrap text-foreground">{window.label}</p>
-			<p className="min-w-0 truncate text-muted-foreground" title={reset?.full}>
-				{reset ? t("settings.codexAccounts.capacityResets", { value: reset.visible }) : null}
-			</p>
-			<div
-				role="progressbar"
-				aria-label={t("settings.codexAccounts.remainingForLimit", {
-					label: window.label,
-					value,
-				})}
-				aria-valuemin={0}
-				aria-valuemax={100}
-				aria-valuenow={remaining}
-				className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
-			>
-				<div className={`h-full rounded-full ${fill}`} style={{ width: `${remaining}%` }} />
-			</div>
-			<p className="whitespace-nowrap text-right tabular-nums text-muted-foreground">
-				{t("settings.codexAccounts.percentLeft", { value })}
-			</p>
-		</>
-	);
+	const fill = used >= 100 ? "bg-error" : used >= 75 ? "bg-warning" : "bg-foreground/80";
+	return <>
+		<p className="whitespace-nowrap text-foreground">{window.label}</p>
+		<p className="min-w-0 truncate text-muted-foreground" title={reset?.full}>{reset ? t("settings.codexAccounts.capacityResets", { value: reset.visible }) : null}</p>
+		<div role="progressbar" aria-label={t("settings.codexAccounts.usedForLimit", { label: window.label, value })} aria-valuemin={0} aria-valuemax={100} aria-valuenow={used} className="h-1.5 w-full overflow-hidden rounded-full bg-muted"><div className={`h-full rounded-full ${fill}`} style={{ width: `${used}%` }} /></div>
+		<p className="whitespace-nowrap text-right tabular-nums text-muted-foreground">{t("settings.codexAccounts.percentUsed", { value })}</p>
+	</>;
 }
 
-function LoginTerminal({
-	login,
-	note,
-	pending,
-	onCheck,
-	onClose,
-}: {
+function LoginTerminal({ login, hostId, note, pending, onCheck, onClose }: {
 	login: AgentAccountLogin;
+	hostId?: string;
 	note: string;
 	pending: boolean;
 	onCheck: (login: AgentAccountLogin) => void;
@@ -650,6 +706,11 @@ function LoginTerminal({
 	const theme = useResolvedTheme();
 	const shell = useShellMaybe();
 	const [state, setState] = useState<TerminalSessionState>("connecting");
+	const createMux = useCallback(() => {
+		const base = hostId ? baseUrlForHost(hostId) : undefined;
+		if (!base) throw new Error("Remote host disconnected");
+		return createTerminalMux(muxUrlFromApiBase(base));
+	}, [hostId]);
 	const checkRef = useRef(onCheck);
 	const containerRef = useRef<HTMLDivElement>(null);
 	// The sign-in owns Escape as soon as it appears, before PTY attachment can
@@ -701,7 +762,8 @@ function LoginTerminal({
 			<div className="h-[300px] min-h-0">
 				<TerminalPane
 					key={login.operationId}
-					daemonReady={shell ? shell.daemonStatus.state === "ready" : true}
+                        createMux={hostId ? createMux : undefined}
+					daemonReady={hostId || !shell ? true : shell.daemonStatus.state === "ready"}
 					focusRequested={state === "attached"}
 					fontSize={12}
 					onTerminalStateChange={handleState}

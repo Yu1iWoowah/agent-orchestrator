@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../hooks/useWorkspaceQuery", () => ({
 	workspaceQueryKeyForHost: () => ["workspaces"],
 	cloudSessionsQueryKey: ["cloud-sessions"],
+	useRemoteWorkspaces: () => ({ data: [], failedHostIds: [], refetch: vi.fn() }),
 	useWorkspaceQuery: () => ({
 		isLoading: false,
 		data: [
@@ -133,6 +134,7 @@ it("filters Source and Archive and retains them across leaving the page", async 
 	await user.click(screen.getByRole("button", { name: "Filter by source" }));
 	await user.click(screen.getByRole("menuitemradio", { name: /^Shared$/ }));
 	expect(screen.queryByText("worker/guide.md")).toBeNull();
+	await user.click(screen.getByRole("button", { name: "Search artifacts" }));
 	fireEvent.change(screen.getByRole("searchbox", { name: "Search artifacts" }), { target: { value: "shared/" } });
 	view.unmount();
 	view.cache.clear();
@@ -310,8 +312,8 @@ it.each(["worker", "orchestrator"] as const)(
 		const legacy = JSON.stringify([source + "-1", source + "/guide.md"]);
 		useArtifactsViewStore.setState({ pinnedArtifactIds: [legacy] });
 		const view = setup();
-		await screen.findByRole("region", { name: "Pinned" });
-		const project = within(screen.getByRole("region", { name: "Healthy project" }));
+		await waitFor(() => expect(useArtifactsViewStore.getState().pinnedArtifactIds).toHaveLength(2));
+		const project = within(screen.getByRole("list", { name: "Artifacts" }));
 		await userEvent.click(project.getByRole("button", { name: /More actions/ }));
 		await userEvent.click(screen.getByRole("menuitem", { name: "Delete artifact" }));
 		expect(mocks.remove).not.toHaveBeenCalled();
@@ -380,7 +382,8 @@ it.each(["other project", "other session"])("migrates healthy worker pins despit
 	const legacy = JSON.stringify(["worker-1", "worker/guide.md"]);
 	useArtifactsViewStore.setState({ pinnedArtifactIds: [legacy] });
 	const view = setup();
-	const pinned = await screen.findByRole("region", { name: "Pinned" });
+	await waitFor(() => expect(useArtifactsViewStore.getState().pinnedArtifactIds).toHaveLength(2));
+	const pinned = screen.getByRole("list", { name: "Artifacts" });
 	expect(within(pinned).getByText("worker/guide.md")).toBeVisible();
 	expect(useArtifactsViewStore.getState().pinnedArtifactIds).toHaveLength(2);
 	expect(useArtifactsViewStore.getState().pinAliases[legacy]).toBeDefined();

@@ -165,7 +165,7 @@ func (s *Store) WithProjectDocumentPublication(ctx context.Context, id domain.Pr
 		return false, err
 	}
 	defer func() { _, _ = conn.ExecContext(context.Background(), "ROLLBACK") }()
-	q := gen.New(conn)
+	q := gen.New(utcTimes{conn})
 	matched, err := projectDocumentWriterMatches(ctx, q, id, expected, revision, false)
 	if err != nil || !matched {
 		return false, err

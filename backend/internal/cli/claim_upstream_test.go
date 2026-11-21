@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -21,7 +20,7 @@ func TestClaimCommandsCanonicalRepository(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/spawn=%t/%s", provider.name, spawn, ref), func(t *testing.T) {
 					cfg := setConfigEnv(t)
 					var captured claimPRRequest
-					srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					srv := newFixtureServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						w.Header().Set("Content-Type", "application/json")
 						switch {
 						case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":

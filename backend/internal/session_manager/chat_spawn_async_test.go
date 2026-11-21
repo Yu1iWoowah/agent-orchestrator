@@ -3,6 +3,7 @@ package sessionmanager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -134,6 +135,18 @@ func (s *failReadyProvisionStore) SetSessionProvisionState(ctx context.Context, 
 	return s.fakeStore.SetSessionProvisionState(ctx, id, state, message, now)
 }
 
+// seedRecordingStore keeps the provision state each session row was first
+// inserted with.
+type seedRecordingStore struct {
+	*fakeStore
+	seeded []domain.SessionProvisionState
+}
+
+func (s *seedRecordingStore) CreateSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, error) {
+	s.seeded = append(s.seeded, rec.ProvisionState)
+	return s.fakeStore.CreateSession(ctx, rec)
+}
+
 type countingHarnessUseGate struct{ active int }
 
 func (g *countingHarnessUseGate) TryBeginHarnessUse(domain.AgentHarness) (func(), bool) {
@@ -215,6 +228,22 @@ func testAsyncChatAnswersBeforeWorkspaceAndController(t *testing.T, kind domain.
 	}
 	if got := st.sessions[rec.ID].ProvisionState; got != domain.SessionProvisionReady {
 		t.Fatalf("provision state after start = %q, want ready", got)
+	}
+}
+
+// A view can open the session the moment its row exists. That first row must
+// already read as starting: a ready row with no controller looks stopped.
+func TestSpawnAsyncChat_FirstRowIsProvisioning(t *testing.T) {
+	m, st, _ := newChatManager(&recordingLauncher{})
+	store := &seedRecordingStore{fakeStore: st}
+	m.store = store
+	m.browserCapabilities = browsersvc.NewAuthority()
+	deferredBackground(m)
+	if _, _, _, err := m.Spawn(context.Background(), asyncChatSpawnConfig("do the thing")); err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if len(store.seeded) != 1 || store.seeded[0] != domain.SessionProvisionProvisioning {
+		t.Fatalf("seeded provision states = %v, want [provisioning]", store.seeded)
 	}
 }
 
@@ -484,15 +513,17 @@ func TestResumeFailedAsyncChatSpawnRevalidatesSavedTuning(t *testing.T) {
 				catalog.Models[0].Efforts = []string{"low", "medium"}
 			}
 			var refreshes []bool
-			m.modelCatalog = refreshRecordingCatalog{saved: catalog, fresh: catalog, refreshes: &refreshes}
+			refreshed := make(chan struct{}, 4)
+			m.modelCatalog = refreshRecordingCatalog{saved: catalog, fresh: catalog, refreshes: &refreshes, refreshed: refreshed}
 			if tc.catalogError {
 				m.modelCatalog = tuningCatalog{err: errors.New("catalog offline")}
 			}
 			ws.createErr = nil
 			_, err = m.ResumeAgentWithMode(context.Background(), rec.ID)
 			if tc.catalogError {
-				if !errors.Is(err, ports.ErrModelCapabilitiesUnavailable) || len(*deferred) != 1 || len(launcher.started) != 0 || st.sessions[rec.ID].ProvisionState != domain.SessionProvisionFailed {
-					t.Fatalf("catalog error = %v, starts = %d, want early error preserving failed session", err, len(launcher.started))
+				// An unreadable catalog no longer blocks the retry: the CLI decides.
+				if err != nil || len(*deferred) != 2 {
+					t.Fatalf("catalog error = %v, deferred starts = %d, want the retry to go ahead", err, len(*deferred))
 				}
 				return
 			}
@@ -510,8 +541,13 @@ func TestResumeFailedAsyncChatSpawnRevalidatesSavedTuning(t *testing.T) {
 			if ready.ProvisionState != domain.SessionProvisionReady || ready.Metadata.Model != tc.wantModel || ready.Metadata.Effort != tc.wantEffort {
 				t.Fatalf("persisted retry = %+v, want ready with launched tuning", ready)
 			}
-			if len(refreshes) == 0 || (tc.catalogDrift && (len(refreshes) < 2 || !refreshes[1])) {
-				t.Fatalf("catalog reads = %v, want validation and refresh on drift", refreshes)
+			if len(refreshes) == 0 {
+				t.Fatalf("catalog reads = %v, want validation against the saved catalog", refreshes)
+			}
+			if tc.catalogDrift {
+				// Drift is answered from the saved catalog; the rediscovery runs
+				// in the background rather than inside the retry.
+				waitForBackgroundRefresh(t, refreshed)
 			}
 			if len(launcher.queued) != 1 || len(launcher.drained) != 1 {
 				t.Fatalf("opening prompts = %d, drains = %d, want 1 each", len(launcher.queued), len(launcher.drained))
@@ -1050,6 +1086,94 @@ func TestSpawnAsyncChat_KillFencesWorkspacePublicationAndControllerStart(t *test
 	}
 }
 
+// Retiring an orchestrator for replacement while its background chat start is
+// still running fences that start the same way Kill does.
+func TestSpawnAsyncChat_RetireFencesWorkspacePublicationAndControllerStart(t *testing.T) {
+	launcher := &recordingLauncher{}
+	m, st, _ := newChatManager(launcher)
+	m.browserCapabilities = browsersvc.NewAuthority()
+	blockingStore := &blockingWorkspacePublishStore{
+		fakeStore: st,
+		entered:   make(chan context.Context, 1),
+		release:   make(chan struct{}),
+	}
+	m.store = blockingStore
+	deferred := deferredBackground(m)
+
+	cfg := asyncChatSpawnConfig("do the thing")
+	cfg.Kind = domain.KindOrchestrator
+	rec, _, _, err := m.Spawn(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	go (*deferred)[0]()
+	workerCtx := <-blockingStore.entered
+	retired := make(chan error, 1)
+	go func() { retired <- m.RetireForReplacement(context.Background(), rec.ID) }()
+	select {
+	case <-workerCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("RetireForReplacement did not cancel the provisioning worker")
+	}
+	close(blockingStore.release)
+	if err := <-retired; err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	stored := st.sessions[rec.ID]
+	if !stored.IsTerminated {
+		t.Fatal("retired orchestrator was not marked terminated")
+	}
+	if stored.ProvisionState != domain.SessionProvisionFailed {
+		t.Fatalf("provision state = %q, want failed", stored.ProvisionState)
+	}
+	if len(launcher.started) != 0 {
+		t.Fatal("controller started after retirement")
+	}
+}
+
+// When the background start cannot be cancelled within the teardown budget,
+// retirement fails and leaves the orchestrator as it was.
+func TestSpawnAsyncChat_RetireStopsWhenProvisioningCannotBeCancelled(t *testing.T) {
+	launcher := &recordingLauncher{}
+	m, st, _ := newChatManager(launcher)
+	m.browserCapabilities = browsersvc.NewAuthority()
+	m.killTeardown = 20 * time.Millisecond
+	blockingStore := &blockingWorkspacePublishStore{
+		fakeStore: st,
+		entered:   make(chan context.Context, 1),
+		release:   make(chan struct{}),
+	}
+	m.store = blockingStore
+	deferred := deferredBackground(m)
+
+	cfg := asyncChatSpawnConfig("do the thing")
+	cfg.Kind = domain.KindOrchestrator
+	rec, _, _, err := m.Spawn(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	background := make(chan struct{})
+	go func() { (*deferred)[0](); close(background) }()
+	<-blockingStore.entered
+
+	retired := make(chan error, 1)
+	go func() { retired <- m.RetireForReplacement(context.Background(), rec.ID) }()
+	select {
+	case err = <-retired:
+	case <-time.After(5 * time.Second):
+		close(blockingStore.release)
+		t.Fatal("RetireForReplacement did not bound its wait for the provisioning worker")
+	}
+	if err == nil || !strings.Contains(err.Error(), "cancel provisioning") {
+		t.Fatalf("retire err = %v, want cancel provisioning failure", err)
+	}
+	if st.sessions[rec.ID].IsTerminated {
+		t.Fatal("retirement marked the orchestrator terminated after failing to cancel its start")
+	}
+	close(blockingStore.release)
+	<-background
+}
+
 func TestSpawnAsyncChat_PreparedProvisionFailureClearsRemovedWorkspace(t *testing.T) {
 	launcher := &recordingLauncher{}
 	m, st, _ := newChatManager(launcher)
@@ -1122,7 +1246,7 @@ func TestReconcileLive_KeepsAnInterruptedAsyncSpawn(t *testing.T) {
 	st.sessions["mer-1"] = domain.SessionRecord{
 		ID: "mer-1", ProjectID: chatTestProject, Kind: domain.KindWorker,
 		Mode: domain.SessionModeChat, ProvisionState: domain.SessionProvisionFailed,
-		ProvisionError: "AO restarted before this session finished starting",
+		ProvisionError: "Orchestrator restarted before this session finished starting",
 	}
 
 	if err := m.reconcileLive(context.Background(), st.sessions["mer-1"]); err != nil {
@@ -1383,4 +1507,131 @@ func TestSpawnOrchestratorFallsBackToTerminalWhenChatUnsupported(t *testing.T) {
 
 func TestSpawnOrchestratorAsyncFailurePreservesSessionForRetry(t *testing.T) {
 	testResumeFailedAsyncChatSpawn(t, domain.KindOrchestrator)
+}
+
+// The provision observer is how ao.sessions.spawned learns when an
+// asynchronous start became usable or failed: it must see provisioning while
+// the request is live, then exactly the settled state, with the failure cause.
+func TestAsyncChatSpawnReportsProvisionStatesToTheObserver(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		createErr error
+		want      []domain.SessionProvisionState
+	}{
+		{"ready", nil, []domain.SessionProvisionState{domain.SessionProvisionProvisioning, domain.SessionProvisionReady}},
+		{"failed", errors.New("branch already checked out"), []domain.SessionProvisionState{domain.SessionProvisionProvisioning, domain.SessionProvisionFailed}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _, _ := newChatManager(&recordingLauncher{})
+			m.browserCapabilities = browsersvc.NewAuthority()
+			deferred := deferredBackground(m)
+			m.workspace.(*fakeWorkspace).createErr = tc.createErr
+			type requestKey struct{}
+			var states []domain.SessionProvisionState
+			var causes []error
+			var requestBound []bool
+			m.SetProvisionObserver(func(ctx context.Context, _ domain.SessionRecord, state domain.SessionProvisionState, cause error) {
+				states, causes = append(states, state), append(causes, cause)
+				requestBound = append(requestBound, ctx.Value(requestKey{}) != nil)
+			})
+			if _, _, _, err := m.Spawn(context.WithValue(context.Background(), requestKey{}, true), asyncChatSpawnConfig("do the thing")); err != nil {
+				t.Fatalf("spawn: %v", err)
+			}
+			(*deferred)[0]()
+			if !slices.Equal(states, tc.want) {
+				t.Fatalf("states = %v, want %v", states, tc.want)
+			}
+			if !requestBound[0] {
+				t.Fatal("provisioning must be observed on the request context")
+			}
+			if tc.createErr != nil && !errors.Is(causes[1], ErrWorkspaceCreate) {
+				t.Fatalf("failure cause = %v, want the workspace stage error", causes[1])
+			}
+		})
+	}
+}
+
+// Killing a session mid-start cancels its background start. The provision
+// observer must see that as a cancellation, not a launch failure.
+func TestKillDuringAsyncChatStartReportsCancellationToTheObserver(t *testing.T) {
+	m, _, _ := newChatManager(&recordingLauncher{})
+	m.browserCapabilities = browsersvc.NewAuthority()
+	deferred := deferredBackground(m)
+	var failedCauses []error
+	m.SetProvisionObserver(func(_ context.Context, _ domain.SessionRecord, state domain.SessionProvisionState, cause error) {
+		if state == domain.SessionProvisionFailed {
+			failedCauses = append(failedCauses, cause)
+		}
+	})
+	rec, _, _, err := m.Spawn(context.Background(), asyncChatSpawnConfig("do the thing"))
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	// Kill cancels the background start (cancelAsyncChatSpawn) and waits for
+	// it; cancel it the same way, let the start observe that, then kill.
+	m.asyncChatSpawnsMu.Lock()
+	run := m.asyncChatSpawns[rec.ID]
+	m.asyncChatSpawnsMu.Unlock()
+	if run == nil {
+		t.Fatal("no background start registered")
+	}
+	run.cancel()
+	(*deferred)[0]()
+	if _, err := m.Kill(context.Background(), rec.ID); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if len(failedCauses) == 0 {
+		t.Fatal("no failed provision state was observed")
+	}
+	for _, cause := range failedCauses {
+		if !errors.Is(cause, context.Canceled) {
+			t.Fatalf("failed cause = %v, want a cancellation", cause)
+		}
+	}
+}
+
+// A start left provisioning with no background run (cancelled before it began)
+// is marked failed as a cancellation too.
+func TestCancelWithoutBackgroundRunReportsCancellation(t *testing.T) {
+	m, st, _ := newChatManager(&recordingLauncher{})
+	var cause error
+	m.SetProvisionObserver(func(_ context.Context, _ domain.SessionRecord, state domain.SessionProvisionState, c error) {
+		if state == domain.SessionProvisionFailed {
+			cause = c
+		}
+	})
+	st.sessions["s-1"] = domain.SessionRecord{ID: "s-1", ProvisionState: domain.SessionProvisionProvisioning}
+	if err := m.cancelAsyncChatSpawn(context.Background(), "s-1"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if !errors.Is(cause, context.Canceled) {
+		t.Fatalf("cause = %v, want context.Canceled", cause)
+	}
+}
+
+type failAsyncSeedStore struct{ *fakeStore }
+
+func (s *failAsyncSeedStore) CreateSession(context.Context, domain.SessionRecord) (domain.SessionRecord, error) {
+	return domain.SessionRecord{}, errors.New("seed failed")
+}
+
+func TestSpawnAsyncTelemetryRequiresAcceptedBackgroundStart(t *testing.T) {
+	for _, failSeed := range []bool{true, false} {
+		t.Run(fmt.Sprint(failSeed), func(t *testing.T) {
+			m, st, _ := newChatManager(&recordingLauncher{})
+			deferredBackground(m)
+			if failSeed {
+				m.store = &failAsyncSeedStore{st}
+			}
+			ctx, trace := WithSpawnTrace(t.Context())
+			_, _, _, err := m.Spawn(ctx, asyncChatSpawnConfig(""))
+			if (err != nil) != failSeed {
+				t.Fatalf("spawn error = %v", err)
+			}
+			facts := trace.Facts()
+			if facts.Mode != domain.SessionModeChat || facts.Async == failSeed {
+				t.Fatalf("launch facts = %+v, seed failure %v", facts, failSeed)
+			}
+		})
+	}
 }

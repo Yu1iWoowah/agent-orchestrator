@@ -13,6 +13,7 @@ import (
 
 var mergeHeadSHAPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
 
+// mergePRRequest mirrors the daemon merge action request.
 type mergePRRequest struct {
 	PRURL           string `json:"prUrl"`
 	ExpectedHeadSHA string `json:"expectedHeadSha"`
@@ -81,6 +82,8 @@ func newPRMergeCommand(ctx *commandContext) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&prURL, "pr-url", "", "Full PR/MR URL matching the PR number (required)")
 	cmd.Flags().StringVar(&expectedHead, "expected-head", "", "Full reviewed commit SHA; reject a changed head (required)")
+	cmd.Flags().StringVar(&prURL, "url", "", "Full URL of the tracked pull request (required)")
+	cmd.Flags().StringVar(&expectedHead, "expected-head-sha", "", "Head commit SHA reviewed and approved for merge (required)")
 	return cmd
 }
 

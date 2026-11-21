@@ -327,6 +327,22 @@ func TestSessionsAPI_ActivityUsageFailureDoesNotRejectAgentSignal(t *testing.T) 
 	}
 }
 
+func TestSessionsAPI_ActivityReturnsRetryableErrorWhenUsageQueueCloses(t *testing.T) {
+	usage := &fakeUsageHookRecorder{err: usagesvc.ErrHookQueueClosing}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(
+		config.Config{}, log, nil, httpd.APIDeps{UsageHooks: usage}, httpd.ControlDeps{},
+	))
+	t.Cleanup(srv.Close)
+
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"event":"session-start","agentSessionId":"native-1"}`)
+	if status != http.StatusServiceUnavailable || headers.Get("Retry-After") != "1" ||
+		!strings.Contains(string(body), "USAGE_HOOK_QUEUE_CLOSING") {
+		t.Fatalf("activity = %d, Retry-After = %q, body=%s", status, headers.Get("Retry-After"), body)
+	}
+}
+
 func TestSessionsAPI_ActivityForwardsOrdinaryEventWithoutUsageMetadata(t *testing.T) {
 	activity := &fakeActivityRecorder{}
 	usage := &fakeUsageHookRecorder{}
@@ -444,6 +460,23 @@ func TestSessionsAPI_ActivityThreadsConversationCheckpointOrigin(t *testing.T) {
 	}
 	if rec.gotSignal.ProviderTurnID != "native-turn" {
 		t.Fatalf("provider turn = %q", rec.gotSignal.ProviderTurnID)
+	}
+	if rec.gotSignal.CoordinationID != "report-batch:abc123" {
+		t.Fatalf("coordination id = %q", rec.gotSignal.CoordinationID)
+	}
+}
+
+func TestSessionsAPI_ActivityPreservesCoordinationIDOnHumanPrompt(t *testing.T) {
+	rec := &fakeActivityRecorder{}
+	srv := newActivityTestServer(t, rec)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity",
+		`{"state":"active","event":"user-prompt-submit","latestUserPrompt":"human text around a report","conversationCheckpointOrigin":"human","coordinationId":"report-batch:abc123"}`)
+	if status != http.StatusOK {
+		t.Fatalf("activity = %d, want 200; body=%s", status, body)
+	}
+	if rec.gotSignal.ConversationCheckpointOrigin != domain.ConversationCheckpointOriginHuman {
+		t.Fatalf("checkpoint origin = %q, want human", rec.gotSignal.ConversationCheckpointOrigin)
 	}
 	if rec.gotSignal.CoordinationID != "report-batch:abc123" {
 		t.Fatalf("coordination id = %q", rec.gotSignal.CoordinationID)

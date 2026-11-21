@@ -37,6 +37,9 @@ func TestMain(m *testing.M) {
 	if runReviewerStartupProvider() {
 		return
 	}
+	if os.Getenv("AO_CLI_BATCH_HELPER") == "1" {
+		os.Exit(m.Run())
+	}
 	dir, err := os.MkdirTemp("", "ao-e2e-bin")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "e2e: mktemp:", err)
@@ -314,33 +317,36 @@ func TestE2E_ShutdownGuard(t *testing.T) {
 }
 
 // Two daemons share AO_DATA_DIR but have their own ports and run-files (issue
-// #3716). The second must not open ao.db: it waits 9x AO_SHUTDOWN_TIMEOUT + 18s
-// for the data-dir lock (18.9s here) and exits 75. Once the owner stops, it
-// starts normally.
+// #3716). The second must not open ao.db: it waits through the installer drain
+// and remaining capped shutdown stages, then exits 75. Once the owner stops,
+// it starts normally.
 func TestE2E_SecondDaemonOnSameDataDir(t *testing.T) {
 	first := newEnv(t)
 	first.startDaemon(t)
 
 	second := newEnv(t)
 	second.dataDir = first.dataDir
+	const shutdownTimeout = 100 * time.Millisecond
+	const installerTimeout = shutdownTimeout
+	wait := 8*shutdownTimeout + installerTimeout + 18*time.Second
 	// A regressed lock would let this daemon serve forever, so bound the run.
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wait+15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, aoBin, "daemon")
-	cmd.Env = append(second.environ(""), "AO_SHUTDOWN_TIMEOUT=100ms")
+	cmd.Env = append(second.environ(""), "AO_SHUTDOWN_TIMEOUT="+shutdownTimeout.String(), "AO_INSTALLER_SHUTDOWN_TIMEOUT="+installerTimeout.String())
 	cmd.WaitDelay = 5 * time.Second
 	b, err := cmd.CombinedOutput()
 	out := string(b)
 	t.Logf("$ ao daemon (second daemon, same data dir)\n%s", out)
 	if ctx.Err() != nil {
-		t.Fatal("second daemon was still running 35s into an 18.9s lock wait; killed it")
+		t.Fatalf("second daemon exceeded its %s lock wait plus 15s margin; killed it", wait)
 	}
 	var ee *exec.ExitError
 	if !asExit(err, &ee) || ee.ExitCode() != 75 {
 		t.Fatalf("second daemon: %v, want exit 75", err)
 	}
 	mustContain(t, out, "waiting for another AO process to release the data dir")
-	mustContain(t, out, "waited 18.9s for it to exit, refusing to start")
+	mustContain(t, out, fmt.Sprintf("waited %s for it to exit, refusing to start", wait))
 	if _, err := os.Stat(second.runFile); !os.IsNotExist(err) {
 		t.Fatal("the refused daemon must not write a run-file")
 	}
@@ -353,9 +359,9 @@ func TestE2E_SecondDaemonOnSameDataDir(t *testing.T) {
 	second.startDaemon(t)
 }
 
-func TestE2E_StaleRunFile(t *testing.T) {
+func TestE2E_RunFileWithUnseenPID(t *testing.T) {
 	e := newEnv(t)
-	// PID 2147483647 is never alive -> the CLI must classify this as stale.
+	// Nothing answers status's loopback probe for this run-file.
 	content := fmt.Sprintf(`{"pid":2147483647,"port":%d,"startedAt":"2020-01-01T00:00:00Z"}`, e.port)
 	if err := os.MkdirAll(filepath.Dir(e.runFile), 0o755); err != nil {
 		t.Fatal(err)
@@ -365,9 +371,22 @@ func TestE2E_StaleRunFile(t *testing.T) {
 	}
 
 	out, _ := e.run(t, "status", "--json")
-	mustContain(t, out, `"state": "stale"`)
+	mustContain(t, out, `"state": "unhealthy"`)
 
-	if out, code := e.run(t, "stop"); code != 0 || !strings.Contains(out, "stopped") {
+	out, code := e.run(t, "stop")
+	if runtime.GOOS == "linux" {
+		// A PID namespace can hide a live daemon. A failed probe alone
+		// cannot authorize removing its run-file.
+		if code != 1 {
+			t.Fatalf("stop with unverified ownership: exit %d, want 1, out %s", code, out)
+		}
+		mustContain(t, out, "ownership could not be verified")
+		if got, err := os.ReadFile(e.runFile); err != nil || string(got) != content {
+			t.Fatalf("stop must preserve the original run-file: got %q, err %v", got, err)
+		}
+		return
+	}
+	if code != 0 || !strings.Contains(out, "stopped") {
 		t.Fatalf("stop stale: exit %d, out %s", code, out)
 	}
 	if _, err := os.Stat(e.runFile); !os.IsNotExist(err) {

@@ -183,7 +183,7 @@ func (q *Queries) ProjectAttentionQuestionSources(ctx context.Context, arg Proje
 }
 
 const projectAttentionReportSources = `-- name: ProjectAttentionReportSources :many
-SELECT r.id, r.session_id, r.project_id, r.state, r.note, r.message, r.created_at, r.delivery_state, r.available_at, r.settlement_deadline, r.repeat_count, r.claim_token, r.claimed_at, r.delivery_attempts, r.acknowledged_at, r.last_error, r.delivery_batch_id,CAST(seen.report_id IS NOT NULL AS INTEGER) AS is_read,COALESCE(link.question_id,'') AS question_id
+SELECT r.id, r.session_id, r.project_id, r.state, r.note, r.message, r.created_at, r.delivery_state, r.available_at, r.settlement_deadline, r.repeat_count, r.claim_token, r.claimed_at, r.delivery_attempts, r.acknowledged_at, r.last_error, r.delivery_batch_id, r.unacknowledged_attempts,CAST(seen.report_id IS NOT NULL AS INTEGER) AS is_read,COALESCE(link.question_id,'') AS question_id
 FROM reports r JOIN sessions s ON s.id=r.session_id
 LEFT JOIN attention_report_reads seen ON seen.report_id=r.id
 LEFT JOIN attention_report_questions link ON link.report_id=r.id
@@ -208,25 +208,26 @@ type ProjectAttentionReportSourcesParams struct {
 }
 
 type ProjectAttentionReportSourcesRow struct {
-	ID                 string
-	SessionID          string
-	ProjectID          string
-	State              string
-	Note               string
-	Message            string
-	CreatedAt          time.Time
-	DeliveryState      string
-	AvailableAt        time.Time
-	SettlementDeadline sql.NullTime
-	RepeatCount        int64
-	ClaimToken         string
-	ClaimedAt          sql.NullTime
-	DeliveryAttempts   int64
-	AcknowledgedAt     sql.NullTime
-	LastError          string
-	DeliveryBatchID    string
-	IsRead             int64
-	QuestionID         string
+	ID                     string
+	SessionID              string
+	ProjectID              string
+	State                  string
+	Note                   string
+	Message                string
+	CreatedAt              time.Time
+	DeliveryState          string
+	AvailableAt            time.Time
+	SettlementDeadline     sql.NullTime
+	RepeatCount            int64
+	ClaimToken             string
+	ClaimedAt              sql.NullTime
+	DeliveryAttempts       int64
+	AcknowledgedAt         sql.NullTime
+	LastError              string
+	DeliveryBatchID        string
+	UnacknowledgedAttempts int64
+	IsRead                 int64
+	QuestionID             string
 }
 
 func (q *Queries) ProjectAttentionReportSources(ctx context.Context, arg ProjectAttentionReportSourcesParams) ([]ProjectAttentionReportSourcesRow, error) {
@@ -256,6 +257,7 @@ func (q *Queries) ProjectAttentionReportSources(ctx context.Context, arg Project
 			&i.AcknowledgedAt,
 			&i.LastError,
 			&i.DeliveryBatchID,
+			&i.UnacknowledgedAttempts,
 			&i.IsRead,
 			&i.QuestionID,
 		); err != nil {

@@ -542,9 +542,10 @@ test("diagnostic: the app's replacement EventSource catches up a missed event on
 	const streamsBeforeClose = await eventStreams(page);
 	const logBeforeClose = await workspaceFetchLog(page);
 	const closedAt = await page.evaluate(() => Date.now());
-	// The error callback's health-check refetch reads the snapshot synchronously,
-	// before the worker exists. The app then retries with a fresh `?after=latest`
-	// stream, which starts at head: the worker's event is never delivered.
+	// The stream reports the drop, then the refused reconnect; each error
+	// callback's health-check refetch runs before the worker exists. The app then
+	// retries with a fresh `?after=latest` stream, which starts at head: the
+	// worker's event is never delivered.
 	await page.evaluate(() => window.__aoFakeAgent!.closeEventsStream());
 	await page.evaluate(() => window.__aoFakeAgent!.createWorkerWithoutEvent({ id: "reopen-catchup-worker", title: "Reopen catch-up worker" }));
 	expect((await cacheState(page)).sessionIds).not.toContain("reopen-catchup-worker");
@@ -569,7 +570,7 @@ test("diagnostic: the app's replacement EventSource catches up a missed event on
 	await expect(sessionList(page).getByText("Reopen catch-up worker", { exact: true })).toBeVisible();
 	expect(capture.streams).toHaveLength(streamsBeforeClose.length + 1);
 	expect(capture.streams.at(-1)?.url).toContain("/api/v1/events?after=latest");
-	expect(capture.fetchesSinceClose.refetch).toBe(1);
+	expect(capture.fetchesSinceClose.refetch).toBe(2);
 	expect(capture.firstFetchedBy).toBe("invalidate");
 	await setDocumentVisibility(page, "visible");
 });

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -14,11 +15,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-)
 
-const (
-	reviewSubmitRetryWindow   = 30 * time.Second
-	reviewSubmitRetryInterval = 250 * time.Millisecond
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 // reviewRun mirrors the daemon's domain.ReviewRun for the CLI client.
@@ -36,6 +34,14 @@ type reviewRun struct {
 	GithubReviewID string     `json:"githubReviewId"`
 	CreatedAt      time.Time  `json:"createdAt"`
 	DeliveredAt    *time.Time `json:"deliveredAt,omitempty"`
+	// Worker notice fields mirror domain.ReviewRun: the "review done" message
+	// state and its last failed delivery.
+	WorkerNotice            string     `json:"workerNotice,omitempty"`
+	WorkerNoticeAttempts    int        `json:"workerNoticeAttempts,omitempty"`
+	WorkerNoticeError       string     `json:"workerNoticeError,omitempty"`
+	WorkerNoticeAttemptedAt *time.Time `json:"workerNoticeAttemptedAt,omitempty"`
+	FailureReason           string     `json:"failureReason,omitempty"`
+	CancelledBy             string     `json:"cancelledBy,omitempty"`
 }
 
 type reviewState struct {
@@ -68,6 +74,7 @@ type triggerReviewRequest struct {
 	Harness            string             `json:"harness,omitempty"`
 	AgentConfig        *reviewAgentConfig `json:"agentConfig,omitempty"`
 	PRURL              string             `json:"prUrl,omitempty"`
+	RequesterSessionID string             `json:"requesterSessionId,omitempty"`
 	Source             string             `json:"source,omitempty"`
 	RejectReviewedHead bool               `json:"rejectReviewedHead,omitempty"`
 	Rerun              bool               `json:"rerun,omitempty"`
@@ -153,7 +160,7 @@ type reviewListOptions struct {
 func newReviewCommand(ctx *commandContext) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "review",
-		Short: "Manage AO code reviews of a worker's PR",
+		Short: "Manage Orchestrator code reviews of a worker's PR",
 	}
 	cmd.AddCommand(newReviewListCommand(ctx))
 	cmd.AddCommand(newReviewSubmitCommand(ctx))
@@ -174,7 +181,7 @@ func newReviewListCommand(ctx *commandContext) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := reviewTargetSession(args, "")
 			if session == "" {
-				return usageError{errors.New("usage: worker session id is required outside an AO session")}
+				return usageError{errors.New("usage: worker session id is required outside an Orchestrator-managed session")}
 			}
 			var res listReviewsResponse
 			path := "sessions/" + url.PathEscape(session) + "/reviews"
@@ -260,7 +267,7 @@ func (c *commandContext) submitReview(cmd *cobra.Command, args []string, opts re
 	// structurally valid but half-populated result is a broken contract, not
 	// a success to print.
 	if strings.TrimSpace(res.Review.ID) == "" || strings.TrimSpace(res.Review.Verdict) == "" {
-		return fmt.Errorf("daemon returned empty review result for %s", session)
+		return unconfirmedReviewResult(fmt.Errorf("daemon returned empty review result for %s", session))
 	}
 	_, err := fmt.Fprintf(cmd.OutOrStdout(), "recorded %s review for %s\n", res.Review.Verdict, session)
 	return err
@@ -286,11 +293,11 @@ func (c *commandContext) submitReviewBatch(cmd *cobra.Command, session string, o
 	if len(res.Reviews) > 0 {
 		for _, run := range res.Reviews {
 			if strings.TrimSpace(run.ID) == "" || strings.TrimSpace(run.Verdict) == "" {
-				return fmt.Errorf("daemon returned empty review result for %s", session)
+				return unconfirmedReviewResult(fmt.Errorf("daemon returned empty review result for %s", session))
 			}
 		}
 	} else if strings.TrimSpace(res.Review.ID) == "" || strings.TrimSpace(res.Review.Verdict) == "" {
-		return fmt.Errorf("daemon returned empty review result for %s", session)
+		return unconfirmedReviewResult(fmt.Errorf("daemon returned empty review result for %s", session))
 	}
 	count := len(res.Reviews)
 	if count == 0 {
@@ -300,41 +307,36 @@ func (c *commandContext) submitReviewBatch(cmd *cobra.Command, session string, o
 	return err
 }
 
-// postReviewJSON retries only transport-level daemon unavailability. The
-// service accepts an identical completed result idempotently, so replay is safe
-// even when a connection drops after the daemon committed the first request.
-// Validation/API errors still return immediately and are never retried.
+// postReviewJSON makes one business API attempt. A failed probe is a preflight
+// failure; after an attempt, a missing or invalid result is unconfirmed, and so
+// is an API error that cannot prove nothing was recorded.
 func (c *commandContext) postReviewJSON(ctx context.Context, path string, body submitReviewRequest, out *reviewRunResponse) error {
-	retryCtx, cancel := context.WithTimeout(ctx, reviewSubmitRetryWindow)
-	defer cancel()
-
-	var lastErr error
-	for {
-		err := c.postJSON(retryCtx, path, body, out)
-		if err == nil {
-			return nil
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if !errors.Is(err, errDaemonUnavailable) {
-			return err
-		}
-		lastErr = err
-		if retryCtx.Err() != nil {
-			return fmt.Errorf("%w; could not confirm the review result after retrying for %s. It may already be recorded; retry with the same review results", lastErr, reviewSubmitRetryWindow)
-		}
-
-		// Deps.Sleep keeps this loop deterministic in unit tests. The short
-		// interval bounds cancellation latency without adding a retry goroutine.
-		c.deps.Sleep(reviewSubmitRetryInterval)
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if retryCtx.Err() != nil {
-			return fmt.Errorf("%w; could not confirm the review result after retrying for %s. It may already be recorded; retry with the same review results", lastErr, reviewSubmitRetryWindow)
-		}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
+	err := c.postJSON(ctx, path, body, out)
+	var attempted daemonRequestError
+	if !errors.As(err, &attempted) {
+		return err
+	}
+	var rejected apiResponseError
+	if errors.As(err, &rejected) && !reviewRejectionMayHaveRecorded(rejected, body) {
+		return err
+	}
+	return unconfirmedReviewResult(err)
+}
+
+// reviewRejectionMayHaveRecorded reports whether an API error leaves the
+// submission's outcome open. The daemon records a batch run by run without one
+// transaction, so a failure after the first result may leave earlier results
+// recorded; a server error may also follow a write. Only a client rejection of
+// a single result proves that nothing was recorded.
+func reviewRejectionMayHaveRecorded(rejected apiResponseError, body submitReviewRequest) bool {
+	return rejected.StatusCode >= http.StatusInternalServerError || len(body.Reviews) > 1
+}
+
+func unconfirmedReviewResult(err error) error {
+	return fmt.Errorf("%w; review result is unconfirmed; inspect the original run/result before deciding whether to explicitly resubmit the same review results", err)
 }
 
 func newReviewCancelCommand(ctx *commandContext) *cobra.Command {
@@ -357,14 +359,15 @@ func newReviewTriggerCommand(ctx *commandContext) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "trigger [worker-session-id]",
 		Aliases: []string{"execute", "restart"},
-		Short:   "Start an AO review of a worker's PR (default: this session's PR)",
-		Long: `Start an independent AO reviewer on the worker session's open PR heads.
+		Short:   "Start an Orchestrator review of a worker's PR (default: this session's PR)",
+		Long: `Start an independent Orchestrator reviewer on the worker session's open PR heads.
 
-With no session argument the calling AO session is reviewed, so a worker can
-request a review of its own PR. AO fetches the session's PRs fresh from the
-provider first, so the pass reviews the commit really on the PR. Right after
-opening a PR, pass --pr <url>: AO attaches it to the session if it does not
-track it yet (never taking it from another active session) and reviews only it. The reviewer defaults to the session's reviewer
+With no session argument the calling Orchestrator-managed session is reviewed, so a
+worker can request a review of its own PR. Orchestrator fetches the session's
+PRs fresh from the provider first, so the pass reviews the commit really on the
+PR. Right after opening a PR, pass --pr <url>: Orchestrator attaches it to the
+session if it does not track it yet (never taking it from another active
+session) and reviews only it. The reviewer defaults to the session's reviewer
 choice, then the project's reviewer config, then the project's default worker
 agent and model; --agent, --model, and --effort override it for this pass only.
 
@@ -373,9 +376,9 @@ again: the command fails and says why. Pass --rerun to review the same commit
 again, or to add a different --agent alongside one that is still running.
 
 The worker session's review auto-inject is turned on so the reviewer's inline
-review comments are delivered to the worker; pass --no-inject to leave
-that setting unchanged. AO's review is internal: an approval is not a GitHub
-approval and does not authorize merging.`,
+review comments are delivered to the worker; pass --no-inject to leave that
+setting unchanged. Orchestrator's review is internal: an approval is not a
+GitHub approval and does not authorize merging.`,
 		Args: atMostOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return ctx.triggerReview(cmd, args, opts)
@@ -388,8 +391,8 @@ approval and does not authorize merging.`,
 		}
 		return pflag.NormalizedName(name)
 	})
-	f.StringVar(&opts.session, "session", "", "Worker session id (or pass it positionally; default: this AO session)")
-	f.StringVar(&opts.prURL, "pr", "", "Review only this pull request URL, attaching it to the session if AO does not track it yet (default: every eligible PR on the session)")
+	f.StringVar(&opts.session, "session", "", "Worker session id (or pass it positionally; default: this Orchestrator-managed session)")
+	f.StringVar(&opts.prURL, "pr", "", "Review only this pull request URL, attaching it to the session if Orchestrator does not track it yet (default: every eligible PR on the session)")
 	f.StringVar(&opts.harness, "harness", "", "Reviewer agent / --agent for this pass only (e.g. claude-code, codex)")
 	f.StringVar(&opts.model, "model", "", "Reviewer model for this pass only")
 	f.StringVar(&opts.effort, "effort", "", "Reviewer reasoning effort for this pass only")
@@ -408,7 +411,7 @@ func (c *commandContext) triggerReview(cmd *cobra.Command, args []string, opts r
 	}
 	session := reviewTargetSession(args, opts.session)
 	if session == "" {
-		return usageError{errors.New("usage: worker session id is required (positional or --session) outside an AO session")}
+		return usageError{errors.New("usage: worker session id is required (positional or --session) outside an Orchestrator-managed session")}
 	}
 	req := triggerReviewRequest{
 		Harness:            strings.TrimSpace(opts.harness),
@@ -422,7 +425,8 @@ func (c *commandContext) triggerReview(cmd *cobra.Command, args []string, opts r
 	}
 	// A request from inside an AO session (a worker reviewing its own PR, or an
 	// orchestrator) is labelled as such, so it is never mistaken for a person.
-	if strings.TrimSpace(os.Getenv("AO_SESSION_ID")) != "" {
+	if requester := strings.TrimSpace(os.Getenv("AO_SESSION_ID")); requester != "" {
+		req.RequesterSessionID = requester
 		req.Source = "agent"
 	}
 	path := "sessions/" + url.PathEscape(session) + "/reviews/trigger"
@@ -456,11 +460,22 @@ func (c *commandContext) triggerReview(cmd *cobra.Command, args []string, opts r
 	return nil
 }
 
-// startedRuns returns the running passes on the PR heads the trigger covered.
+// reviewRunActive mirrors domain.ReviewRunStatus.IsActive for the CLI's
+// hand-mirrored DTOs.
+func reviewRunActive(status string) bool {
+	switch status {
+	case "queued", "launching", "running", "cancelling":
+		return true
+	default:
+		return false
+	}
+}
+
+// startedRuns returns the active passes on the PR heads the trigger covered.
 func startedRuns(res triggerReviewResponse) []reviewRun {
 	var out []reviewRun
 	for _, review := range res.Reviews {
-		if review.LatestRun != nil && review.LatestRun.Status == "running" {
+		if review.LatestRun != nil && reviewRunActive(review.LatestRun.Status) {
 			out = append(out, *review.LatestRun)
 		}
 	}
@@ -477,7 +492,7 @@ func shortReviewSHA(sha string) string {
 func (c *commandContext) stopReview(cmd *cobra.Command, args []string, opts reviewSessionOptions) error {
 	session := reviewTargetSession(args, opts.session)
 	if session == "" {
-		return usageError{errors.New("usage: worker session id is required (positional or --session) outside an AO session")}
+		return usageError{errors.New("usage: worker session id is required (positional or --session) outside an Orchestrator-managed session")}
 	}
 	path := "sessions/" + url.PathEscape(session) + "/reviews/cancel"
 	if err := c.postJSON(cmd.Context(), path, struct{}{}, nil); err != nil {
@@ -495,7 +510,7 @@ func writeReviewList(cmd *cobra.Command, session string, res listReviewsResponse
 	}
 
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "PR\tSTATUS\tVERDICT\tTITLE"); err != nil {
+	if _, err := fmt.Fprintln(tw, "PR\tSTATUS\tRUN\tVERDICT\tTITLE"); err != nil {
 		return err
 	}
 	for _, review := range res.Reviews {
@@ -503,11 +518,51 @@ func writeReviewList(cmd *cobra.Command, session string, res listReviewsResponse
 		if review.LatestRun != nil && review.LatestRun.Verdict != "" {
 			verdict = review.LatestRun.Verdict
 		}
-		if _, err := fmt.Fprintf(tw, "#%d\t%s\t%s\t%s\n", review.PRNumber, review.Status, verdict, review.Title); err != nil {
+		if _, err := fmt.Fprintf(tw, "#%d\t%s\t%s\t%s\t%s\n", review.PRNumber, review.Status, reviewRunLabel(review.LatestRun), verdict, review.Title); err != nil {
 			return err
 		}
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	// A "review done" message the worker has not received yet is easy to
+	// miss; name the run and why its last delivery failed.
+	for _, review := range res.Reviews {
+		run := review.LatestRun
+		if run == nil || run.WorkerNoticeError == "" {
+			continue
+		}
+		var state string
+		switch run.WorkerNotice {
+		case "pending":
+			state = "not delivered yet"
+		case "failed":
+			state = "not delivered, gave up"
+		default:
+			continue
+		}
+		// The error comes from the worker's runtime; strip control characters
+		// before writing it to the terminal.
+		reason := domain.SanitizeControlChars(run.WorkerNoticeError)
+		if _, err := fmt.Fprintf(out, "#%d: review done message for run %s %s after %d failed attempt(s): %s\n", review.PRNumber, run.ID, state, run.WorkerNoticeAttempts, reason); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reviewRunLabel names the latest pass's state, with the daemon's reason code
+// for a failed pass so a person can tell a launch problem from a reviewer that
+// stopped without submitting.
+func reviewRunLabel(run *reviewRun) string {
+	switch {
+	case run == nil || run.Status == "":
+		return "-"
+	case run.Status == "failed" && run.FailureReason != "":
+		return "failed (" + run.FailureReason + ")"
+	default:
+		return run.Status
+	}
 }
 
 func readReviewItems(cmd *cobra.Command, path string) ([]submitReviewItem, error) {

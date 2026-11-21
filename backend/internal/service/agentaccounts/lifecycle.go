@@ -93,7 +93,11 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 	if account != nil {
 		release, err := s.acquireProfileMutation(account.ID)
 		if err != nil {
-			return LoginStart{}, err
+			contention := "profile_operation"
+			if s.accountUseLock(account.ID).launches.Load() > 0 {
+				contention = "launch_in_progress"
+			}
+			return LoginStart{}, &ports.AgentAccountInUseError{AccountID: account.ID, Contention: contention}
 		}
 		defer release()
 		current, err := s.find(ctx, account.ID)
@@ -102,8 +106,10 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 		}
 		account = &current
 		ctx = context.WithValue(ctx, profileMutationContextKey{}, account.ID)
-		if err := s.refuseLiveOwners(ctx, account.ID); err != nil {
-			return LoginStart{}, err
+		if !s.signedOutForLoginAgain(ctx, s.providers[p], current) {
+			if err := s.refuseLoginOwners(ctx, account.ID); err != nil {
+				return LoginStart{}, err
+			}
 		}
 	}
 	provider := s.providers[p]
@@ -169,12 +175,33 @@ func (s *Service) startLogin(ctx context.Context, p domain.AgentAccountProvider,
 		return fail(safeAccountProviderError(e))
 	}
 	s.activeLogins[id] = true
-	terminal, e := terminals.OpenCommandTerminal(ctx, shellterm.OpenCommandTerminalInput{HandleID: o.TerminalID, Argv: argv, Env: provider.LaunchEnv(home), WorkingDir: home, Title: title})
+	terminal, e := terminals.OpenCommandTerminal(ctx, shellterm.OpenCommandTerminalInput{Owner: "agentaccounts:" + string(p), HandleID: o.TerminalID, Argv: argv, Env: provider.LaunchEnv(home), WorkingDir: home, Title: title})
 	if e != nil {
 		delete(s.activeLogins, id)
 		return fail(ports.ErrAgentAccountStorageUnavailable)
 	}
 	return LoginStart{OperationID: id, Provider: p, Terminal: terminal}, nil
+}
+
+// signedOutForLoginAgain re-probes a saved profile within verify's limit. Only
+// a confirmed sign-out with no login of any kind, or a saved login the
+// provider says it revoked, counts: signing in there cannot replace or revoke
+// a login a live owner can still use. Any other failed or timed out probe is
+// unknown and keeps the owner refusal.
+func (s *Service) signedOutForLoginAgain(ctx context.Context, provider ports.AgentAccountProviderCLI, account domain.AgentAccount) bool {
+	if provider == nil || account.RetiredAt != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	if s.prepare(provider, account.Home, account.ProfileKind) != nil {
+		return false
+	}
+	identity, err := provider.Identity(ctx, account.Home)
+	if errors.Is(err, ports.ErrAgentAccountLoginRevoked) {
+		return true
+	}
+	return err == nil && !identity.LoggedIn
 }
 
 // VerifyLogin serializes native profile preparation/probes with cancellation.
@@ -212,6 +239,9 @@ func (s *Service) verifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 		return "", nil, safeAccountProviderError(e)
 	}
 	if !identity.SignedIn {
+		if identity.LoggedIn {
+			return LoginNotSubscription, nil, nil
+		}
 		return LoginWaiting, nil, nil
 	}
 	if e := s.checkCredentialStore(o.Provider, account.Home); e != nil {
@@ -219,6 +249,7 @@ func (s *Service) verifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 	}
 	// Refresh the catalog inside the same boundary as acceptance. Two
 	// operations must not both commit the same identity from a stale list.
+	s.read(ctx, domain.AgentAccount{ID: domain.DeviceAgentAccountID(o.Provider), Provider: o.Provider})
 	views, e := s.List(ctx, false)
 	if e != nil {
 		return "", nil, e
@@ -226,13 +257,20 @@ func (s *Service) verifyLogin(ctx context.Context, id string) (LoginStatus, *Acc
 	o.Outcome = "complete"
 	o.ResultAccountID = o.AccountID
 	for _, v := range views {
-		if v.Account.ID != o.AccountID && v.Account.Provider == o.Provider && (v.SignedIn || !v.Account.Device()) && v.Account.Email != "" && strings.EqualFold(v.Account.Email, identity.Email) {
+		if v.Account.ID == o.AccountID || (o.Action == "login-again" && v.Account.Device()) {
+			continue
+		}
+		held := v.SignedIn || (o.Action == "login" && !v.Account.Device())
+		if v.Account.Provider == o.Provider && held && v.Account.Email != "" && strings.EqualFold(v.Account.Email, identity.Email) && sameOrg(v.OrgID, identity.OrgID) {
 			o.Outcome = "duplicate"
 			o.ResultAccountID = v.Account.ID
 			break
 		}
 	}
-	if o.Action == "login-again" && account.Email != "" && !strings.EqualFold(account.Email, identity.Email) {
+	s.mu.Lock()
+	knownOrg := s.lastOrg[account.ID]
+	s.mu.Unlock()
+	if o.Action == "login-again" && ((account.Email != "" && !strings.EqualFold(account.Email, identity.Email)) || !sameOrg(knownOrg.id, identity.OrgID)) {
 		o.Outcome = "mismatch"
 		o.ResultAccountID = account.ID
 	}

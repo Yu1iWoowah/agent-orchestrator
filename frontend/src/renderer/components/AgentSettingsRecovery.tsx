@@ -22,6 +22,9 @@ export function AgentSettingsRecovery({ snapshot, session, hostId }: {
 	const error = failure ? agentSettingsErrorMessage(failure, t("agentSettings.conflict")) : undefined;
 	const busy = action.isPending || archive.isPending;
 	const pending = snapshot.pending;
+	const uncertain = snapshot.reconciliations?.find((attempt) => attempt.effectPending && (
+		attempt.operationId === pending?.id || attempt.owner.controllerGeneration === snapshot.capabilities.controllerGeneration
+	));
 	async function confirm() {
 		if (!confirmation) return;
 		try {
@@ -38,7 +41,10 @@ export function AgentSettingsRecovery({ snapshot, session, hostId }: {
 		} catch { /* Keep the fence visible and allow a deliberate retry. */ }
 	}
 	return <div className="space-y-2">
-		{pending && canCancelAgentSettings(pending) && <button className="underline" disabled={busy} onClick={() => action.mutate({ kind: "cancel", sessionId, hostId, operationId: pending.id, version: pending.version })} type="button">{t("agentSettings.cancelPending")}</button>}
+		{uncertain && <p className="text-warning [overflow-wrap:anywhere]" role="alert">
+			{t("agentSettings.waitForSettingsEvidence", { id: uncertain.operationId || uncertain.id, evidence: uncertain.missingEvidence?.join(", ") || t("agentSettings.providerOutcome") })}
+		</p>}
+		{!uncertain && pending && canCancelAgentSettings(pending) && <button className="underline" disabled={busy} onClick={() => action.mutate({ kind: "cancel", sessionId, hostId, operationId: pending.id, version: pending.version })} type="button">{t("agentSettings.cancelPending")}</button>}
 		{pending && !canCancelAgentSettings(pending) && <p className="text-muted-foreground">{t("agentSettings.operationStarted")}</p>}
 		{pending?.phase === "recovery_required" && pending.applyMode === "restart" && session.mode === "tui" && !session.isTerminated && <button className="underline" disabled={busy} onClick={() => { archive.reset(); setConfirmation("archive"); }} type="button">{t("shell.archiveSession")}</button>}
 		{snapshot.writerRecovery && <button className="underline" disabled={busy} onClick={() => { action.reset(); setStopIfAlive(false); setConfirmation({ operationId: snapshot.writerRecovery!.operationId, version: snapshot.writerRecovery!.version }); }} type="button">{t("agentSettings.checkRetainedWriter")}</button>}

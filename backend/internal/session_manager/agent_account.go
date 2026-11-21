@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -16,6 +18,15 @@ func (m *Manager) beginAccountUses(ctx context.Context, ids ...string) (func(), 
 	return func() {}, nil
 }
 
+func (m *Manager) beginAccountLaunchUses(ctx context.Context, ids ...string) (func(), error) {
+	if guard, ok := m.agentAccounts.(interface {
+		AcquireAccountLaunchUses(context.Context, ...string) (func(), error)
+	}); ok {
+		return guard.AcquireAccountLaunchUses(ctx, ids...)
+	}
+	return m.beginAccountUses(ctx, ids...)
+}
+
 // Share ownership transfer with the existing harness guard, including async
 // Chat launches whose request returns before native startup has completed.
 func (m *Manager) beginHarnessAndAccountUse(ctx context.Context, harness domain.AgentHarness, accountID string) (func(), error) {
@@ -23,7 +34,7 @@ func (m *Manager) beginHarnessAndAccountUse(ctx context.Context, harness domain.
 	if err != nil {
 		return nil, err
 	}
-	releaseAccount, err := m.beginAccountUses(ctx, accountID)
+	releaseAccount, err := m.beginAccountLaunchUses(ctx, accountID)
 	if err != nil {
 		releaseHarness()
 		return nil, err
@@ -53,12 +64,105 @@ func (m *Manager) beginBoundHarnessUse(ctx context.Context, rec domain.SessionRe
 	return m.beginHarnessAndAccountUse(ctx, rec.Harness, id)
 }
 
+// PrepareProviderSwitchLaunch resolves the target independently of the source.
+// An existing target binding is authoritative. A missing binding is resolved
+// using the same role-aware policy as an ordinary spawn. The caller publishes
+// a missing binding with the switch, while it still holds the launch lease.
+func (m *Manager) PrepareProviderSwitchLaunch(ctx context.Context, source domain.SessionRecord, target domain.AgentHarness) (context.Context, map[string]string, *domain.ResolvedAgentAccount, func(), error) {
+	project, err := m.loadProject(ctx, source.ProjectID)
+	if err != nil {
+		return ctx, nil, nil, nil, err
+	}
+	var selected domain.ResolvedAgentAccount
+	var missing bool
+	if m.agentAccounts != nil {
+		selected, err = m.agentAccounts.SessionAccountBinding(ctx, source.ID, target)
+		missing = errors.Is(err, ports.ErrAgentAccountUnknown)
+		provider, supported := domain.AgentAccountProviderFor(target)
+		if missing || !supported {
+			selected, err = m.agentAccounts.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{
+				Harness: target, Role: domain.AgentAccountRole(source.Kind), ProjectConfig: project.Config,
+			})
+		}
+		if err != nil {
+			return ctx, nil, nil, nil, err
+		}
+		if selected.AccountID != "" && (!supported || selected.Provider != provider) {
+			return ctx, nil, nil, nil, ports.ErrAgentAccountProviderMismatch
+		}
+		if ports.IsRemoteAccountRequest(ctx) && selected.Managed() {
+			return ctx, nil, nil, nil, ports.ErrAgentAccountLocalOnly
+		}
+	}
+	release, err := m.beginHarnessAndAccountUse(ctx, target, selected.AccountID)
+	if err != nil {
+		return ctx, nil, nil, nil, err
+	}
+	if missing && selected.Managed() {
+		if err := m.agentAccounts.ValidateAccount(ctx, target, selected.AccountID); err != nil {
+			release()
+			return ctx, nil, nil, nil, err
+		}
+	}
+	env, err := m.runtimeEnvWithBindingPolicy(source.ID, source.ProjectID, source.IssueID, project.Config.Env, selected.AccountID, target, true)
+	if err != nil {
+		release()
+		return ctx, nil, nil, nil, err
+	}
+	var binding *domain.ResolvedAgentAccount
+	if missing {
+		binding = &selected
+	}
+	if agent, ok := m.agents.Agent(target); ok {
+		m.augmentAgentRuntimeEnv(agent, env)
+	}
+	if selected.AccountID != "" {
+		ctx = ports.WithAgentAccount(ctx, selected)
+	}
+	ctx = ports.WithAuthEnvironment(ctx, env)
+	return ctx, env, binding, release, nil
+}
+
+// ReconcileAccountReviewers records which reviewers holding account id have no
+// process left, worker by worker, so owner checks count only reviewers that
+// still run. A failed reconcile keeps the account in use.
+func (m *Manager) ReconcileAccountReviewers(ctx context.Context, id string) error {
+	store, ok := m.store.(ports.AgentAccountUsageStore)
+	if !ok {
+		return ports.ErrAgentAccountStorageUnavailable
+	}
+	owners, err := store.ListAgentAccountUsageOwners(ctx, id)
+	if err != nil {
+		return ports.ErrAgentAccountStorageUnavailable
+	}
+	m.reviewersMu.Lock()
+	reviewer := m.reviewers
+	m.reviewersMu.Unlock()
+	if reviewer == nil {
+		return nil
+	}
+	seen := map[domain.SessionID]bool{}
+	for _, owner := range owners {
+		if owner.Kind != "reviewer" || !owner.Blocking || seen[owner.SessionID] {
+			continue
+		}
+		seen[owner.SessionID] = true
+		if err := reviewer.ReconcileReviewers(ctx, owner.SessionID); err != nil {
+			return ports.ErrAgentAccountStorageUnavailable
+		}
+	}
+	return nil
+}
+
 // AccountUsageOwners augments durable bindings with launches whose execution
 // has not yet reported activity. A failed probe is never evidence of no owner.
 func (m *Manager) AccountUsageOwners(ctx context.Context, id string) ([]domain.AgentAccountUsageOwner, error) {
 	store, ok := m.store.(ports.AgentAccountUsageStore)
 	if !ok {
 		return nil, ports.ErrAgentAccountStorageUnavailable
+	}
+	if err := m.ReconcileAccountReviewers(ctx, id); err != nil {
+		return nil, err
 	}
 	owners, err := store.ListAgentAccountUsageOwners(ctx, id)
 	if err != nil {
@@ -67,6 +171,66 @@ func (m *Manager) AccountUsageOwners(ctx context.Context, id string) ([]domain.A
 	for i := range owners {
 		if owners[i].Kind == "session" && m.launchInFlight(owners[i].SessionID) {
 			owners[i].Blocking = true
+		}
+	}
+	return owners, nil
+}
+
+// AccountLoginUsageOwners applies positive runtime evidence to the existing
+// owner snapshot while the account mutation lease excludes in-flight launches.
+func (m *Manager) AccountLoginUsageOwners(ctx context.Context, id string) ([]domain.AgentAccountUsageOwner, error) {
+	owners, err := m.AccountUsageOwners(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	for i := range owners {
+		owner := &owners[i]
+		if owner.Kind != "session" {
+			continue
+		}
+		if m.launchInFlight(owner.SessionID) {
+			owner.Blocking = true
+			continue
+		}
+		rec, found, err := m.store.GetSession(ctx, owner.SessionID)
+		if err != nil || !found || rec.ProvisionState.IsProvisioning() {
+			owner.Blocking = true
+			continue
+		}
+		if rec.Metadata.RuntimeHandleID != "" {
+			ref := ports.FencedRuntimeRef{Handle: runtimeHandle(rec.Metadata), SessionID: rec.ID, Generation: rec.Metadata.RuntimeLaunchID, NativeIdentity: rec.Metadata.AgentSessionID}
+			if ref.Generation != "" && m.runtime != nil {
+				switch m.runtime.ProbeFencedRuntime(ctx, ref).Liveness {
+				case ports.FencedDead:
+					if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeTUI {
+						owner.Blocking = false
+					}
+				case ports.FencedAlive:
+					owner.Blocking = true
+					continue
+				default:
+					owner.Blocking = true
+					continue
+				}
+			} else {
+				owner.Blocking = true
+				continue
+			}
+		}
+		if domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat || m.chat == nil {
+			continue
+		}
+		if m.chat.HasLiveChatController(rec.ID) {
+			owner.Blocking = true
+		} else if m.dataDir != "" {
+			switch persistenthost.ProbeProviderOwnership(m.dataDir, string(rec.ID)) {
+			case persistenthost.ProviderOwnershipUncertain:
+				owner.Blocking = true
+			case persistenthost.ProviderOwnershipPreviousBoot:
+				if rec.Harness == domain.HarnessCodex || rec.Harness == domain.HarnessClaudeCode {
+					owner.Blocking = false
+				}
+			}
 		}
 	}
 	return owners, nil
@@ -289,6 +453,18 @@ func (m *Manager) markAccountSwitch(ctx context.Context, rec domain.SessionRecor
 	}
 }
 
+func (m *Manager) deliverQueuedAfterAccountMove(transition domain.SessionInterfaceTransition) {
+	if !transition.AccountMove() || transition.SourceMode != domain.SessionModeChat || m.chat == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), interfaceTransitionStepLimit)
+	defer cancel()
+	if err := m.chat.DrainChatQueue(ctx, transition.SessionID); err != nil {
+		m.logger.Warn("account transition: messages sent during the move not delivered",
+			"sessionID", transition.SessionID, "transition", transition.ID, "error", err)
+	}
+}
+
 // runtimeEnvOnAccount is runtimeEnv as the session's agent would get it on
 // accountID, for checks made before the move. It leaves the account override
 // alone: the source agent still runs, and a restart of it must keep its own
@@ -322,14 +498,23 @@ func (m *Manager) ExitAgentsOnAccount(ctx context.Context, accountID string) err
 	if err != nil {
 		return err
 	}
-	var errs []error
+	var (
+		errs  []error
+		errMu sync.Mutex
+		wg    sync.WaitGroup
+	)
+	fail := func(err error) {
+		errMu.Lock()
+		defer errMu.Unlock()
+		errs = append(errs, err)
+	}
 	for _, rec := range recs {
 		if rec.IsTerminated {
 			continue
 		}
 		bound, err := m.agentAccounts.SessionAccountID(ctx, rec.ID, rec.Harness)
 		if err != nil {
-			errs = append(errs, err)
+			fail(err)
 			continue
 		}
 		if bound != accountID {
@@ -340,16 +525,19 @@ func (m *Manager) ExitAgentsOnAccount(ctx context.Context, accountID string) err
 		// exited until its agent reports. Refuse rather than delete the folder
 		// under it: a retry after it settles stops it like any running agent.
 		if m.launchInFlight(rec.ID) {
-			errs = append(errs, fmt.Errorf("session %s is starting its agent on the account", rec.ID))
+			fail(fmt.Errorf("session %s is starting its agent on the account", rec.ID))
 			continue
 		}
 		if rec.Activity.State == domain.ActivityExited {
 			continue
 		}
-		if _, err := m.ExitAgent(ctx, rec.ID); err != nil && !errors.Is(err, ErrAgentExited) {
-			errs = append(errs, err)
-		}
+		wg.Go(func() {
+			if _, err := m.exitAgent(ctx, rec.ID, false); err != nil && !errors.Is(err, ErrAgentExited) {
+				fail(err)
+			}
+		})
 	}
+	wg.Wait()
 	return errors.Join(errs...)
 }
 

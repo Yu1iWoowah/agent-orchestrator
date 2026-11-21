@@ -155,7 +155,7 @@ func TestReviewerNextPassPinsItsOwnSelectionAndAccount(t *testing.T) {
 	accounts := &pinnedTestReviewAccount{store: store, defaultID: "account-A"}
 	engine.accounts = accounts
 	engine.models = fixedReviewerCatalog{currentFingerprint: "same-input", catalog: ports.AgentModelCatalog{LastSuccessAt: new(time.Now()), InputFingerprint: "same-input", Models: []ports.AgentModelInfo{{ID: "review-one", Efforts: []string{"low"}, SupportsFast: true}, {ID: "review-two", Efforts: []string{"high"}, SupportsFast: true}}}}
-	first, err := engine.TriggerWithOptions(ctx, worker.ID, TriggerOptions{})
+	first, err := engine.TriggerWithOptions(ctx, worker.ID, TriggerOptions{Source: domain.ReviewTriggerAgent, RequesterSessionID: worker.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,12 +170,18 @@ func TestReviewerNextPassPinsItsOwnSelectionAndAccount(t *testing.T) {
 	if _, err = engine.TriggerWithOptions(ctx, worker.ID, TriggerOptions{Config: domain.AgentConfig{Model: "review-two"}}); !errors.Is(err, ports.ErrAgentSettingsConflict) || launcher.destroyed || launcher.cancelled {
 		t.Fatalf("active legacy trigger = %v, destroyed=%v", err, launcher.destroyed)
 	}
-	if _, err = store.UpdateReviewRunResult(ctx, first.Run.ID, domain.ReviewRunComplete, domain.VerdictApproved, "", "", false); err != nil {
+	if _, err = store.TransitionReviewRun(ctx, first.Run.ID, []domain.ReviewRunStatus{domain.ReviewRunRunning}, domain.ReviewRunCompleted, domain.ReviewRunPatch{Verdict: domain.VerdictApproved}); err != nil {
 		t.Fatal(err)
 	}
 	op, err := engine.ChangeReviewerAgentSettings(ctx, first.Run.ReviewID, req)
 	if err != nil || op.Revision != 1 || op.Phase != "pinned" {
 		t.Fatalf("next pass pin = %+v, %v", op, err)
+	}
+	// The notice is sent after terminal persistence, including when the
+	// reviewer preference changed in the meantime.
+	notices, err := store.ListPendingReviewRunNotices(ctx, worker.ID)
+	if err != nil || len(notices) != 1 || notices[0].ReviewerModel != "review-one" {
+		t.Fatalf("terminal notice = %+v, %v; want the completed pass's review-one", notices, err)
 	}
 	accounts.defaultID = "account-B"
 	engine.prs = prAt("head-two")

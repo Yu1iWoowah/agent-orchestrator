@@ -139,6 +139,11 @@ func (s *Service) InvalidateAgentInstallation(agentID string) {
 
 // InvalidateAgentAuthentication marks an agent's authentication observation stale.
 func (s *Service) InvalidateAgentAuthentication(agentID string) {
+	if item, ok := s.agent(agentID); ok {
+		if cache, ok := item.Agent.(ports.AgentAuthCacheInvalidator); ok {
+			cache.InvalidateAuthCache()
+		}
+	}
 	s.invalidateReadiness(agentID, readinessInvalidateAuthentication)
 	s.InvalidateModelCatalogs(agentID)
 	if agentID == string(domain.HarnessCodex) && s.codexAccounts != nil {

@@ -21,12 +21,16 @@ type settingsAgent struct {
 	model, effort, fast, permission string
 	calls                           []string
 	omit, clamp                     bool
+	noEffortReset                   bool
 }
 
 func (a *settingsAgent) catalog() []acpsdk.SessionConfigOption {
-	efforts := []string{"high", "low", "default"}
+	efforts := []string{"high", "low"}
 	if a.model == "new" {
-		efforts = []string{"medium", "low", "default"}
+		efforts = []string{"medium", "low"}
+	}
+	if !a.noEffortReset {
+		efforts = append(efforts, "default")
 	}
 	return []acpsdk.SessionConfigOption{
 		selectConfigOption("model", "Model", "model", a.model, "old", "new", "default"),
@@ -88,6 +92,82 @@ func settingsConversation(t *testing.T, a *settingsAgent) ports.ChatConversation
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	return c
+}
+
+func TestInheritedClaudeEffortUsesTheLiveModelSlot(t *testing.T) {
+	for _, model := range []string{"old", "default"} {
+		t.Run(model, func(t *testing.T) {
+			a := &settingsAgent{fakeAgent: &fakeAgent{}, model: model, effort: "low", fast: "off", permission: "auto"}
+			c := settingsConversation(t, a)
+			owner := domain.AgentSettingsOwner{ProviderConversationID: c.ProviderConversationID(), ControllerGeneration: "current"}
+			observer := c.(ports.ChatAgentSettingsEffortObserver)
+			if got := observer.AgentSettingsEffortOptions(); got == nil || got.Model != model || got.ResetSelector != "default" || !reflect.DeepEqual(got.Efforts, []string{"high", "low"}) {
+				t.Fatalf("effort options do not belong to the live model: %+v", got)
+			}
+			staged := c.(ports.ChatAgentSettingsController)
+			selection := domain.AgentSettings{FastMode: domain.AgentFastDefault}
+			target := selection
+			target.Effort = "high"
+			plan, err := staged.PrepareAgentSettings(t.Context(), selection, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range []domain.AgentSettingsCheckpoint{domain.AgentSettingsApplyingModel, domain.AgentSettingsApplyingEffort, domain.AgentSettingsApplyingFast, domain.AgentSettingsVerifying} {
+				if err := staged.ApplyAgentSettingsStep(t.Context(), plan, step, false); err != nil {
+					t.Fatalf("%s: %v", step, err)
+				}
+			}
+			proof, err := c.(ports.ChatAgentSettingsPlanEvidence).ReconciliationPlanEvidence(t.Context(), owner, &plan)
+			if err != nil || proof.Native == nil || proof.Native.Model != model || proof.Native.Effort != "high" || proof.Permission != "auto" {
+				t.Fatalf("post-apply receipt: %+v, %v", proof, err)
+			}
+			effective := c.(ports.ChatAgentSettingsObserver).AgentSettingsObservation()
+			if effective.Effort.Value != "high" || model == "default" && effective.Model.State != domain.AgentSettingUnknown {
+				t.Fatalf("incorrect effective values: %+v", effective)
+			}
+			foreign := owner
+			foreign.ProviderConversationID = "another-session"
+			if _, err := c.(ports.ChatAgentSettingsPlanEvidence).ReconciliationPlanEvidence(t.Context(), foreign, &plan); !errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable) {
+				t.Fatalf("accepted foreign receipt: %v", err)
+			}
+			reset, err := staged.PrepareAgentSettings(t.Context(), target, selection)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range []domain.AgentSettingsCheckpoint{domain.AgentSettingsApplyingModel, domain.AgentSettingsApplyingEffort, domain.AgentSettingsApplyingFast, domain.AgentSettingsVerifying} {
+				if err := staged.ApplyAgentSettingsStep(t.Context(), reset, step, false); err != nil {
+					t.Fatalf("reset %s: %v", step, err)
+				}
+			}
+			proof, err = c.(ports.ChatAgentSettingsPlanEvidence).ReconciliationPlanEvidence(t.Context(), owner, &reset)
+			if err != nil || proof.Native == nil || proof.Native.Model != model || proof.Native.Effort != "default" || proof.Permission != "auto" {
+				t.Fatalf("post-reset receipt: %+v, %v", proof, err)
+			}
+			a.configMu.Lock()
+			defer a.configMu.Unlock()
+			if !reflect.DeepEqual(a.calls, []string{"effort=high", "effort=default"}) {
+				t.Fatalf("unexpected provider setters: %v", a.calls)
+			}
+		})
+	}
+}
+
+func TestInheritedClaudeEffortReceiptRequiresOfferedResetSelector(t *testing.T) {
+	a := &settingsAgent{fakeAgent: &fakeAgent{}, model: "old", effort: "high", fast: "off", permission: "auto", noEffortReset: true}
+	c := settingsConversation(t, a)
+	options := c.(ports.ChatAgentSettingsEffortObserver).AgentSettingsEffortOptions()
+	if options == nil || options.ResetSelector != "" || !reflect.DeepEqual(options.Efforts, []string{"high", "low"}) {
+		t.Fatalf("effort options: %+v", options)
+	}
+}
+
+func TestInheritedClaudeEffortReceiptDistinguishesUnverifiedPermission(t *testing.T) {
+	a := &settingsAgent{fakeAgent: &fakeAgent{}, model: "old", effort: "high", fast: "off", permission: "unadvertised"}
+	c := settingsConversation(t, a)
+	options := c.(ports.ChatAgentSettingsEffortObserver).AgentSettingsEffortOptions()
+	if options == nil || options.Model != "old" || options.Permission != "" || len(options.Efforts) != 0 || options.ResetSelector != "" {
+		t.Fatalf("unverified permission must not qualify any effort choice: %+v", options)
+	}
 }
 
 func TestJournalledACPSettingsUsesPostModelCatalogAndOrderedReceipts(t *testing.T) {

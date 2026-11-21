@@ -157,7 +157,7 @@ func (s *Store) replacementTxLocked(ctx context.Context, fn func(context.Context
 		return err
 	}
 	defer func() { _, _ = conn.ExecContext(context.Background(), "ROLLBACK") }()
-	q := gen.New(conn)
+	q := gen.New(utcTimes{conn})
 	if err := fn(context.WithValue(ctx, replacementTransactionKey{}, q), q); err != nil {
 		return err
 	}

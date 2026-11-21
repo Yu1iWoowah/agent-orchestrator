@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -60,33 +61,49 @@ func (s *Service) SetWakeCallback(wake func(context.Context, domain.SessionID) e
 	s.wakeChat = wake
 }
 
+// SetOtherWriterCheck connects the imported transcript ownership probe at startup.
+func (s *Service) SetOtherWriterCheck(check func(context.Context, domain.SessionRecord, time.Time) (bool, bool)) {
+	s.otherWriter = check
+}
+
 // SetChatView records a short-lived view lease. Registration and the final
 // hibernation check use the same controller gate, so opening a view either
 // prevents shutdown or waits for shutdown and then wakes the native session.
+//
+// While the controller is starting, the start itself holds that gate, and no
+// shutdown can run until it ends; the lease is recorded without waiting.
 func (s *Service) SetChatView(ctx context.Context, id domain.SessionID, viewID string, active bool) error {
 	gate := s.controllerGate(domain.SessionConversationOwner(id))
-	if err := gate.lock(ctx); err != nil {
-		return err
+	locked := !s.controllerStarting(id)
+	unlock := func() {
+		if locked {
+			gate.unlock()
+		}
+	}
+	if locked {
+		if err := gate.lock(ctx); err != nil {
+			return err
+		}
 	}
 	if !active {
 		s.setViewLease(id, viewID, false)
-		gate.unlock()
+		unlock()
 		return nil
 	}
 	rec, err := s.requireChatSession(ctx, id)
 	if err != nil {
-		gate.unlock()
+		unlock()
 		return err
 	}
 	if rec.IsTerminated {
 		s.viewMu.Lock()
 		delete(s.viewLeases, id)
 		s.viewMu.Unlock()
-		gate.unlock()
+		unlock()
 		return nil
 	}
 	newView := s.setViewLease(id, viewID, true)
-	gate.unlock()
+	unlock()
 	// Renewing a lease keeps the view open; only a newly opened view wakes a
 	// sleeping provider. A failed resume must not spawn another process on
 	// every heartbeat. Explicit sends and newly opened views can still retry.
@@ -97,20 +114,10 @@ func (s *Service) SetChatView(ctx context.Context, id domain.SessionID, viewID s
 		rec.HibernatedAt == nil || rec.Metadata.ProviderConversationID == "" {
 		return nil
 	}
-	err = s.wakeHibernated(ctx, id)
-	if errors.Is(err, domain.ErrReplacementIntakeFenced) {
-		err = nil
-	}
-	// A slow native reconnect can outlive one lease interval. Extend this
-	// viewer's lease only if a concurrent leave has not removed it.
-	s.viewMu.Lock()
-	if views := s.viewLeases[id]; views != nil {
-		if _, present := views[viewID]; present {
-			views[viewID] = s.now().Add(chatViewLease)
-		}
-	}
-	s.viewMu.Unlock()
-	return err
+	// Wake in the background: the request answers now and the snapshot shows
+	// the start, rather than holding the view open for the whole wake.
+	s.startBackgroundWake(id)
+	return nil
 }
 
 func (s *Service) setViewLease(id domain.SessionID, viewID string, active bool) (newView bool) {
@@ -193,10 +200,11 @@ type hibernateOptions struct {
 	// ignoreViews lets a refresh run under an open view: the user's next
 	// message is about to wake the session anyway.
 	ignoreViews bool
+	otherWriter *Controller
 }
 
 func (o hibernateOptions) enabled(s *Service) bool {
-	if o.versionRefresh || o.forUpdate || o.replacement != nil {
+	if o.versionRefresh || o.forUpdate || o.replacement != nil || o.otherWriter != nil {
 		return true
 	}
 	return s.hibernationEnabled != nil && s.hibernationEnabled()
@@ -291,7 +299,13 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 		return false, nil
 	}
 	controller, err := s.Controller(id)
-	if err != nil || controller.State() != ports.ChatControllerReady ||
+	if err == nil && controller.harness == domain.HarnessCodex {
+		if err := controller.reconcileBeforeHibernate(ctx); err != nil {
+			gate.unlock()
+			return false, err
+		}
+	}
+	if err != nil || (opts.otherWriter != nil && controller != opts.otherWriter) || controller.State() != ports.ChatControllerReady ||
 		!controller.Capabilities().Has(ports.ChatCapabilityResume) {
 		gate.unlock()
 		return false, nil
@@ -531,6 +545,10 @@ func (s *Service) clearHibernation(ctx context.Context, id domain.SessionID) err
 // Provider catalog reads are passive: opening a chat must not wake it. Hold
 // the same gate as hibernation so a provider cannot stop during the read.
 func (s *Service) readingController(ctx context.Context, id domain.SessionID) (*Controller, domain.SessionRecord, func(), error) {
+	// A starting controller cannot answer yet; say so now instead of after it.
+	if s.controllerStarting(id) {
+		return nil, domain.SessionRecord{}, nil, ErrNoController
+	}
 	gate := s.controllerGate(domain.SessionConversationOwner(id))
 	if err := gate.lock(ctx); err != nil {
 		return nil, domain.SessionRecord{}, nil, err
@@ -724,6 +742,7 @@ func (s *Service) wakeHibernated(ctx context.Context, id domain.SessionID) error
 		if resultErr != nil {
 			s.log.Warn("chat wake failed", "session", id,
 				"took", time.Since(run.started).Round(time.Millisecond), "err", resultErr)
+			captureChatFault(ctx, resultErr, "", "chat_wake", "wake")
 		} else {
 			s.log.Info("chat wake finished", "session", id,
 				"took", time.Since(run.started).Round(time.Millisecond))
@@ -805,6 +824,7 @@ func (s *Service) startBackgroundWake(id domain.SessionID) {
 		if err := s.DrainQueued(ctx, id); err != nil {
 			_ = s.saveWakeAttempt(ctx, attempt, "blocked", "CHAT_DRAIN_UNAVAILABLE")
 			s.log.Warn("chat session woke but queued inputs remain fenced", "session", id, "code", "CHAT_DRAIN_UNAVAILABLE")
+			captureChatFault(ctx, err, "", "chat_wake", "drain")
 			return
 		}
 		_ = s.saveWakeAttempt(ctx, attempt, "ready", "")
@@ -822,4 +842,50 @@ func (s *Service) isWaking(id domain.SessionID) bool {
 		delete(s.updateStops, id)
 	}
 	return s.waking[id] > 0 || s.updateStops[id]
+}
+
+// ErrChatOpenElsewhere reports a message refused because another Claude Code
+// process has the chat open.
+var ErrChatOpenElsewhere = apierr.Conflict("CHAT_OPEN_ELSEWHERE", "This chat is open in another Claude Code session, such as a terminal or an IDE. Quit it there, then send your message again.", nil)
+
+// checkOtherWriter refuses a delivery while another process has the chat open.
+// When one wrote turns and left, it stops the idle provider so its next start
+// reads them, and reports the stop.
+func (s *Service) checkOtherWriter(ctx context.Context, rec domain.SessionRecord) (bool, error) {
+	if s.otherWriter == nil || rec.IsTerminated || !sharesImportedClaudeTranscript(rec) {
+		return false, nil
+	}
+	var controller *Controller
+	var state ports.ChatControllerState
+	if rec.HibernatedAt == nil {
+		if live, err := s.Controller(rec.ID); err == nil {
+			controller, state = live, live.State()
+		}
+	}
+	var since time.Time
+	if state == ports.ChatControllerReady || state == ports.ChatControllerBusy {
+		since = controller.startedAt
+		if since.IsZero() {
+			since = rec.CreatedAt
+		}
+	}
+	open, wrote := s.otherWriter(ctx, rec, since)
+	if open {
+		return false, ErrChatOpenElsewhere
+	}
+	if !wrote {
+		return false, nil
+	}
+	if state == ports.ChatControllerBusy {
+		return false, ErrChatOpenElsewhere
+	}
+	stopped, err := s.hibernateChat(ctx, rec.ID, hibernateOptions{otherWriter: controller, ignoreViews: true})
+	if !stopped {
+		if err != nil {
+			s.log.Warn("could not stop a chat another process wrote", "session", rec.ID, "err", err)
+		}
+		return false, ErrChatOpenElsewhere
+	}
+	s.log.Info("chat session stopped to read turns another process wrote", "session", rec.ID)
+	return true, nil
 }

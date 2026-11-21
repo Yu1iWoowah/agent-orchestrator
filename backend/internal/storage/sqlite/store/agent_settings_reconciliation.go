@@ -130,6 +130,84 @@ func (s *Store) SaveAgentSettingsReconciliation(ctx context.Context, next domain
 	return next, err
 }
 
+// ExpireAgentSettingsRead ends both records before queued input can pass the
+// settings gate. An unknown writer or a started operation cannot expire here.
+func (s *Store) ExpireAgentSettingsRead(ctx context.Context, attempt domain.AgentSettingsReconciliation, opVersion int64, at time.Time) error {
+	if at.IsZero() || at.Before(attempt.Deadline) || attempt.EffectPending || attempt.ActionKey != "" || attempt.OperationID == "" {
+		return ports.ErrAgentSettingsConflict
+	}
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "expire settings read", func(q *gen.Queries) error {
+		if err := settingsReconciliationOwner(ctx, q, attempt); err != nil {
+			return err
+		}
+		row, err := q.GetAgentSettingsOperation(ctx, gen.GetAgentSettingsOperationParams{SessionID: string(attempt.SessionID), ID: attempt.OperationID})
+		if err != nil {
+			return settingsStoreError(err)
+		}
+		op, err := decodeSettingsOperation(row)
+		if err != nil {
+			return err
+		}
+		if op.Version != opVersion || op.Phase != domain.AgentSettingsPending || op.Checkpoint != domain.AgentSettingsQueued || op.StartedAt != nil ||
+			op.Source != attempt.PreferenceAtStart || op.BaseRevision != attempt.Revision || op.Target != attempt.Desired {
+			return ports.ErrAgentSettingsConflict
+		}
+		rows, err := q.ListSettingsReconciliations(ctx, string(attempt.SessionID))
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, row := range rows {
+			read, err := decodeSettingsReconciliation(row)
+			if err != nil {
+				return err
+			}
+			if read.OperationID != op.ID || read.Phase == "ready" || read.Phase == "cancelled" {
+				continue
+			}
+			if read.EffectPending || read.ActionKey != "" {
+				return ports.ErrAgentSettingsConflict
+			}
+			if read.ID == attempt.ID {
+				if read.Version != attempt.Version || read.ExecutorID != attempt.ExecutorID || at.Before(read.Deadline) {
+					return ports.ErrAgentSettingsConflict
+				}
+				found = true
+			}
+			read.Version++
+			read.Phase, read.SafeCause, read.ErrorCode = "cancelled", "timeout", domain.AgentSettingsReadTimeoutCode
+			read.ErrorCategory, read.FailedStep = string(domain.AgentSettingsErrorProvider), read.Step
+			read.LastProgressAt = at
+			read.FailedAt = &at
+			read.RecoveryActions = []string{"submit_new_settings"}
+			if err := read.Validate(); err != nil {
+				return err
+			}
+			raw, err := json.Marshal(read)
+			if err != nil {
+				return err
+			}
+			n, err := q.UpdateSettingsReconciliation(ctx, gen.UpdateSettingsReconciliationParams{Phase: read.Phase, ExecutorID: read.ExecutorID, ClaimUntil: read.ClaimUntil, RecordJson: string(raw), UpdatedAt: at, SessionID: string(read.SessionID), ID: read.ID, ExpectedVersion: read.Version - 1, ExpectedExecutor: read.ExecutorID})
+			if err != nil {
+				return err
+			}
+			if n != 1 {
+				return ports.ErrAgentSettingsConflict
+			}
+		}
+		if !found {
+			return ports.ErrAgentSettingsConflict
+		}
+		op.ErrorCode = domain.AgentSettingsReadTimeoutCode
+		_, err = setSettingsOutcome(ctx, q, op, domain.AgentSettingsFailed, domain.AgentSettingsErrorProvider, at)
+		return err
+	})
+}
+
 // ClaimAgentSettingsReconciliation is a versioned takeover of read-only work.
 // Uncertain side effects keep the same attempt fenced for outcome resolution.
 func (s *Store) ClaimAgentSettingsReconciliation(ctx context.Context, id domain.SessionID, key string, expected int64, executor string, at time.Time) (domain.AgentSettingsReconciliation, error) {

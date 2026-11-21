@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
@@ -113,5 +114,111 @@ func TestControlDoesNotBorrowDeviceCatalogForManagedAccount(t *testing.T) {
 				t.Fatal("rejected account created pending intent", err)
 			}
 		})
+	}
+}
+
+func TestClaudeInheritedEffortRequiresOptionsFromTheCurrentAttachment(t *testing.T) {
+	for _, model := range []string{"native", "default"} {
+		t.Run(model, func(t *testing.T) {
+			c, st, rec, _, _ := scopedControlFixture(t, domain.HarnessClaudeCode, true, false)
+			rec.Metadata.Model = ""
+			if err := st.UpdateSession(t.Context(), rec); err != nil {
+				t.Fatal(err)
+			}
+			current, err := st.SessionAgentSettings(t.Context(), rec.ID)
+			if err != nil || current.Settings.Model != "" {
+				t.Fatalf("inherited preference fixture: %+v, %v", current, err)
+			}
+			owner := domain.AgentSettingsOwner{SessionID: current.SessionID, AccountID: current.AccountID, ControllerGeneration: current.OwnerGeneration, ProviderConversationID: current.ProviderConversationID, BranchID: current.BranchID}
+			stale := owner
+			stale.AccountID = domain.DeviceAgentAccountID(domain.AgentAccountProviderClaude)
+			receipt := domain.AgentSettingsObservation{
+				Owner:         stale,
+				EffortOptions: &domain.AgentSettingsEffortOptions{ObservedAt: c.now(), Model: model, Permission: "auto", Efforts: []string{"high"}},
+			}
+			high := domain.AgentEffortSelection("high")
+			change := Change{ExpectedRevision: &current.Revision, IdempotencyKey: "native-effort", Settings: domain.AgentSettingsPatch{Effort: &high}}
+			for _, tc := range []struct {
+				owner      domain.AgentSettingsOwner
+				permission string
+				reason     string
+				message    string
+			}{
+				{stale, "auto", "observation_owner_mismatch", "The live effort options belong to a different attachment. Confirm the running account or select a verified model."},
+				{owner, "", "effort_permission_unverified", "The provider has not confirmed its permission mode. Wait for live settings evidence or select a verified model."},
+			} {
+				receipt.Owner = tc.owner
+				receipt.EffortOptions.Permission = tc.permission
+				c.core.SetObservationSource(observationSource{receipt})
+				_, err := c.Change(t.Context(), Caller{}, rec.ID, change)
+				var envelope *apierr.Error
+				if !errors.As(err, &envelope) || envelope.Kind != apierr.KindUnavailable || envelope.Code != "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE" ||
+					envelope.Details["reasonCode"] != tc.reason || envelope.Message != tc.message {
+					t.Errorf("%s: got %#v, want an actionable refusal", tc.reason, err)
+				}
+			}
+			receipt.Owner = owner
+			receipt.EffortOptions.Permission = "auto"
+			c.core.SetObservationSource(observationSource{receipt})
+			op, err := c.Change(t.Context(), Caller{}, rec.ID, change)
+			if err != nil || op.Phase != domain.AgentSettingsPending || op.Target.Model != "" || op.Target.Effort != high {
+				t.Fatalf("native effort did not queue with inherited model: %+v, %v", op, err)
+			}
+			if _, err := c.ValidateAgentSettings(t.Context(), op, owner, false); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := c.core.Read(t.Context(), rec.ID)
+			if err != nil || len(snapshot.CurrentModelEfforts) != 1 || snapshot.CurrentModelEfforts[0] != "high" || snapshot.Effective.Model.State != domain.AgentSettingUnknown {
+				t.Fatalf("session inspector evidence: %+v, %v", snapshot, err)
+			}
+		})
+	}
+}
+
+func TestClaudeInheritedEffortResetRequiresSelectorFromTheCurrentAttachment(t *testing.T) {
+	c, st, rec, _, _ := scopedControlFixture(t, domain.HarnessClaudeCode, true, false)
+	rec.Metadata.Model, rec.Metadata.Effort = "", "high"
+	if err := st.UpdateSession(t.Context(), rec); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.SessionAgentSettings(t.Context(), rec.ID)
+	if err != nil || current.Settings.Model != "" || current.Settings.Effort != "high" {
+		t.Fatalf("explicit effort fixture: %+v, %v", current, err)
+	}
+	owner := domain.AgentSettingsOwner{SessionID: current.SessionID, AccountID: current.AccountID, ControllerGeneration: current.OwnerGeneration, ProviderConversationID: current.ProviderConversationID, BranchID: current.BranchID}
+	options := domain.AgentSettingsEffortOptions{ObservedAt: c.now(), Model: "native", Permission: "auto", Efforts: []string{"high"}}
+	receipt := domain.AgentSettingsObservation{Owner: owner, EffortOptions: &options}
+	var reset domain.AgentEffortSelection
+	change := Change{ExpectedRevision: &current.Revision, IdempotencyKey: "reset-effort", Settings: domain.AgentSettingsPatch{Effort: &reset}}
+
+	c.core.SetObservationSource(observationSource{receipt})
+	if _, err := c.Change(t.Context(), Caller{}, rec.ID, change); !hasCode(err, "AGENT_SETTINGS_UNSUPPORTED") {
+		t.Fatalf("reset without selector was admitted: %v", err)
+	}
+	options.ResetSelector = "default"
+	receipt.Owner.ControllerGeneration = "old-controller"
+	c.core.SetObservationSource(observationSource{receipt})
+	if _, err := c.Change(t.Context(), Caller{}, rec.ID, change); !hasCode(err, "AGENT_SETTINGS_CAPABILITIES_UNAVAILABLE") {
+		t.Fatalf("reset from an old attachment was admitted: %v", err)
+	}
+	receipt.Owner = owner
+	c.core.SetObservationSource(observationSource{receipt})
+	op, err := c.Change(t.Context(), Caller{}, rec.ID, change)
+	if err != nil || op.Phase != domain.AgentSettingsPending || op.Target.Model != "" || op.Target.Effort != "" {
+		t.Fatalf("qualified reset did not queue: %+v, %v", op, err)
+	}
+	if _, err := c.ValidateAgentSettings(t.Context(), op, owner, false); err != nil {
+		t.Fatal(err)
+	}
+	receipt.Owner.ControllerGeneration = "old-controller"
+	c.core.SetObservationSource(observationSource{receipt})
+	if _, err := c.ValidateAgentSettings(t.Context(), op, owner, false); !errors.Is(err, ports.ErrAgentSettingsCapabilitiesUnavailable) {
+		t.Fatalf("execution accepted a reset selector from an old attachment: %v", err)
+	}
+	options.ResetSelector = ""
+	receipt.Owner = owner
+	c.core.SetObservationSource(observationSource{receipt})
+	if _, err := c.ValidateAgentSettings(t.Context(), op, owner, false); !errors.Is(err, ports.ErrAgentSettingsUnsupported) {
+		t.Fatalf("execution accepted a withdrawn reset selector: %v", err)
 	}
 }
