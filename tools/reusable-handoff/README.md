@@ -4,6 +4,27 @@
 依契約 v3.1、Q1 澄清及 D-2 初始 prompt 例外實作；測試只使用 fake CLI、fixture SQLite 與私有 Git repository。
 真實 provider／lifecycle 的資格演練與首次使用須另外授權，本 PR 沒有執行真實交接。
 
+## 已選擇手動換手時
+
+1. **定位部署版本。** 在現任主控的終端讀 `ao status --json` 的 `executablePath`，用該執行檔執行 `version`。從該部署的發行儲存庫找到同版本 release tag，核對 release 的來源 commit 或 `version` 的 commit 欄位。從該 commit 取得 `tools/reusable-handoff/manual-handoff.py` 與本 README。以 Git 取得檔案時使用 `git show <來源 commit>:tools/reusable-handoff/manual-handoff.py`。
+2. **確認一次並準備。** 使用者在現任主控的 Chat 確認專案、old、已部署版本及 target 的 harness、account、model、effort、approval mode。現任用自己的 lease 整理共享 A–F，保全材料與 worker hold。將下列 request 存為私有 JSON 檔，`version` 填 `ao version` 的完整單行。資料中的 `confirmation` 填原核准指令或 answer 引用，`handoff` 指向 A–F 並交代接續範圍，`materials` 將保留檔名對應到已宣告的絕對來源路徑，`workers` 將具授權的 worker ID 對應到原通知與 hold／D 指令。沒有材料或通知對象時填空物件。
+
+   ```json
+   {
+     "projectId": "project-id",
+     "oldId": "old-session-id",
+     "version": "部署版的 ao version 完整輸出",
+     "confirmation": "原核准指令或 answer 引用",
+     "target": {"harness": "codex", "accountId": "account-id", "model": "核准的 model", "effort": "high", "approvalMode": "bypass-permissions"},
+     "handoff": "從本專案共享 A–F 與下列材料接續，依已記錄的 hold 與 D 處理原題。",
+     "materials": {},
+     "workers": {}
+   }
+   ```
+
+3. **交付狀態入口再啟動。** 現任執行 `python3 -I <部署版腳本> prepare <私有 request.json>`。將輸出的 `Status:` 指令先交給使用者，再由現任執行同一輸出中的 `Start:` 指令一次，結束本回合進入 idle。固定入口和材料保存在 AO data dir 的私有 `.manual-handoff/<run-id>/`，old 終止後仍可讀。
+4. **從同一入口查結果。** Runner 核收同專案的原 spawn、new 寫的 old/new receipt 與 lease，再核 exit、native resume 及前後實際設定。若 `status` 顯示 `STOP`，保留 `lastConfirmed`、`pending`、`reason` 和原 run，據此裁決未確認的效果。當 `lastConfirmed` 為 `complete`，驗證訊息已交給 new。由 new 以自己的身分通知具授權的存活 worker，再向使用者回報完成與待決。
+
 ## 操作界面
 
 外部 start 入口收已發布的 run selector、old 與明確 target；selector 不是第二份授權：
