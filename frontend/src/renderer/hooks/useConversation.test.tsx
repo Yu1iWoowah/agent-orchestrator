@@ -1932,6 +1932,53 @@ describe("opening a local chat it has cached", () => {
 		expect(getMock).toHaveBeenCalledTimes(2);
 	});
 
+	it("keeps a newer revision from a full refetch that finishes during the open read", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		const key = conversationQueryKey("ao-1");
+		const streamedPage = (revision: number, text: string, turnState = "running") => {
+			const response = page(20, 20, false, turnState, "branch-a");
+			return {
+				...response,
+				data: {
+					...response.data,
+					messages: [{
+						kind: "message", id: "m1", turnId: "t1", sequence: 20, revision,
+						role: "assistant", origin: "provider", text, streaming: turnState === "running",
+						createdAt: "2026-11-16T00:00:00Z",
+					}],
+				},
+			};
+		};
+		const openRead = deferred<ReturnType<typeof streamedPage>>();
+		getMock.mockReset()
+			.mockResolvedValueOnce(streamedPage(1, "The"))
+			.mockReturnValueOnce(openRead.promise)
+			.mockResolvedValueOnce(streamedPage(3, "The finished answer.", "completed"))
+			.mockRejectedValue(new Error("unexpected read"));
+		const first = mount(queryClient);
+		await waitFor(() => expect(first.result.current.snapshot?.items[0]).toMatchObject({ revision: 1 }));
+		first.unmount();
+		await queryClient.invalidateQueries({ queryKey: key });
+
+		const second = mount(queryClient);
+		await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+		// The event transport falls back to a full refetch while the open read owns the tail.
+		await expect(refreshLocalConversationTail(queryClient, "ao-1")).resolves.toBe(false);
+		await act(async () => {
+			await queryClient.invalidateQueries({ queryKey: key }, { cancelRefetch: false });
+		});
+		await waitFor(() => expect(second.result.current.snapshot?.items[0]).toMatchObject({ revision: 3 }));
+		await act(async () => { openRead.resolve(streamedPage(2, "The finished")); });
+
+		expect(queryClient.getQueryData<{ pages: ConversationSnapshot[] }>(key)?.pages[0]).toMatchObject({
+			activeBranchId: "branch-a",
+			latestSequence: 20,
+			items: [expect.objectContaining({ revision: 3, text: "The finished answer." })],
+			turns: [expect.objectContaining({ state: "completed" })],
+		});
+		expect(getMock).toHaveBeenCalledTimes(3);
+	});
+
 	it("makes no request when the chat did not change while closed", async () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		getMock.mockReset().mockResolvedValueOnce(page(20, 1, false)).mockRejectedValue(new Error("read again"));

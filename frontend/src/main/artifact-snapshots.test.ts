@@ -238,6 +238,29 @@ describe("artifact snapshot store", () => {
 			expect(await requesting).toBeNull();
 		});
 
+		it("does not render a remote snapshot after another account overtakes its cache miss", async () => {
+			const remote = job({ hostId: "host-2", rawUrl: "http://ao-preview-abc.localhost:5000/remote.html?raw=true" });
+			const render = vi.fn(async () => Buffer.from("old account's image"));
+			const cache = createArtifactSnapshotStore({ directory, render, gapMs: 0 });
+			await cache.bindCloudAccount("user-1");
+
+			let rejectRead!: (reason: Error) => void;
+			const miss = new Promise<never>((_resolve, reject) => { rejectRead = reject; });
+			const read = vi.spyOn(fs, "readFile").mockReturnValueOnce(miss);
+			try {
+				const requesting = cache.request(remote);
+				expect(read).toHaveBeenCalledWith(path.join(directory, "cloud", `${artifactSnapshotKey(remote)}.webp`));
+				await cache.bindCloudAccount("user-2");
+				rejectRead(Object.assign(new Error("snapshot was not cached"), { code: "ENOENT" }));
+
+				expect(await requesting).toBeNull();
+				expect(render).not.toHaveBeenCalled();
+				expect(await cache.get(remote)).toBeNull();
+			} finally {
+				read.mockRestore();
+			}
+		});
+
 		it("keep being served, and a render under way keeps going, when the same account is bound again", async () => {
 			let finish: (() => void) | undefined;
 			const render = vi.fn(() => new Promise<Buffer>((resolve) => {

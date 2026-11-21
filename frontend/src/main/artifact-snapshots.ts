@@ -231,7 +231,8 @@ export function createArtifactSnapshotStore(options: {
 			const key = artifactSnapshotKey(job);
 			const stillOwner = ownerCheck(accountBound);
 			const cached = await read(key, accountBound);
-			if (cached) return stillOwner() ? cached : null;
+			if (!stillOwner()) return null;
+			if (cached) return cached;
 			const existing = inFlight.get(key);
 			if (existing) return existing;
 			const failed = failedAt.get(key);

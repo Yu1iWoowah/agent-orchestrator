@@ -25,7 +25,7 @@ import { textSelectionColors } from "../textSelection";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { font, fontScaleCap, iconSize, radius, space, stateOpacity, touchTarget, type } from "../tokens";
 import type { WorkspaceFileStatus } from "./api";
-import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, CODE_MAX_SCALE, codeScale, gutterWidth, MARKER_WIDTH } from "./codeMetrics";
+import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, CODE_MAX_SCALE, codeLineHeight, codeScale, gutterWidth, MARKER_WIDTH } from "./codeMetrics";
 import { fileIconSvg, folderIconSvg } from "./fileTypeIcon";
 import { plural, type LineRow } from "./model";
 import type { ReviewComment } from "./reviewStore";
@@ -99,7 +99,7 @@ const SELECTION_BAR_INSET = 3;
 const SELECTION_BAR_WIDTH = 3;
 const SELECTION_KNOB = SELECTION_BAR_INSET * 2 + SELECTION_BAR_WIDTH;
 
-export { CODE_FONT_SIZE, CODE_LINE_HEIGHT, CODE_MAX_SCALE, codeContentWidth, codeScale, gutterWidth, MARKER_WIDTH } from "./codeMetrics";
+export { CODE_FONT_SIZE, CODE_LINE_HEIGHT, CODE_MAX_SCALE, codeContentWidth, codeLineHeight, codeScale, gutterWidth, MARKER_WIDTH } from "./codeMetrics";
 
 export function useCodeScale(): number {
 	return codeScale(useWindowDimensions().fontScale);
@@ -153,6 +153,8 @@ export const DiffLine = memo(function DiffLine({
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const scale = useCodeScale();
+	const lineHeight = codeLineHeight(scale);
+	const fixedHeight = wrap ? undefined : { height: lineHeight, minHeight: lineHeight };
 	const tokens = useMemo(() => row.segments ? undefined : highlightCode(row.text, language), [language, row.segments, row.text]);
 	const number = row.kind === "del" ? row.oldNo : row.newNo;
 	const marker = row.kind === "add" ? "+" : row.kind === "del" ? "−" : " ";
@@ -174,9 +176,9 @@ export const DiffLine = memo(function DiffLine({
 			// Unwrapped, a row is exactly one line high: the file screen tells its list
 			// so (getItemLayout), and Android, which rounds a text's height to whole
 			// pixels, would otherwise drift from it row by row.
-			style={[styles.line, !wrap && { height: CODE_LINE_HEIGHT * scale }, tint ? { backgroundColor: tint } : null, cited && styles.lineCited, selected && styles.lineSelected]}
+			style={[styles.line, fixedHeight, tint ? { backgroundColor: tint } : null, cited && styles.lineCited, selected && styles.lineSelected]}
 		>
-			<View style={[styles.gutter, { width: gutterWidth(digits, scale) }]}>
+			<View style={[styles.gutter, fixedHeight, { width: gutterWidth(digits, scale) }]}>
 				<Text maxFontSizeMultiplier={CODE_MAX_SCALE} style={styles.gutterText}>{number ?? ""}</Text>
 			</View>
 			<Text maxFontSizeMultiplier={CODE_MAX_SCALE} style={[styles.marker, { width: MARKER_WIDTH * scale, color: row.kind === "add" ? t.green : row.kind === "del" ? t.red : t.textFaint }]}>{marker}</Text>

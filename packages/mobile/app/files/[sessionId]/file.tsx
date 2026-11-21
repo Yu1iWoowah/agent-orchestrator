@@ -25,7 +25,7 @@ import { useToast } from "../../../lib/useToast";
 import type { FileRead, WorkspaceFileDetail } from "../../../lib/files/api";
 import type { FilesBackend, WorkspaceImageSource } from "../../../lib/files/backend";
 import { useFilesBackend } from "../../../lib/files/useFilesBackend";
-import { CODE_LINE_HEIGHT, codeContentWidth, DiffLine, FoldRow, gutterWidth, InlineComment, LineCounts, MARKER_WIDTH, SelectionComposer, useCodeScale, type ComposerAction } from "../../../lib/files/components";
+import { codeContentWidth, codeLineHeight, DiffLine, FoldRow, gutterWidth, InlineComment, LineCounts, MARKER_WIDTH, SelectionComposer, useCodeScale, type ComposerAction } from "../../../lib/files/components";
 import { fileIcon } from "../../../lib/files/fileIcons";
 import {
 	annotationTarget,
@@ -367,7 +367,7 @@ function SessionFileContent() {
 	// few lines of context above it) drawing only the rows there: line 4000 opens
 	// as fast as line 1. A wrapped row, or a comment card, has no known height;
 	// such a list is laid out by measuring, as before.
-	const rowHeight = CODE_LINE_HEIGHT * codeScale;
+	const rowHeight = codeLineHeight(codeScale);
 	const uniformRows = !wrap && rows.every((row) => row.type === "line");
 	const rowLayout = useCallback((_: ArrayLike<DisplayRow> | null | undefined, index: number) => ({ length: rowHeight, offset: rowHeight * index, index }), [rowHeight]);
 	// A cited line past the part that arrived opens where that part ends.
@@ -514,7 +514,7 @@ function SessionFileContent() {
 				onViewableItemsChanged={onViewable}
 				getItemLayout={uniformRows ? rowLayout : undefined}
 				initialScrollIndex={uniformRows && openAt > 0 ? openAt : undefined}
-				onScrollToIndexFailed={({ index }) => list.current?.scrollToOffset({ offset: index * CODE_LINE_HEIGHT * codeScale, animated: true })}
+				onScrollToIndexFailed={({ index }) => list.current?.scrollToOffset({ offset: index * rowHeight, animated: true })}
 				contentContainerStyle={{ paddingBottom: (selection ? 260 : review.comments.length ? 140 : 96) + stepperClearance }}
 				renderItem={({ item, index }) => item.type === "fold" ? (
 					<FoldRow hidden={item.hidden} section={item.section} expandable={item.expandable} onExpand={() => expand(item.id)} />

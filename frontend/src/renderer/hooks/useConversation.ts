@@ -531,9 +531,8 @@ function applyLiveConversationPage(queryClient: QueryClient, key: QueryKey, late
  * the live page during the read; the caller then refetches the chat as before.
  */
 export async function refreshLocalConversationTail(queryClient: QueryClient, sessionId: string): Promise<boolean> {
-	// The open read of a chat that changed while it was closed writes a whole live
-	// page when it lands, possibly one read before this event. A tail merged first
-	// would be overwritten by it, while a full reload started now lands after it.
+	// The open read takes care of the live page. An event arriving during it
+	// uses a full reload, which can also pick up updates to older pages.
 	if (localConversationRefreshes.get(queryClient)?.has(sessionId)) return false;
 	const key = conversationQueryKey(sessionId);
 	const loaded = queryClient.getQueryData<InfiniteData<ConversationSnapshot>>(key)?.pages;
@@ -633,29 +632,27 @@ function refreshLocalConversationOnce(queryClient: QueryClient, sessionId: strin
 		try {
 			do {
 				missed = false;
+				const query = queryClient.getQueryCache().find({ queryKey: key, exact: true });
+				// A full reload left running from before the chat closed read an older
+				// live page. Cancel it before taking the open read's cache baseline.
+				if (query?.state.fetchStatus === "fetching" && !query.state.fetchMeta?.fetchMore) {
+					await queryClient.cancelQueries({ queryKey: key, exact: true });
+				}
 				// Marking an already stale query stale again records nothing, so take the
 				// mark off while reading for an event during the read to be seen.
-				const query = queryClient.getQueryCache().find({ queryKey: key, exact: true });
 				query?.setState({ isInvalidated: false });
-				// A full reload still running from before the chat closed (closing does not
-				// cancel it) read its pages before this read and would write them over it.
-				const earlierReload = query?.state.fetchStatus === "fetching" && !query.state.fetchMeta?.fetchMore ? query.promise : undefined;
 				const before = cachedLivePage(queryClient, key);
 				const latest = await fetchConversationPage(sessionId);
 				const loading = queryClient.getQueryCache().find({ queryKey: key, exact: true });
-				if (loading?.state.fetchStatus === "fetching") {
+				if (loading?.state.fetchStatus === "fetching" && loading.state.fetchMeta?.fetchMore) {
 					// An older page that was already loading copied the previous live page when
 					// it started and writes it back when it lands, so this page goes in after it.
-					if (loading.state.fetchMeta?.fetchMore) await loading.promise?.catch(() => undefined);
-					// Cancelling reverts to the pages held when it started (and any write since),
-					// which this page goes in front of. A reload that started during this read
-					// holds newer rows and is left to land.
-					else if (earlierReload && loading.promise === earlierReload) await queryClient.cancelQueries({ queryKey: key, exact: true });
+					await loading.promise?.catch(() => undefined);
 				}
-				// A branch switch, edit or rollback during the read already refetched the
-				// chat on its new branch; this page shows the one it left.
-				const now = cachedLivePage(queryClient, key);
-				if (now?.conversationId !== before?.conversationId || now?.activeBranchId !== before?.activeBranchId) continue;
+				// A newer refetch can change a streaming item's revision without changing
+				// its sequence or branch. Only write while the live page we read against
+				// is still current. Appending older pages preserves its identity.
+				if (cachedLivePage(queryClient, key) !== before) continue;
 				applyLiveConversationPage(queryClient, key, latest);
 			} while (missed && queryClient.getQueryCache().find({ queryKey: key, exact: true, type: "active" }));
 			// Still closed: the next open reads what changed.
