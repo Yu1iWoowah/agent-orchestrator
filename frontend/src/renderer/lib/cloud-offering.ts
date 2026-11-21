@@ -35,6 +35,8 @@ export const QUEUED_DELETE_FEATURE = "queued-delete";
  * running turn (steerQueuedMessage), with the outcome recorded on the queued turn's events.
  */
 export const QUEUED_STEER_FEATURE = "queued-steer";
+/** Server-declared permission for a Coder project to place its orchestrator on Coder. */
+export const ORCHESTRATOR_ON_CODER_FEATURE = "orchestrator-on-coder";
 /** The largest Cloud attachment when the control plane takes files but names no limit. */
 export const CLOUD_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
@@ -136,7 +138,7 @@ export function resolveCloudOffering(
 			defaultProvider: offering.defaultProvider || providers[0] || "",
 			kind: offering.kind ?? offeringKindFor(providers),
 			billingMode: offering.billingMode ?? billingModeFromSummary(billing) ?? (billingFailed ? "off" : undefined),
-			features: offering.features ?? [],
+			features: activeOrgId && organizations.length > 0 && org?.id !== activeOrgId ? [] : offering.features ?? [],
 			maxAttachmentBytes: offering.features?.includes(ATTACHMENTS_FEATURE)
 				? (offering.maxAttachmentBytes && offering.maxAttachmentBytes > 0 ? offering.maxAttachmentBytes : CLOUD_MAX_ATTACHMENT_BYTES)
 				: undefined,
