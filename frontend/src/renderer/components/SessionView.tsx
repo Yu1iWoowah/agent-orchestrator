@@ -115,7 +115,7 @@ import {
 import { useSessionInterfaceSwitch } from "../hooks/useSessionInterfaceSwitch";
 import { clearResumeFailure, resumeFailed, shouldResumeOnOpen, useResumeWatch } from "../lib/resume-watch";
 import { SESSION_WORKSPACE_ID } from "../hooks/useHeldSession";
-import { canResumeAgent, resumeAgentOnOpen, resumeOpenElsewhere } from "../hooks/useCanResumeAgent";
+import { canAutoResumeAgent, resumeLocalAgent, resumeOpenElsewhere } from "../hooks/useCanResumeAgent";
 import { trackImportFirstOpen, useImportedAgentBlock } from "../lib/session-import";
 import { useSessionInterfaceTransitionStatus } from "../hooks/useSessionInterfaceTransition";
 import { conversationQueryKey, conversationSettled } from "../hooks/useConversation";
@@ -634,8 +634,8 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 	const setBrowserUnseen = useUiStore((state) => state.setBrowserUnseen);
 	const setArtifactsUnseen = useUiStore((state) => state.setArtifactsUnseen);
 	const { daemonStatus } = useShell();
-	const resumeStatus = useSessionInterfaceTransitionStatus(canResumeAgent(session) ? session?.id : undefined, hostId);
-	const canResume = canResumeAgent(session, resumeStatus.transition) && !resumeStatus.isLoading && !resumeStatus.statusError;
+	const resumeStatus = useSessionInterfaceTransitionStatus(canAutoResumeAgent(session) ? session?.id : undefined, hostId);
+	const canResume = canAutoResumeAgent(session, resumeStatus.transition) && !resumeStatus.isLoading && !resumeStatus.statusError;
 	const importBlock = useImportedAgentBlock(session, hostId);
 	const openedSession = useRef({ key: uiSessionId, checked: false });
 	const autoResume = useMutation({
@@ -646,10 +646,10 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 				queryClient.invalidateQueries({ queryKey: conversationQueryKey(id) }),
 			]);
 			if (await shouldResumeOnOpen(id, refresh)) {
-                const opening = resumeAgentOnOpen(id, refresh);
-                if (session?.id === id && session.needsResume) trackImportFirstOpen(session.provider, opening);
-                await opening;
-            }
+				const opening = resumeLocalAgent(id, refresh, "automatic");
+				if (session?.id === id && session.needsResume) trackImportFirstOpen(session.provider, opening);
+				await opening;
+			}
 		},
 		onSettled: async (_data, _error, id) => {
 			await Promise.all([
@@ -671,7 +671,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 	// already-resumed session no longer flashes "Resuming agent…" while the
 	// workspace query catches up with the new activity state.
 	const quietResume = (autoResume.variables === sessionId && autoResume.isPending) || resumeWatch?.state === "running" ||
-		(!usesPreviewWorkspaceData && !hostId && canResumeAgent(session, resumeStatus.transition) &&
+		(!usesPreviewWorkspaceData && !hostId && canAutoResumeAgent(session, resumeStatus.transition) &&
 		!resumeStatus.statusError && !importBlock.block && (openedSession.current.key !== uiSessionId || !openedSession.current.checked));
 	const resumeOnOpen = autoResume.mutate;
 	// Any time the agent is seen running, however it was started (another
@@ -689,7 +689,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 		if (openedSession.current.key !== uiSessionId) openedSession.current = { key: uiSessionId, checked: false };
 		if (usesPreviewWorkspaceData || hostId || session?.cloud || !session || daemonStatus.state !== "ready" ||
 			(session.statusReadiness && session.statusReadiness !== "ready") || openedSession.current.checked) return;
-		if (!session.needsResume && !sessionAgentExited(session)) {
+		if (session.chatExplicitlyExited || (!session.needsResume && !sessionAgentExited(session))) {
 			openedSession.current.checked = true;
 			return;
 		}

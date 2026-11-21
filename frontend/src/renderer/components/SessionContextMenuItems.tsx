@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Archive, Code2, Copy, ExternalLink, GitBranch, GitFork, Pencil, Pin, PinOff, Play } from "@/components/app-icons";
 import type { OpenTarget } from "../../shared/editor-handoff";
-import { resumeAgentOnOpen, useCanResumeAgent } from "../hooks/useCanResumeAgent";
+import { resumeLocalAgent, useCanResumeAgent } from "../hooks/useCanResumeAgent";
 import { conversationQueryKey } from "../hooks/useConversation";
 import { editorHandoffErrorMessage, useEditorHandoffState, useOpenSessionTarget } from "../hooks/useEditorHandoff";
 import { usePinSession, useUnpinSession } from "../hooks/usePinSession";
@@ -78,7 +78,7 @@ export function useSessionMenuEntries(session: WorkspaceSession | undefined, { o
 			queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(session.hostId) }),
 			queryClient.invalidateQueries({ queryKey: conversationQueryKey(session.id) }),
 		]);
-		void resumeAgentOnOpen(session.id, refresh)
+		void resumeLocalAgent(session.id, refresh, "explicit")
 			.catch((error: unknown) => {
 				showGlobalToast(t("inspector.resumeAgent"), error instanceof Error ? error.message : undefined, "error");
 			})

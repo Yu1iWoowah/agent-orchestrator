@@ -223,6 +223,7 @@ export type WorkspaceSession = {
 	chatProviderPreserved?: boolean;
 	/** An imported chat not opened yet: it has no AO workspace until it resumes. */
 	needsResume?: boolean;
+	chatExplicitlyExited?: boolean;
 	/** User preference to tear down this session when its PR set completes through a merge. */
 	terminateOnPrMerge?: boolean;
 	/** Whether SCM review feedback is automatically injected into the worker. */

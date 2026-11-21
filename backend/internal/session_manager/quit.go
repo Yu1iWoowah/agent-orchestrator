@@ -37,7 +37,7 @@ func (m *Manager) StopAgentsForQuit(ctx context.Context) error {
 					}
 				}
 			} else {
-				_, stopErr = m.ExitAgent(ctx, rec.ID)
+				_, stopErr = m.exitAgent(ctx, rec.ID, false)
 				if errors.Is(stopErr, ErrAgentExited) {
 					stopErr = nil
 				}

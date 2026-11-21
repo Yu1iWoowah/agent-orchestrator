@@ -82,7 +82,7 @@ func (s *timeoutProbeSessionService) recordBudget(t *testing.T) time.Duration {
 	}
 }
 
-func (s *timeoutProbeSessionService) StartResumeAgent(ctx context.Context, id domain.SessionID) (domain.Session, error) {
+func (s *timeoutProbeSessionService) StartResumeAgent(ctx context.Context, id domain.SessionID, _ bool) (domain.Session, error) {
 	// An import's first open extends the budget by its Setup steps; with none
 	// the request keeps its base budget.
 	ctx, cancel := ports.ExtendSpawnRequestBudget(ctx, s.resumeSetup)

@@ -570,6 +570,14 @@ func (s *Store) SetSessionRuntimeReleased(ctx context.Context, id domain.Session
 	return rows > 0, nil
 }
 
+// SetSessionChatExplicitExit records a completed Exit for the exact Chat worker generation.
+func (s *Store) SetSessionChatExplicitExit(ctx context.Context, id domain.SessionID, generation string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetSessionChatExplicitExit(ctx, gen.SetSessionChatExplicitExitParams{ID: id, Generation: generation})
+	return rows > 0, err
+}
+
 // UpdateSessionModel changes only the selected model, leaving concurrent
 // lifecycle and controller ownership updates intact.
 func (s *Store) UpdateSessionModel(ctx context.Context, id domain.SessionID, model string) (bool, error) {

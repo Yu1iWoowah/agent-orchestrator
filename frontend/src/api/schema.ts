@@ -8472,6 +8472,8 @@ export interface components {
             branch?: string;
             branchNaming?: boolean;
             branchState?: components["schemas"]["SessionBranchState"];
+            /** @description Whether the current Chat worker was explicitly stopped and requires a manual resume. */
+            chatExplicitlyExited?: boolean;
             chatProviderPreserved: boolean;
             /** Format: date-time */
             createdAt: string;
@@ -35079,7 +35081,10 @@ export interface operations {
     };
     resumeAgent: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Whether this resume comes from passive viewing. Omit for an explicit Resume agent action. */
+                automatic?: boolean;
+            };
             header?: never;
             path: {
                 /** @description Session identifier, e.g. project-1. */
@@ -35096,6 +35101,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResumeAgentResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Not Found */

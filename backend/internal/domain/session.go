@@ -320,10 +320,10 @@ type SessionMetadata struct {
 	DiffBaseRef       string `json:"diffBaseRef,omitempty"`
 	RuntimeHandleID   string `json:"runtimeHandleId,omitempty"`
 	RuntimeLaunchID   string `json:"runtimeLaunchId,omitempty"`
-	// RuntimeReleasedLaunchID is the launch whose terminal AO destroyed on
-	// purpose while keeping the session (an agent exit), or found already gone
-	// at startup. Its runtime's death is then not a crash. It names one launch,
-	// so a new launch is never covered.
+	// RuntimeReleasedLaunchID records the stopped owner in the session's mode.
+	// For TUI it identifies a terminal AO released or found gone. For Chat
+	// workers it identifies a controller stopped through Exit agent, prefixed
+	// with "chat:" to distinguish it from a retained terminal launch ID.
 	RuntimeReleasedLaunchID string `json:"-"`
 	AgentSessionID          string `json:"agentSessionId,omitempty"`
 	// AgentSessionIDLaunchID identifies the terminal runtime generation proven to
@@ -672,7 +672,15 @@ func (s SessionRecord) IsStandalone() bool { return s.ProjectID == "" }
 // death is not a crash; a resume starts a new launch, which this never covers.
 func (s SessionRecord) RuntimeReleased() bool {
 	launch := s.Metadata.RuntimeLaunchID
-	return s.Activity.State == ActivityExited && launch != "" && s.Metadata.RuntimeReleasedLaunchID == launch
+	return NormalizeSessionMode(s.Mode) == SessionModeTUI &&
+		s.Activity.State == ActivityExited && launch != "" && s.Metadata.RuntimeReleasedLaunchID == launch
+}
+
+// ChatExplicitlyExited reports a worker's intentional stop for the current Chat controller.
+func (s SessionRecord) ChatExplicitlyExited() bool {
+	generation := s.Metadata.ControllerGeneration
+	return s.Kind == KindWorker && s.Mode == SessionModeChat && generation != "" &&
+		s.Metadata.RuntimeReleasedLaunchID == "chat:"+generation
 }
 
 // SessionControllerOwner is the durable identity of the process/controller

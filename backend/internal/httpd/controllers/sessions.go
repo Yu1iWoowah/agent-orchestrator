@@ -99,7 +99,7 @@ type SessionService interface {
 	GetRecord(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error)
 	Restore(ctx context.Context, id domain.SessionID) (sessionsvc.RestoreOutcome, error)
 	ExitAgent(ctx context.Context, id domain.SessionID) (sessionsvc.ExitAgentOutcome, error)
-	StartResumeAgent(ctx context.Context, id domain.SessionID) (domain.Session, error)
+	StartResumeAgent(ctx context.Context, id domain.SessionID, automatic bool) (domain.Session, error)
 	ResumeAgentStatus(ctx context.Context, id domain.SessionID) (sessionsvc.ResumeAgentStatus, error)
 	RequestKill(ctx context.Context, id domain.SessionID) (sessionmanager.KillResult, error)
 	DeleteArtifacts(ctx context.Context, id domain.SessionID) error
@@ -2236,7 +2236,16 @@ func (c *SessionsController) resumeAgent(w http.ResponseWriter, r *http.Request)
 		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/resume-agent")
 		return
 	}
-	sess, err := c.Svc.StartResumeAgent(r.Context(), sessionID(r))
+	var automatic bool
+	if raw := r.URL.Query().Get("automatic"); raw != "" {
+		var err error
+		automatic, err = strconv.ParseBool(raw)
+		if err != nil {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_REQUEST", "automatic must be a boolean", nil)
+			return
+		}
+	}
+	sess, err := c.Svc.StartResumeAgent(r.Context(), sessionID(r), automatic)
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -3188,13 +3197,14 @@ func previewFileURL(r *http.Request, id domain.SessionID, entry string) (string,
 func sessionView(r *http.Request, s domain.Session) SessionView {
 	terminalGeneration := s.Metadata.RuntimeLaunchID
 	view := SessionView{
-		Session:            s,
-		Branch:             s.Metadata.Branch,
-		TerminalGeneration: terminalGeneration,
-		PreviewURL:         s.Metadata.PreviewURL,
-		PreviewRevision:    s.Metadata.PreviewRevision,
-		Model:              s.Metadata.Model,
-		SpawnAgentSettings: s.Metadata.SpawnAgentSettings,
+		Session:              s,
+		ChatExplicitlyExited: s.ChatExplicitlyExited(),
+		Branch:               s.Metadata.Branch,
+		TerminalGeneration:   terminalGeneration,
+		PreviewURL:           s.Metadata.PreviewURL,
+		PreviewRevision:      s.Metadata.PreviewRevision,
+		Model:                s.Metadata.Model,
+		SpawnAgentSettings:   s.Metadata.SpawnAgentSettings,
 		LastUserMessageAt: func() *time.Time {
 			if s.Metadata.LatestUserPromptAt.IsZero() {
 				return nil

@@ -62,6 +62,9 @@ UPDATE sessions
 SET agent_settings_launch_id = CASE WHEN ?1=1
       THEN COALESCE(NULLIF(agent_settings_launch_id,''),controller_generation)
       ELSE ?2 END,
+    runtime_released_launch_id = CASE WHEN kind = 'worker' AND controller_generation <> ''
+      AND runtime_released_launch_id = 'chat:' || controller_generation
+      THEN 'chat:' || ?2 ELSE runtime_released_launch_id END,
     controller_generation = ?2
 WHERE id = ?3 AND session_mode = 'chat'
 `
@@ -91,6 +94,19 @@ UPDATE sessions SET branch_naming = FALSE WHERE branch_naming
 // No branch naming survives a daemon restart.
 func (q *Queries) ClearSessionBranchNaming(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, clearSessionBranchNaming)
+	return err
+}
+
+const clearSessionChatExplicitExit = `-- name: ClearSessionChatExplicitExit :exec
+UPDATE sessions
+SET runtime_released_launch_id = ''
+WHERE id = ?1 AND kind = 'worker' AND session_mode = 'chat'
+  AND controller_generation <> '' AND runtime_released_launch_id = 'chat:' || controller_generation
+`
+
+// Called inside the transaction that publishes a ready Chat controller.
+func (q *Queries) ClearSessionChatExplicitExit(ctx context.Context, id domain.SessionID) error {
+	_, err := q.db.ExecContext(ctx, clearSessionChatExplicitExit, id)
 	return err
 }
 
@@ -1907,6 +1923,28 @@ type SetSessionBranchStateParams struct {
 // alone because an observed git fact is not user-visible recency.
 func (q *Queries) SetSessionBranchState(ctx context.Context, arg SetSessionBranchStateParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setSessionBranchState, arg.BranchState, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setSessionChatExplicitExit = `-- name: SetSessionChatExplicitExit :execrows
+UPDATE sessions
+SET runtime_released_launch_id = 'chat:' || controller_generation, hibernated_at = NULL
+WHERE id = ?1 AND kind = 'worker' AND session_mode = 'chat'
+  AND controller_generation = ?2 AND controller_generation <> ''
+  AND activity_state = 'exited' AND is_terminated = 0
+`
+
+type SetSessionChatExplicitExitParams struct {
+	ID         domain.SessionID
+	Generation string
+}
+
+// Only a completed Exit can mark the current worker controller as stopped.
+func (q *Queries) SetSessionChatExplicitExit(ctx context.Context, arg SetSessionChatExplicitExitParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionChatExplicitExit, arg.ID, arg.Generation)
 	if err != nil {
 		return 0, err
 	}

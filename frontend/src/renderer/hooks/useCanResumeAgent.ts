@@ -10,6 +10,7 @@ import { clientForSessionHost } from "../lib/host-clients";
 import { followResume, noteResumeFailure, watchResume } from "../lib/resume-watch";
 
 const resumesInFlight = new Map<string, Promise<void>>();
+type ResumeIntent = "automatic" | "explicit";
 
 export function resumeAgentErrorMessage(error: unknown, status?: number): string {
 	switch (apiErrorCode(error)) {
@@ -34,14 +35,14 @@ export function resumeOpenElsewhere(error: unknown): boolean {
 
 /**
  * Ask the daemon to resume a local session's stopped agent, sharing one
- * request per session. The daemon answers once the resume starts; the resume
+ * request per session and intent. The daemon answers once the resume starts; the resume
  * watch follows it from there and runs refresh when it settles. A resume
  * already in progress is followed the same way, not reported as a failure.
  */
-export function resumeAgentOnOpen(sessionId: string, refresh: () => unknown): Promise<void> {
+export function resumeLocalAgent(sessionId: string, refresh: () => unknown, intent: ResumeIntent): Promise<void> {
 	return resumeOnce(sessionId, async () => {
 		const { data, error, response } = await clientForSessionHost().POST("/api/v1/sessions/{sessionId}/resume-agent", {
-			params: { path: { sessionId } },
+			params: { path: { sessionId }, ...(intent === "automatic" && { query: { automatic: true } }) },
 		});
 		if (!error) {
 			followResume(sessionId, undefined, response, data, refresh);
@@ -53,16 +54,24 @@ export function resumeAgentOnOpen(sessionId: string, refresh: () => unknown): Pr
 		}
 		noteResumeFailure(sessionId, error);
 		throw resumeAgentError(error, response.status);
-	});
+	}, intent);
 }
 
-/** Run one resume per local session; later callers join the request in flight. */
-export function resumeOnce(sessionId: string, run: () => Promise<void>): Promise<void> {
-	const existing = resumesInFlight.get(sessionId);
+/** Later callers with the same intent join the request in flight. */
+export function resumeOnce(sessionId: string, run: () => Promise<void>, intent: ResumeIntent = "explicit"): Promise<void> {
+	const key = `${intent}:${sessionId}`;
+	const existing = resumesInFlight.get(key);
 	if (existing) return existing;
-	const request = run().finally(() => resumesInFlight.delete(sessionId));
-	resumesInFlight.set(sessionId, request);
+	const request = run().finally(() => resumesInFlight.delete(key));
+	resumesInFlight.set(key, request);
 	return request;
+}
+
+export function canAutoResumeAgent(
+	session: WorkspaceSession | undefined,
+	transition?: SessionInterfaceTransition,
+): boolean {
+	return !session?.chatExplicitlyExited && canResumeAgent(session, transition);
 }
 
 export function canResumeAgent(
