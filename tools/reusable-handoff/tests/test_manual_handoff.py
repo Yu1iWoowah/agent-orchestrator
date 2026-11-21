@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 
 SCRIPT = Path(__file__).parents[1] / "manual-handoff.py"
@@ -39,6 +40,8 @@ class ManualHandoffTests(unittest.TestCase):
                          outcome="pending")
             target = dict(harness="codex", accountId="acct", model="fixture-model",
                           effort="high", approvalMode="bypass-permissions")
+            if failure == "invalid-approval":
+                target["approvalMode"] = "typo"
             request = dict(target=target)
             raw = json.dumps(request).encode()
             (root / "request.json").write_bytes(raw)
@@ -46,6 +49,8 @@ class ManualHandoffTests(unittest.TestCase):
             manual.write_state(root, state)
             commands = []
             old_dead = resumed = receipt_read = False
+            notification_reads = 0
+            elapsed = 0
             activity = "idle"
             token = "RH3[run]"
             cli = manual.AO("/fake/ao", "project")
@@ -127,9 +132,22 @@ class ManualHandoffTests(unittest.TestCase):
                                        resumeMode="replay" if failure == "replay" else "native"))
                 self.assertEqual(args[:3], ["send", "--session", "new"])
                 self.assertEqual(current["lastConfirmed"], "verified")
-                return result(None)
+                self.assertEqual(args[args.index("--client-message-id") + 1], "run:verified")
+                if failure == "notification-steered":
+                    return subprocess.CompletedProcess(argv, 0, "Steering accepted by provider for active turn "
+                        "native-steer with delivery handle run:verified; agent action is not confirmed.\n", "")
+                return subprocess.CompletedProcess(argv, 0, "No active turn to steer. Message accepted as a "
+                    "normal Chat turn in queued state with delivery handle run:verified; provider delivery is not confirmed.\n", "")
 
             def get(path):
+                nonlocal notification_reads
+                if path.startswith("agents/codex/models?"):
+                    self.assertFalse(old_dead)
+                    self.assertEqual(parse_qs(urlsplit(path).query), dict(
+                        projectId=["project"], role=["orchestrator"], agentAccountId=["acct"], catalogOnly=["true"]))
+                    return dict(agentId="codex",
+                                accountBinding=dict(accountId="other" if failure == "invalid-account" else "acct"),
+                                models=[dict(id="fixture-model", efforts=["low" if failure == "invalid-effort" else "high"])])
                 if path == "sessions/old":
                     return dict(session=dict(id="old", projectId="project", kind="orchestrator",
                                              isTerminated=old_dead, activity=dict(state="idle")))
@@ -141,12 +159,33 @@ class ManualHandoffTests(unittest.TestCase):
                 if path == "agents/accounts/sessions/new":
                     account = None if failure == "empty-account" else "acct"
                     return dict(codex=account, bindings=dict(codex=dict(accountId=account, available=True)))
+                if path == "sessions/new/conversation?limit=500":
+                    self.assertEqual(commands.count("send"), 1)
+                    if failure == "notification-steered":
+                        return dict(sessionId="new", conversationId="conversation", messages=[], turns=[],
+                                    activities=[dict(id="steer-receipt", activityKind="system", status="completed",
+                                                     providerItemId="steer:run:verified",
+                                                     detail=dict(event="steer", clientMessageId="run:verified"))])
+                    notification_reads += 1
+                    queued = failure == "notification-queued" or notification_reads == 1
+                    return dict(sessionId="new", conversationId="conversation",
+                                messages=[dict(role="user", clientMessageId="other:verified", turnId="other"),
+                                          dict(role="user", clientMessageId="run:verified", turnId="notification")],
+                                activities=[],
+                                turns=[dict(id="other", state="completed", providerTurnId="native-other"),
+                                       dict(id="notification", state="queued" if queued else "completed",
+                                            providerTurnId="native-notification")])
                 self.assertEqual(path, "sessions/new/conversation?limit=1")
                 effort = None if failure == "empty-effort" or failure == "post-effort" and resumed else "high"
                 return dict(conversationId="conversation", settings=dict(
                     model="fixture-model", reasoningEffort=effort, approvalMode="bypass-permissions"))
 
+            preflight_failed = failure in ("invalid-approval", "invalid-account", "invalid-effort")
             expected_stop = {
+                "invalid-approval": "invalid target approvalMode",
+                "invalid-account": "target account",
+                "invalid-effort": "target model/effort",
+                "notification-queued": "timed out waiting for verification notification delivery",
                 "missing": "no session with the exact run token", "multiple": "multiple sessions",
                 "scope": "wrong project", "predates": "predates intent", "permission": "permission denied",
                 "receipt": "receipt run/project", "lease": "lease missing", "empty-account": "missing codex",
@@ -154,8 +193,15 @@ class ManualHandoffTests(unittest.TestCase):
                 "replay": "did not complete in native mode",
                 "runner-interrupted": "runner ended without settling",
             }.get(failure)
+
+            def advance(seconds):
+                nonlocal elapsed
+                elapsed += seconds
+
             with patch.object(manual.subprocess, "run", side_effect=run), patch.object(cli, "get", side_effect=get), \
-                    patch.object(cli, "locate", return_value={}), patch.object(manual.time, "sleep"):
+                    patch.object(cli, "locate", return_value={}), \
+                    patch.object(manual.time, "monotonic", side_effect=lambda: elapsed), \
+                    patch.object(manual.time, "sleep", side_effect=advance):
                 if failure == "runner-interrupted":
                     (root / "launch.lock").touch()
                     with self.assertRaises(KeyboardInterrupt):
@@ -165,13 +211,20 @@ class ManualHandoffTests(unittest.TestCase):
                     self.assertEqual(result, int(bool(expected_stop)), state.get("reason"))
             status = subprocess.run([sys.executable, "-I", str(script), "status", str(root)],
                                     cwd=root, capture_output=True, text=True)
-            self.assertFalse(old_worktree.exists())
-            self.assertEqual(commands.count("spawn"), 1)
-            self.assertEqual(commands.count("send"), int(not expected_stop))
+            self.assertEqual(old_worktree.exists(), preflight_failed)
+            self.assertEqual(commands.count("spawn"), int(not preflight_failed))
+            self.assertEqual(commands.count("send"), int(not expected_stop or failure == "notification-queued"))
             self.assertEqual(status.returncode, int(bool(expected_stop)), status.stderr)
             saved = json.loads(status.stdout)
             if expected_stop:
                 self.assertIn(expected_stop, saved["reason"])
+            if preflight_failed:
+                self.assertEqual(saved["lastConfirmed"], "prepared")
+                self.assertIsNone(saved.get("pending"))
+            if failure == "notification-queued":
+                self.assertEqual(saved["lastConfirmed"], "verified")
+                self.assertEqual(saved["pending"], "notify-new")
+                self.assertEqual(saved["notification"]["clientMessageId"], "run:verified")
             if failure in ("missing", "multiple", "scope", "predates", "runner-interrupted"):
                 self.assertEqual(saved["lastConfirmed"], "old-terminated")
                 self.assertEqual(saved["pending"], "spawn")
@@ -181,6 +234,10 @@ class ManualHandoffTests(unittest.TestCase):
                 self.assertEqual(saved["outcome"], "complete")
                 self.assertEqual(saved["resume"]["resumeMode"], "native")
                 self.assertEqual(saved["before"], saved["after"])
+                if failure == "notification-steered":
+                    self.assertEqual(saved["notification"]["activityId"], "steer-receipt")
+                else:
+                    self.assertEqual(saved["notification"]["providerTurnId"], "native-notification")
 
     def test_original_spawn_recovered_without_using_human_stdout(self):
         for scenario in (None, "human-output"):
@@ -196,6 +253,17 @@ class ManualHandoffTests(unittest.TestCase):
         for scenario in ("permission", "receipt", "lease", "empty-account", "empty-effort", "replay", "post-effort"):
             with self.subTest(scenario=scenario):
                 self.run_handoff(scenario)
+
+    def test_invalid_target_never_kills_old(self):
+        for scenario in ("invalid-approval", "invalid-account", "invalid-effort"):
+            with self.subTest(scenario=scenario):
+                self.run_handoff(scenario)
+
+    def test_queued_verification_notification_does_not_complete_handoff(self):
+        self.run_handoff("notification-queued")
+
+    def test_verification_notification_recovers_original_steer_receipt(self):
+        self.run_handoff("notification-steered")
 
     def test_start_detaches_from_old_actor_and_cannot_relaunch(self):
         with tempfile.TemporaryDirectory() as tmp:

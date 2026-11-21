@@ -17,6 +17,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlencode
 import uuid
 
 
@@ -108,6 +109,26 @@ class AO:
     def documents(self):
         return self.read("project", "documents", "info")["documents"]
 
+    def preflight_target(self, target):
+        for key in ("harness", "accountId", "model", "effort", "approvalMode"):
+            value = field(target, key)
+            require(value == value.strip(), f"invalid target {key}: surrounding whitespace")
+        harness = target["harness"]
+        require(harness in ("claude-code", "codex"), "manual handoff requires Claude Code or Codex Chat")
+        require(target["approvalMode"] in ("default", "accept-edits", "auto", "bypass-permissions"),
+                "invalid target approvalMode: expected default, accept-edits, auto or bypass-permissions")
+        query = urlencode(dict(projectId=self.project, role="orchestrator",
+                               agentAccountId=target["accountId"], catalogOnly="true"))
+        catalog = self.get(f"agents/{harness}/models?{query}")
+        binding = catalog.get("accountBinding") or {}
+        require(catalog.get("agentId") == harness and binding.get("accountId") == target["accountId"] and
+                catalog.get("warningCode") not in ("auth_required", "auth_expired"),
+                "target account unavailable or not bound to the selected harness catalog")
+        models = [model for model in catalog["models"] if model.get("id") == target["model"]]
+        require(len(models) == 1 and target["effort"] in (models[0].get("efforts") or []) and
+                not (models[0].get("requiresVersion") or models[0].get("unavailableReason")),
+                "target model/effort unavailable in the selected account catalog")
+
     def spawn_candidate(self, token, intent_at, old):
         listing = self.read("session", "ls", "--all", "--include-terminated")
         meta = listing["meta"]
@@ -173,6 +194,28 @@ class AO:
                     accountId=binding["accountId"], conversationId=field(conversation, "conversationId"),
                     **{key: actual[key] for key in ("model", "reasoningEffort", "approvalMode")})
 
+    def notification_receipt(self, sid, conversation_id, handle):
+        snapshot = self.get(f"sessions/{identifier(sid)}/conversation?limit=500")
+        require(snapshot.get("sessionId") == sid and snapshot.get("conversationId") == conversation_id,
+                "notification conversation identity changed")
+        for activity in snapshot["activities"]:
+            detail = activity.get("detail") or {}
+            if (activity.get("activityKind") == "system" and activity.get("status") == "completed" and
+                    activity.get("providerItemId") == "steer:" + handle and detail.get("event") == "steer" and
+                    detail.get("clientMessageId") == handle):
+                return dict(clientMessageId=handle, activityId=field(activity, "id"))
+        messages = [message for message in snapshot["messages"]
+                    if message.get("role") == "user" and message.get("clientMessageId") == handle]
+        require(len(messages) <= 1, "ambiguous verification notification receipt")
+        if not messages:
+            return None
+        turn_id = messages[0].get("consumedByTurnId") or field(messages[0], "turnId")
+        for turn in snapshot["turns"]:
+            # A provider ID can be bound before a deferred prompt is forwarded.
+            if turn.get("id") == turn_id and turn.get("state") == "completed" and not turn.get("rolledBack"):
+                return dict(clientMessageId=handle, turnId=turn_id, providerTurnId=field(turn, "providerTurnId"))
+        return None
+
 
 def lease_for(documents, sid):
     lease = documents.get("lease") or {}
@@ -209,6 +252,7 @@ def handoff(ao, root, state, request):
         return field(session.get("activity") or {}, "state")
 
     wait_for("old idle", 900, lambda: activity(old) == "idle")
+    ao.preflight_target(target)
     old_epoch = lease_for(ao.documents(), old)
     require(old_epoch == state["oldLeaseEpoch"] and activity(old) == "idle", "old stop point or lease changed")
     record("old-idle", "kill-old")
@@ -275,13 +319,16 @@ def handoff(ao, root, state, request):
     require(after == before, "session, conversation or settings changed after native resume")
     require(ao.receipt(state["sharedDir"], relative, expected) == receipt_hash and
             lease_for(project_documents(), new) == epoch, "receipt or new lease changed after resume")
-    record("verified", "notify-new", after=after)
-    ao.checked(("send", "--session", new, "--steer", "--client-message-id", run + ":verified",
+    handle = run + ":verified"
+    record("verified", "notify-new", after=after, notification=dict(clientMessageId=handle))
+    ao.checked(("send", "--session", new, "--steer", "--client-message-id", handle,
                 "--message", f"手動換手已通過驗證。先執行 {status_command(root)} 確認 lastConfirmed 為 "
                 f"verified 或 complete，且 newId 是你。依 {root / 'request.json'} 的 workers 授權，"
                 f"以你自己的身分通知 {project} 中仍存活的具名 worker；依原 hold 與 D 接續。"
                 "向使用者回報完成與待決事項。"), scoped=False, timeout=60)
-    record("complete", outcome="complete")
+    delivered = wait_for("verification notification delivery", 600,
+                         lambda: ao.notification_receipt(new, after["conversationId"], handle))
+    record("complete", outcome="complete", notification=delivered)
 
 
 def prepare(path):
@@ -291,16 +338,13 @@ def prepare(path):
     require(os.environ.get("AO_SESSION_ID") == old, "prepare must run as the named old orchestrator")
     field(request, "confirmation")
     field(request, "handoff")
-    target = request["target"]
-    for key in ("harness", "accountId", "model", "effort", "approvalMode"):
-        field(target, key)
-    require(target["harness"] in ("claude-code", "codex"), "manual handoff requires Claude Code or Codex Chat")
     executable = shutil.which("ao")
     require(executable, "ao CLI not on PATH")
     ao = AO(str(Path(executable).resolve(strict=True)), project)
     daemon = ao.locate()
     version = field(request, "version")
     require(ao.checked(("version",), scoped=False).strip() == version, "approved CLI version mismatch")
+    ao.preflight_target(request["target"])
     require(ao.session(old)["isTerminated"] is False, "old already terminated")
     docs = ao.documents()
     shared = field(docs, "sharedDir")
