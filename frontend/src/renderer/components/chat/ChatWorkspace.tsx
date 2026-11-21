@@ -199,6 +199,7 @@ import type { ComposerPromptSuggestion } from "./ComposerEditor";
 import { ChatTokenSkills } from "./sentComposerTokens";
 import { ChatComposer, type ChatComposerHandle, type StoredComposerAttachment } from "./ChatComposer";
 import { ContextMeter } from "./ContextMeter";
+import { nearQuotaWindow, QuotaSign, QuotaStatus } from "./QuotaReadout";
 import { stagedAttachmentParts, attachmentName } from "./messageAttachments";
 import type { QueuedMessageEditOptions } from "../../types/conversation";
 import { QueuedMessageDock, type QueuedMessage } from "./QueuedMessageDock";
@@ -1814,8 +1815,11 @@ function ChatWorkspaceContent({
 	// Claude Code compacts at the window picked for it, well before its model's full context.
 	const compactsAt = snapshot.harness === "claude-code" ? snapshot.settings?.autoCompactWindow : undefined;
 	const stableUsage = useStableValue(snapshot.usage);
-	// The account's quota, for the meter's warning pill from 75%.
-	const stableRateLimits = useStableValue(snapshot.rateLimits);
+	// Near the account's usage limit, a warning sign sits right of the model; its tooltip says why.
+	const nearQuota = useStableValue(nearQuotaWindow(snapshot.rateLimits));
+	// The running agent's limit; a pending switch names another agent, so the sign steps aside.
+	const runningQuota = agentSwitch?.pending ? undefined : nearQuota;
+	const quotaSign = runningQuota ? <QuotaSign quota={runningQuota} /> : null;
 	// A reroute describes the model it was recorded against; once the user picks a
 	// different model it no longer says anything about the next turn.
 	const currentModelReroute =
@@ -1833,7 +1837,8 @@ function ChatWorkspaceContent({
 			settingsReady && (onChooseSettings || onChooseConfigOption) ? (
 				<TurnSettingsBar
 					agentSwitch={agentSwitch}
-					beforePicker={agentSwitch ? <ContextMeter usage={stableUsage} rateLimits={stableRateLimits} compactsAt={compactsAt} /> : undefined}
+					beforePicker={agentSwitch ? <ContextMeter usage={stableUsage} compactsAt={compactsAt} /> : undefined}
+					afterPicker={quotaSign}
 					// While the agent wakes or starts; a chat reads "hibernated" until ready.
 					modelsLoading={settingsLoading}
 					lastModel={lastModel}
@@ -1880,7 +1885,7 @@ function ChatWorkspaceContent({
 			models,
 			agentSwitch,
 			stableUsage,
-			stableRateLimits,
+			nearQuota,
 			newWorkDisabled,
 			session?.provisionState,
 			onChooseConfigOption,
@@ -2469,7 +2474,10 @@ function ChatWorkspaceContent({
 										onContinue={canContinue && !queueEdit && !openingStarting ? onContinueTurn : undefined}
 										commandError={queueDraftError ?? (queueEdit && !queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId) ? "chat.draft.queueMissing" : commandError)}
 										settings={draftSettings ?? <>
-											{agentSwitch ? null : <ContextMeter usage={snapshot.usage} rateLimits={snapshot.rateLimits} compactsAt={compactsAt} />}
+											{agentSwitch ? null : <ContextMeter usage={snapshot.usage} compactsAt={compactsAt} />}
+											{/* Normally right of the model control; with no settings bar, beside the ring. */}
+											{composerSettings ? null : quotaSign}
+											<QuotaStatus quota={runningQuota} />
 											{composerSettings}
 										</>}
 										addMenuItems={agentSwitch ? (

@@ -151,9 +151,13 @@ Status is derived from durable runtime, PR, CI, and review facts. The renderer c
 
 Use one fixed status slot where status belongs. Prefer an icon/glyph over a prose badge.
 
-1. If the session is actively working, show the working spinner.
+1. If the session is actively working, show the working spinner in `--color-status-working`.
 2. Otherwise, if a PR is relevant, show the PR glyph tinted by its actionable state.
 3. Otherwise, show a dot: amber/red for attention, muted for idle/complete.
+
+The sidebar working title uses a subtle blue sweep that animates on the compositor. The open row keeps the spinner without the sweep. Reduced motion stops both.
+
+A session updated since the user last opened it shows a filled muted dot. A read session shows a hollow muted ring. A collapsed project replaces its icon with a red alert when a session needs the user. Otherwise its icon keeps a corner dot, breathing while any session works and solid accent for an unread finished turn.
 
 Do not show multiple competing status chips on a session card or sidebar row. Text labels are allowed when needed for accessibility, an empty state, an inspector summary, or a decision the user must make.
 
