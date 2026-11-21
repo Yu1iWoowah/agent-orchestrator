@@ -1208,17 +1208,38 @@ func (s *Service) StartResumeAgent(ctx context.Context, id domain.SessionID, aut
 	})
 	if err != nil {
 		s.resumeAgentsMu.Lock()
+		retryExplicit := false
 		if s.resumeAgents[id] == op {
-			if previous == nil {
+			switch {
+			case op.explicitQueued:
+				// The explicit caller was already accepted. Keep its status
+				// running while it gets its own admission.
+				op.automatic = false
+				retryExplicit = true
+			case previous == nil:
 				delete(s.resumeAgents, id)
-			} else {
+			default:
 				s.resumeAgents[id] = previous
 			}
 		}
 		s.resumeAgentsMu.Unlock()
+		if retryExplicit {
+			s.startQueuedExplicitResume(s.backgroundContext, id, op)
+		}
 		return domain.Session{}, s.resumeAgentError(ctx, id, err)
 	}
 	return s.toSession(ctx, rec)
+}
+
+func (s *Service) startQueuedExplicitResume(ctx context.Context, id domain.SessionID, op *resumeAgentOperation) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, err := s.manager.StartResumeAgent(ctx, id, false, func(res sessionmanager.RestoreResult, err error) {
+		s.finishResumeAgent(id, op, res, err)
+	}); err != nil {
+		s.finishResumeAgent(id, op, sessionmanager.RestoreResult{}, err)
+	}
 }
 
 func (s *Service) finishResumeAgent(id domain.SessionID, op *resumeAgentOperation, res sessionmanager.RestoreResult, err error) {
@@ -1237,11 +1258,7 @@ func (s *Service) finishResumeAgent(id domain.SessionID, op *resumeAgentOperatio
 		// goes through the same manager admission, after the passive one ended.
 		op.automatic = false
 		s.resumeAgentsMu.Unlock()
-		if _, startErr := s.manager.StartResumeAgent(ctx, id, false, func(res sessionmanager.RestoreResult, err error) {
-			s.finishResumeAgent(id, op, res, err)
-		}); startErr != nil {
-			s.finishResumeAgent(id, op, sessionmanager.RestoreResult{}, startErr)
-		}
+		s.startQueuedExplicitResume(ctx, id, op)
 		return
 	}
 	op.state, op.mode, op.err, op.finished = state, mode, mapped, &finished

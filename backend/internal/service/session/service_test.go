@@ -4374,6 +4374,86 @@ func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
 	}
 }
 
+type heldAutomaticAdmission struct {
+	fakeCommander
+	entered, release chan struct{}
+}
+
+func (m *heldAutomaticAdmission) StartResumeAgent(ctx context.Context, id domain.SessionID, automatic bool, done func(sessionmanager.RestoreResult, error)) (domain.SessionRecord, error) {
+	if !automatic {
+		return m.fakeCommander.StartResumeAgent(ctx, id, false, done)
+	}
+	close(m.entered)
+	select {
+	case <-m.release:
+		return domain.SessionRecord{}, sessionmanager.ErrResumeInProgress
+	case <-ctx.Done():
+		return domain.SessionRecord{}, ctx.Err()
+	}
+}
+
+func TestStartResumeAgentCarriesExplicitRequestPastAutomaticAdmissionRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		checkErr error
+		want     ResumeAgentState
+	}{
+		{name: "explicit starts", want: ResumeAgentSucceeded},
+		{name: "explicit also refused", checkErr: sessionmanager.ErrTerminated, want: ResumeAgentFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			st := newFakeStore()
+			rec := domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Mode: domain.SessionModeChat, Activity: domain.Activity{State: domain.ActivityExited}}
+			st.sessions[rec.ID] = rec
+			manager := &heldAutomaticAdmission{
+				fakeCommander: fakeCommander{resumeCheckErr: tc.checkErr, restoreResult: sessionmanager.RestoreResult{Mode: sessionmanager.RestoreModeNative}},
+				entered:       make(chan struct{}), release: make(chan struct{}),
+			}
+			svc := &Service{manager: manager, store: st, backgroundContext: ctx}
+			automatic := make(chan error, 1)
+			go func() {
+				_, err := svc.StartResumeAgent(ctx, rec.ID, true)
+				automatic <- err
+			}()
+			select {
+			case <-manager.entered:
+			case <-ctx.Done():
+				t.Fatal("automatic resume did not enter admission")
+			}
+			if _, err := svc.StartResumeAgent(ctx, rec.ID, false); err != nil {
+				t.Fatalf("explicit resume during automatic admission: %v", err)
+			}
+			close(manager.release)
+			select {
+			case err := <-automatic:
+				var apiErr *apierr.Error
+				if !errors.As(err, &apiErr) || apiErr.Code != "AGENT_RESUME_IN_PROGRESS" {
+					t.Fatalf("automatic resume = %v, want AGENT_RESUME_IN_PROGRESS", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("automatic admission did not return")
+			}
+			status, err := svc.ResumeAgentStatus(ctx, rec.ID)
+			if err != nil || status.State != tc.want || status.FinishedAt == nil || status.Session.ID != rec.ID {
+				t.Fatalf("explicit state = %s, finished = %v, session = %s, err = %v, want %s",
+					status.State, status.FinishedAt, status.Session.ID, err, tc.want)
+			}
+			if tc.checkErr == nil {
+				if !slices.Equal(manager.resumed, []domain.SessionID{rec.ID}) || status.Mode != RestoreModeViewNative {
+					t.Fatalf("explicit resume calls = %v, mode = %s", manager.resumed, status.Mode)
+				}
+			} else {
+				var apiErr *apierr.Error
+				if !errors.As(status.Err, &apiErr) || apiErr.Code != "SESSION_TERMINATED" || len(manager.resumed) != 0 {
+					t.Fatalf("explicit refusal = %v, resume calls = %v", status.Err, manager.resumed)
+				}
+			}
+		})
+	}
+}
+
 type heldAutomaticResume struct {
 	*sessionmanager.Manager
 	entered, release chan struct{}
@@ -4427,15 +4507,13 @@ func (l *resumeChatLauncher) StartChat(ctx context.Context, config sessionmanage
 }
 
 func TestStartResumeAgentCarriesExplicitRequestPastAutomaticExitRefusal(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
 	dir := t.TempDir()
 	st := sqlitetest.MustOpenAt(t, dir)
 	now := time.Now().UTC()
-	if err := st.UpsertProject(ctx, domain.ProjectRecord{ID: "p", Kind: domain.ProjectKindScratch, Path: dir, RegisteredAt: now}); err != nil {
+	if err := st.UpsertProject(t.Context(), domain.ProjectRecord{ID: "p", Kind: domain.ProjectKindScratch, Path: dir, RegisteredAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	rec, err := st.CreateSession(ctx, domain.SessionRecord{
+	rec, err := st.CreateSession(t.Context(), domain.SessionRecord{
 		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
 		Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, CreatedAt: now, UpdatedAt: now,
 		Metadata: domain.SessionMetadata{WorkspacePath: dir, ControllerGeneration: "original", ProviderConversationID: "thread"},
@@ -4443,6 +4521,8 @@ func TestStartResumeAgentCarriesExplicitRequestPastAutomaticExitRefusal(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
 	chat := &resumeChatLauncher{claim: st.ClaimChatControllerGeneration}
 	manager := &heldAutomaticResume{
 		Manager: sessionmanager.New(sessionmanager.Deps{
