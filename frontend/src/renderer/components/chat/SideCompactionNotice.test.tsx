@@ -65,6 +65,7 @@ it.each(["deleted", "TUI", "ended", "new-launch-parent-present"])("finds and clo
 	expect(remove).not.toHaveBeenCalled();
 	await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close side" }));
 	await screen.findByText("No unresolved protected sides.");
+	expect(screen.getByRole("status")).toHaveTextContent("Side closed. It no longer blocks shutdown.");
 	expect(remove).toHaveBeenCalledWith("/api/v1/side-chats/protected/{sideId}", { params: { path: { sideId: "old-side" } } });
 	view.unmount(); client.clear();
 });

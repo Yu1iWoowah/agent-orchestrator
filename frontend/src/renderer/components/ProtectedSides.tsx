@@ -11,6 +11,7 @@ export function ProtectedSides({ titleHidden = false }: { titleHidden?: boolean 
 	const { t } = useTranslation();
 	const client = useQueryClient();
 	const [closeId, setCloseId] = useState<string>();
+	const [closed, setClosed] = useState(false);
 	const queryKey = ["protected-side-chats"];
 	const sides = useQuery({ queryKey, refetchInterval: 3_000, queryFn: async () => {
 		const { data, error } = await apiClient.GET("/api/v1/side-chats/protected");
@@ -22,17 +23,19 @@ export function ProtectedSides({ titleHidden = false }: { titleHidden?: boolean 
 		if (error) throw new Error(apiErrorMessage(error));
 	}, onSuccess: async () => {
 		setCloseId(undefined);
+		setClosed(true);
 		await client.invalidateQueries({ queryKey });
 	} });
 	return (
 		<SettingsSection title={t("protectedSides.title")} sectionId="protectedSides" titleHidden={titleHidden}>
 			<p className="mb-4 text-sm text-muted-foreground">{t("protectedSides.description")}</p>
+			{closed ? <p role="status">{t("protectedSides.closed")}</p> : null}
 			{ sides.isPending ? <p>{t("protectedSides.loading")}</p> : sides.isError ? <p role="alert">{apiErrorMessage(sides.error)}</p> : sides.data.length === 0 ? <p className="text-sm text-muted-foreground">{t("protectedSides.empty")}</p> : (
 				<ul className="divide-y divide-border">
 					{sides.data.map((side) => <li key={side.sideId} className="space-y-3 py-4">
 						<p className="text-sm font-medium">{side.sideId} · {side.provider}</p>
 						<p className="text-xs text-muted-foreground">{side.sessionId}{side.orphan ? ` · ${t("protectedSides.orphan")}` : ""}</p>
-						<SideCompactionNotice protection={side.protection} onClose={() => { close.reset(); setCloseId(side.sideId); }} busy={close.isPending} />
+						<SideCompactionNotice protection={side.protection} onClose={() => { close.reset(); setClosed(false); setCloseId(side.sideId); }} busy={close.isPending} />
 					</li>)}
 				</ul>
 			)}

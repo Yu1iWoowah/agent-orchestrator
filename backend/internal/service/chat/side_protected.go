@@ -61,9 +61,12 @@ func (s *Service) sideProtectionStatus(ctx context.Context, row domain.SideCompa
 		return p
 	}
 	p.ShutdownBlocked = true
+	p.Reason = "side_content_not_durable"
+	if s.sides == nil {
+		return p
+	}
 	store, ok := s.sides.store.(*memorySideStore)
 	if !ok {
-		p.Reason = "side_content_not_durable"
 		return p
 	}
 	// Restore into a separate store so listing never changes live side state or
@@ -71,7 +74,6 @@ func (s *Service) sideProtectionStatus(ctx context.Context, row domain.SideCompa
 	projection := newMemorySideStore()
 	projection.attachments = store.attachments
 	if err := projection.restoreContentLocked(row.Content); err != nil || projection.sides[row.SideID].ID != row.SideID {
-		p.Reason = "side_content_not_durable"
 		return p
 	}
 	if applicable, reason := sideCompactionApplicable(row, runtime.GOOS); !applicable {
@@ -83,11 +85,15 @@ func (s *Service) sideProtectionStatus(ctx context.Context, row domain.SideCompa
 	return p
 }
 
-func (s *Service) sideProtection(ctx context.Context, sideID string) (*domain.SideProtection, error) {
+func (s *Service) unresolvedSideProtectionRows(ctx context.Context) ([]domain.SideCompaction, error) {
 	if s.nativeGuard.store == nil {
 		return nil, nil
 	}
-	rows, err := s.nativeGuard.store.SideCompactions(ctx, true)
+	return s.nativeGuard.store.SideCompactions(ctx, true)
+}
+
+func (s *Service) sideProtection(ctx context.Context, sideID string) (*domain.SideProtection, error) {
+	rows, err := s.unresolvedSideProtectionRows(ctx)
 	if err != nil {
 		return nil, err
 	}

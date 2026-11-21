@@ -2758,6 +2758,14 @@ describe("Sidebar", () => {
 		);
 	});
 
+	it("opens protected sides without side chats or developer mode enabled", async () => {
+		useUiStore.setState({ developerMode: false, sideChats: false });
+		renderSidebar();
+		await userEvent.click(screen.getByRole("button", { name: "Protected sides" }));
+		expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "protectedSides" });
+		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
 	it("opens settings when the footer Settings button is clicked", async () => {
 		const user = userEvent.setup();
 		renderSidebar();

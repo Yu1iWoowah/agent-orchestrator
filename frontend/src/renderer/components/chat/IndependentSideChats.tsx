@@ -1560,11 +1560,12 @@ export function useIndependentSideChats(
 							const closingTab = isClosing(side.id);
 							const closeDisabled = renaming || closingTab || closeStatus(closeProjection.current, side.id) === "cleanup_pending";
 							const label = side.label?.trim() || t("sideChat.defaultLabel");
+							const requestClose = () => confirmSideClose(side.id);
 							const frame = (
 								<TerminalTabFrame
 									action={
 										closeDisabled ? undefined : (
-											<TabCloseButton label={t("sideChat.closeNamed", { name: side.label })} onClose={() => confirmSideClose(side.id)} />
+											<TabCloseButton label={t("sideChat.closeNamed", { name: side.label })} onClose={requestClose} />
 										)
 									}
 									actionPinned
