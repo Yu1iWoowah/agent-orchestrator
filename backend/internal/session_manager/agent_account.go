@@ -532,7 +532,7 @@ func (m *Manager) ExitAgentsOnAccount(ctx context.Context, accountID string) err
 			continue
 		}
 		wg.Go(func() {
-			if _, err := m.ExitAgent(ctx, rec.ID); err != nil && !errors.Is(err, ErrAgentExited) {
+			if _, err := m.exitAgent(ctx, rec.ID, false); err != nil && !errors.Is(err, ErrAgentExited) {
 				fail(err)
 			}
 		})

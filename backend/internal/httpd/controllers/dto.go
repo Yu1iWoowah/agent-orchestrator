@@ -652,7 +652,8 @@ type WorkspaceTreeEntry struct {
 type SessionView struct {
 	SpawnAgentSettings *domain.SpawnAgentSettingsResolution `json:"spawnAgentSettings,omitempty"`
 	domain.Session
-	Branch string `json:"branch,omitempty"`
+	ChatExplicitlyExited bool   `json:"chatExplicitlyExited,omitempty" description:"Whether the current Chat worker was explicitly stopped and requires a manual resume."`
+	Branch               string `json:"branch,omitempty"`
 	// TerminalGeneration is an opaque renderer fence. A restarted controller
 	// may deliberately reuse its terminal handle; clients must still discard the
 	// old attachment when this value changes.
@@ -1542,6 +1543,11 @@ type RollbackSessionResponse struct {
 	SessionID domain.SessionID `json:"sessionId"`
 	Deleted   bool             `json:"deleted,omitempty"`
 	Killed    bool             `json:"killed,omitempty"`
+}
+
+// ResumeAgentQuery declares the caller's passive resume intent.
+type ResumeAgentQuery struct {
+	Automatic bool `query:"automatic,omitempty" description:"Whether this resume comes from passive viewing. Omit for an explicit Resume agent action."`
 }
 
 // DeleteSessionQuery is the query string accepted by DELETE /api/v1/sessions/{sessionId}.

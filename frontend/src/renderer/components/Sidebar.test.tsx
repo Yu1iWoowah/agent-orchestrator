@@ -656,7 +656,7 @@ describe("Sidebar", () => {
 			fireEvent.mouseEnter(screen.getByLabelText("Open fix login"));
 			await act(async () => { await vi.advanceTimersByTimeAsync(500); });
 			if (needsResume) expect(postMock).not.toHaveBeenCalled();
-			else expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", { params: { path: { sessionId: session.id } } });
+			else expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", { params: { path: { sessionId: session.id }, query: { automatic: true } } });
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1602,12 +1602,12 @@ describe("Sidebar", () => {
 		expect(screen.getByLabelText("Archive session")).toHaveProperty("tabIndex", 0);
 	});
 
-	it("prefetches a hovered stopped chat session without resuming its agent", async () => {
+	it("prefetches a hovered explicitly exited Chat without resuming its agent", async () => {
 		vi.useFakeTimers();
 		apiTrust.trusted = true;
 		try {
 			renderSidebar({
-				workspaces: [{ ...workspace, sessions: [{ ...session, mode: "chat", status: "exited", activity: { state: "exited", lastActivityAt: "" } }] }],
+				workspaces: [{ ...workspace, sessions: [{ ...session, mode: "chat", status: "exited", needsResume: false, chatExplicitlyExited: true, activity: { state: "exited", lastActivityAt: "" } }] }],
 			});
 			fireEvent.mouseEnter(screen.getByLabelText("Open fix login"));
 			await act(async () => {
@@ -1618,6 +1618,32 @@ describe("Sidebar", () => {
 		} finally {
 			apiTrust.trusted = false;
 			vi.useRealTimers();
+		}
+	});
+
+	it("sends an explicit context-menu resume while a hover resume is pending", async () => {
+		let finishHover: (() => void) | undefined;
+		const response = { data: {}, response: { status: 202 } };
+		postMock.mockImplementationOnce(() => new Promise((resolve) => { finishHover = () => resolve(response); }));
+		postMock.mockResolvedValueOnce(response);
+		apiTrust.trusted = true;
+		const user = userEvent.setup();
+		try {
+			renderSidebar({
+				workspaces: [{ ...workspace, sessions: [{ ...session, mode: "chat", status: "exited", needsResume: false, activity: { state: "exited", lastActivityAt: "" } }] }],
+			});
+			const row = screen.getByRole("button", { name: "Open fix login" });
+			fireEvent.mouseEnter(row);
+			await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+			fireEvent.contextMenu(row);
+			await user.click(await screen.findByRole("menuitem", { name: "Resume agent" }));
+			expect(postMock.mock.calls).toEqual([
+				["/api/v1/sessions/{sessionId}/resume-agent", { params: { path: { sessionId: session.id }, query: { automatic: true } } }],
+				["/api/v1/sessions/{sessionId}/resume-agent", { params: { path: { sessionId: session.id } } }],
+			]);
+		} finally {
+			apiTrust.trusted = false;
+			await act(async () => { finishHover?.(); });
 		}
 	});
 

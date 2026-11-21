@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,11 +23,14 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/ownership"
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe/sentryobs"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
 type fakeTelemetrySink struct{ events []ports.TelemetryEvent }
@@ -2824,7 +2828,7 @@ func (f *fakeCommander) RestoreWithMode(context.Context, domain.SessionID) (sess
 
 // StartResumeAgent refuses with resumeCheckErr, otherwise settles at once, or
 // once resumeHold closes when it is set.
-func (f *fakeCommander) StartResumeAgent(_ context.Context, id domain.SessionID, done func(sessionmanager.RestoreResult, error)) (domain.SessionRecord, error) {
+func (f *fakeCommander) StartResumeAgent(_ context.Context, id domain.SessionID, _ bool, done func(sessionmanager.RestoreResult, error)) (domain.SessionRecord, error) {
 	if f.resumeCheckErr != nil {
 		return domain.SessionRecord{}, f.resumeCheckErr
 	}
@@ -4282,7 +4286,7 @@ func TestResumeAgentMapsManagerModeToServiceView(t *testing.T) {
 	st.sessions["mer-1"] = rec
 	svc := &Service{manager: fc, store: st}
 
-	if _, err := svc.StartResumeAgent(context.Background(), "mer-1"); err != nil {
+	if _, err := svc.StartResumeAgent(context.Background(), "mer-1", false); err != nil {
 		t.Fatalf("StartResumeAgent: %v", err)
 	}
 	got, err := svc.ResumeAgentStatus(context.Background(), "mer-1")
@@ -4298,7 +4302,7 @@ func TestResumeAgentMapsManagerModeToServiceView(t *testing.T) {
 // status reports.
 func resumeAgentFailure(t *testing.T, svc *Service, id domain.SessionID) error {
 	t.Helper()
-	if _, err := svc.StartResumeAgent(context.Background(), id); err != nil {
+	if _, err := svc.StartResumeAgent(context.Background(), id, false); err != nil {
 		t.Fatalf("StartResumeAgent: %v", err)
 	}
 	status, err := svc.ResumeAgentStatus(context.Background(), id)
@@ -4325,7 +4329,7 @@ func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
 	}
 	// A refusal answerable inline records nothing.
 	fc.resumeCheckErr = fmt.Errorf("resume agent mer-1: %w", sessionmanager.ErrAgentNotExited)
-	if _, err := svc.StartResumeAgent(ctx, "mer-1"); !errors.As(err, &apiErr) || apiErr.Code != "AGENT_NOT_EXITED" {
+	if _, err := svc.StartResumeAgent(ctx, "mer-1", false); !errors.As(err, &apiErr) || apiErr.Code != "AGENT_NOT_EXITED" {
 		t.Fatalf("refused start = %v, want AGENT_NOT_EXITED", err)
 	}
 	if _, err := svc.ResumeAgentStatus(ctx, "mer-1"); !errors.As(err, &apiErr) || apiErr.Code != "AGENT_RESUME_NOT_FOUND" {
@@ -4333,13 +4337,13 @@ func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
 	}
 	fc.resumeCheckErr = nil
 
-	if _, err := svc.StartResumeAgent(ctx, "mer-1"); err != nil {
+	if _, err := svc.StartResumeAgent(ctx, "mer-1", false); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if got, err := svc.ResumeAgentStatus(ctx, "mer-1"); err != nil || got.State != ResumeAgentRunning || got.Mode != "" || got.FinishedAt != nil {
 		t.Fatalf("running status = %+v, %v", got, err)
 	}
-	if _, err := svc.StartResumeAgent(ctx, "mer-1"); !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindConflict || apiErr.Code != "AGENT_RESUME_IN_PROGRESS" {
+	if _, err := svc.StartResumeAgent(ctx, "mer-1", false); !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindConflict || apiErr.Code != "AGENT_RESUME_IN_PROGRESS" {
 		t.Fatalf("second start while running = %v, want AGENT_RESUME_IN_PROGRESS", err)
 	}
 	// A refusal after a recorded resume keeps that record.
@@ -4362,11 +4366,157 @@ func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if _, err := svc.StartResumeAgent(ctx, "mer-1"); !errors.As(err, &apiErr) || apiErr.Code != "SESSION_TERMINATED" {
+	if _, err := svc.StartResumeAgent(ctx, "mer-1", false); !errors.As(err, &apiErr) || apiErr.Code != "SESSION_TERMINATED" {
 		t.Fatalf("refused start = %v, want SESSION_TERMINATED", err)
 	}
 	if got, err := svc.ResumeAgentStatus(ctx, "mer-1"); err != nil || got.State != ResumeAgentSucceeded {
 		t.Fatalf("status after a later refusal = %+v, %v", got, err)
+	}
+}
+
+type heldAutomaticResume struct {
+	*sessionmanager.Manager
+	entered, release chan struct{}
+	refused          chan error
+	observed         chan struct{}
+}
+
+func (m *heldAutomaticResume) StartResumeAgent(ctx context.Context, id domain.SessionID, automatic bool, done func(sessionmanager.RestoreResult, error)) (domain.SessionRecord, error) {
+	if !automatic {
+		return m.Manager.StartResumeAgent(ctx, id, false, done)
+	}
+	close(m.entered)
+	select {
+	case <-m.release:
+	case <-ctx.Done():
+		return domain.SessionRecord{}, ctx.Err()
+	}
+	return m.Manager.StartResumeAgent(ctx, id, true, func(result sessionmanager.RestoreResult, err error) {
+		select {
+		case m.refused <- err:
+		case <-ctx.Done():
+		}
+		select {
+		case <-m.observed:
+		case <-ctx.Done():
+		}
+		done(result, err)
+	})
+}
+
+type resumeChatLauncher struct {
+	sessionmanager.ChatLauncher
+	starts atomic.Int32
+	claim  func(context.Context, domain.SessionID, string) error
+	fail   bool
+}
+
+func (l *resumeChatLauncher) HasLiveChatController(domain.SessionID) bool      { return false }
+func (l *resumeChatLauncher) StopChat(context.Context, domain.SessionID) error { return nil }
+func (l *resumeChatLauncher) StartChat(ctx context.Context, config sessionmanager.ChatStart) (sessionmanager.ChatStarted, error) {
+	l.starts.Add(1)
+	started := sessionmanager.ChatStarted{ProviderConversationID: config.ProviderConversationID, ControllerGeneration: "resumed"}
+	if l.fail {
+		if err := l.claim(ctx, config.SessionID, "failed-generation"); err != nil {
+			return sessionmanager.ChatStarted{}, err
+		}
+		return sessionmanager.ChatStarted{}, errors.New("provider failed after claiming a generation")
+	}
+	_, err := config.ControllerReady(started)
+	return started, err
+}
+
+func TestStartResumeAgentCarriesExplicitRequestPastAutomaticExitRefusal(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	st := sqlitetest.MustOpenAt(t, dir)
+	now := time.Now().UTC()
+	if err := st.UpsertProject(ctx, domain.ProjectRecord{ID: "p", Kind: domain.ProjectKindScratch, Path: dir, RegisteredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := st.CreateSession(ctx, domain.SessionRecord{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}, CreatedAt: now, UpdatedAt: now,
+		Metadata: domain.SessionMetadata{WorkspacePath: dir, ControllerGeneration: "original", ProviderConversationID: "thread"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := &resumeChatLauncher{claim: st.ClaimChatControllerGeneration}
+	manager := &heldAutomaticResume{
+		Manager: sessionmanager.New(sessionmanager.Deps{
+			Store: st, Lifecycle: lifecycle.New(st, nil), Chat: chat, Agents: vetoPathAgents{},
+			BrowserCapabilities: browsersvc.NewAuthority(), DataDir: dir, BackgroundContext: ctx,
+		}),
+		entered: make(chan struct{}), release: make(chan struct{}), refused: make(chan error), observed: make(chan struct{}),
+	}
+	svc := NewWithDeps(Deps{Manager: manager, Store: st, BackgroundContext: ctx})
+	t.Cleanup(func() {
+		cancel()
+		_ = manager.WaitBackgroundWorkers(context.Background())
+	})
+	auto := make(chan error, 1)
+	go func() {
+		_, err := svc.StartResumeAgent(ctx, rec.ID, true)
+		auto <- err
+	}()
+	select {
+	case <-manager.entered:
+	case <-ctx.Done():
+		t.Fatal("automatic resume never entered admission")
+	}
+	exited, err := svc.ExitAgent(ctx, rec.ID)
+	if err != nil || !exited.Session.ChatExplicitlyExited() || exited.Session.Activity.State != domain.ActivityExited {
+		t.Fatalf("exit = %+v, %v", exited.Session, err)
+	}
+	if _, err := svc.StartResumeAgent(ctx, rec.ID, false); err != nil {
+		t.Fatalf("explicit resume during held automatic request: %v", err)
+	}
+	close(manager.release)
+	select {
+	case err := <-auto:
+		if err != nil {
+			t.Fatalf("automatic admission: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("automatic resume never returned from admission")
+	}
+	select {
+	case err := <-manager.refused:
+		if !errors.Is(err, sessionmanager.ErrChatExplicitlyExited) || chat.starts.Load() != 0 {
+			t.Fatalf("automatic resume outcome = %v, starts = %d", err, chat.starts.Load())
+		}
+	case <-ctx.Done():
+		t.Fatal("automatic resume never rechecked the exit")
+	}
+	close(manager.observed)
+	if err := manager.WaitBackgroundWorkers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	status, err := svc.ResumeAgentStatus(ctx, rec.ID)
+	if err != nil || status.State != ResumeAgentSucceeded || status.Session.ID != rec.ID ||
+		status.Session.ChatExplicitlyExited() || status.Session.Activity.State != domain.ActivityIdle ||
+		status.Mode != RestoreModeViewNative || chat.starts.Load() != 1 {
+		t.Fatalf("resume status = %s, activity = %s, starts = %d, failure = %v, err = %v",
+			status.State, status.Session.Activity.State, chat.starts.Load(), status.Err, err)
+	}
+
+	if _, err := svc.ExitAgent(ctx, rec.ID); err != nil {
+		t.Fatalf("exit after successful resume: %v", err)
+	}
+	chat.fail = true
+	if _, err := svc.StartResumeAgent(ctx, rec.ID, false); err != nil {
+		t.Fatalf("admit explicit retry: %v", err)
+	}
+	if err := manager.WaitBackgroundWorkers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	status, err = svc.ResumeAgentStatus(ctx, rec.ID)
+	if err != nil || status.State != ResumeAgentFailed || !status.Session.ChatExplicitlyExited() ||
+		status.Session.Metadata.ControllerGeneration != "failed-generation" {
+		t.Fatalf("failed resume lost its exit: state = %s, generation = %q, failure = %v, err = %v",
+			status.State, status.Session.Metadata.ControllerGeneration, status.Err, err)
 	}
 }
 

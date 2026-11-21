@@ -630,6 +630,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersRestoreSessionResponse":                   "RestoreSessionResponse",
 	"ControllersExitAgentResponse":                        "ExitAgentResponse",
 	"ControllersResumeAgentResponse":                      "ResumeAgentResponse",
+	"ControllersResumeAgentQuery":                         "ResumeAgentQuery",
 	"ControllersResumeAgentStatusResponse":                "ResumeAgentStatusResponse",
 	"ControllersResumeAgentFailure":                       "ResumeAgentFailure",
 	"ControllersStartSessionInterfaceTransitionRequest":   "StartSessionInterfaceTransitionRequest",
@@ -4611,9 +4612,10 @@ func sessionOperations() []operation {
 		{
 			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/resume-agent", id: "resumeAgent", tag: "sessions",
 			summary:    "Start resuming an exited agent in its existing session; GET reports the outcome",
-			pathParams: []any{controllers.SessionIDParam{}},
+			pathParams: []any{controllers.SessionIDParam{}, controllers.ResumeAgentQuery{}},
 			resps: []respUnit{
 				{http.StatusAccepted, controllers.ResumeAgentResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},

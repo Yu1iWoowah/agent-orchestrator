@@ -136,6 +136,21 @@ UPDATE sessions
 SET runtime_released_launch_id = sqlc.arg(launch_id)
 WHERE id = sqlc.arg(id) AND runtime_launch_id = sqlc.arg(launch_id);
 
+-- name: SetSessionChatExplicitExit :execrows
+-- Only a completed Exit can mark the current worker controller as stopped.
+UPDATE sessions
+SET runtime_released_launch_id = 'chat:' || controller_generation, hibernated_at = NULL
+WHERE id = sqlc.arg(id) AND kind = 'worker' AND session_mode = 'chat'
+  AND controller_generation = sqlc.arg(generation) AND controller_generation <> ''
+  AND activity_state = 'exited' AND is_terminated = 0;
+
+-- name: ClearSessionChatExplicitExit :exec
+-- Called inside the transaction that publishes a ready Chat controller.
+UPDATE sessions
+SET runtime_released_launch_id = ''
+WHERE id = sqlc.arg(id) AND kind = 'worker' AND session_mode = 'chat'
+  AND controller_generation <> '' AND runtime_released_launch_id = 'chat:' || controller_generation;
+
 -- name: ClearUnattemptedReplacementTUIRelease :execrows
 -- The managed no-stop path checks operation and owner in the same transaction.
 UPDATE sessions
@@ -224,6 +239,9 @@ UPDATE sessions
 SET agent_settings_launch_id = CASE WHEN sqlc.arg(live_reconnect)=1
       THEN COALESCE(NULLIF(agent_settings_launch_id,''),controller_generation)
       ELSE sqlc.arg(controller_generation) END,
+    runtime_released_launch_id = CASE WHEN kind = 'worker' AND controller_generation <> ''
+      AND runtime_released_launch_id = 'chat:' || controller_generation
+      THEN 'chat:' || sqlc.arg(controller_generation) ELSE runtime_released_launch_id END,
     controller_generation = sqlc.arg(controller_generation)
 WHERE id = sqlc.arg(id) AND session_mode = 'chat';
 
