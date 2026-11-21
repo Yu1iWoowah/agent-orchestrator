@@ -124,8 +124,8 @@ class AO:
                 dt.datetime.fromisoformat(intent_at), "UNKNOWN spawn: token candidate predates intent")
         return sid
 
-    def receipt(self, documents, relative, expected):
-        shared = Path(field(documents, "sharedDir"))
+    def receipt(self, shared_dir, relative, expected):
+        shared = Path(shared_dir)
         path = shared / relative
         result = self.call(("project", "documents", "read", relative, "--json"))
         if result.returncode:
@@ -225,7 +225,7 @@ def handoff(ao, root, state, request):
         f"{receipt_prefix}<你的 session ID>.json --expected-hash missing --file <私有 JSON 草稿>。"
         f"JSON 欄位為 runId={run}、projectId={project}、oldId={old}、newId=<你的 session ID>。"
         "然後結束本回合，讓同一 runner 核實 native resume。"
-        "收到驗證通知前維持 worker hold。"
+        "通知 worker 與回報完成一律等驗證通知，維持既有 hold。"
     )
     intent_at = dt.datetime.now(dt.timezone.utc).isoformat()
     record("old-terminated", "spawn", spawnIntent={"token": token, "createdAt": intent_at})
@@ -244,10 +244,14 @@ def handoff(ao, root, state, request):
     expected = dict(projectId=project, oldId=old, runId=run, newId=new)
     relative = receipt_prefix + new + ".json"
 
-    def ready():
+    def project_documents():
         docs = ao.documents()
         require(docs.get("sharedDir") == state["sharedDir"], "receipt project shared directory changed")
-        receipt_hash = ao.receipt(docs, relative, expected)
+        return docs
+
+    def ready():
+        receipt_hash = ao.receipt(state["sharedDir"], relative, expected)
+        docs = project_documents()
         if receipt_hash is None:
             return None
         epoch = lease_for(docs, new)
@@ -269,9 +273,8 @@ def handoff(ao, root, state, request):
     record("new-resumed-native", resume={"sessionId": new, "resumeMode": "native"})
     after = ao.settings(new, target)
     require(after == before, "session, conversation or settings changed after native resume")
-    docs = ao.documents()
-    require(docs.get("sharedDir") == state["sharedDir"] and lease_for(docs, new) == epoch and
-            ao.receipt(docs, relative, expected) == receipt_hash, "receipt or new lease changed after resume")
+    require(ao.receipt(state["sharedDir"], relative, expected) == receipt_hash and
+            lease_for(project_documents(), new) == epoch, "receipt or new lease changed after resume")
     record("verified", "notify-new", after=after)
     ao.checked(("send", "--session", new, "--steer", "--client-message-id", run + ":verified",
                 "--message", f"手動換手已通過驗證。先執行 {status_command(root)} 確認 lastConfirmed 為 "

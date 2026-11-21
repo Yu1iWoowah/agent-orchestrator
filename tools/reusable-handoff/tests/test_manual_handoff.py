@@ -95,8 +95,8 @@ class ManualHandoffTests(unittest.TestCase):
                         rows.append(dict(row, id="second"))
                     return result(dict(data=rows, meta=dict(hiddenTerminatedCount=0, hiddenOrchestratorCount=0)))
                 if args[:3] == ["project", "documents", "info"]:
-                    lease_id, epoch = ("new", 2) if old_dead else ("old", 1)
-                    if failure == "lease" and old_dead:
+                    lease_id, epoch = ("new", 2) if receipt.exists() else ("old", 1)
+                    if failure == "lease" and receipt.exists():
                         lease_id = "wrong-owner"
                     return result(dict(documents=dict(sharedDir=str(shared),
                                        lease=dict(sessionId=lease_id, epoch=epoch, frozen=False))))
@@ -161,7 +161,8 @@ class ManualHandoffTests(unittest.TestCase):
                     with self.assertRaises(KeyboardInterrupt):
                         manual.run_handoff(cli, root, state)
                 else:
-                    self.assertEqual(manual.run_handoff(cli, root, state), int(bool(expected_stop)))
+                    result = manual.run_handoff(cli, root, state)
+                    self.assertEqual(result, int(bool(expected_stop)), state.get("reason"))
             status = subprocess.run([sys.executable, "-I", str(script), "status", str(root)],
                                     cwd=root, capture_output=True, text=True)
             self.assertFalse(old_worktree.exists())
