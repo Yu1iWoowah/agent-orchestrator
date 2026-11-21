@@ -2483,6 +2483,59 @@ paths:
       summary: Refresh the cached local agent adapter catalog
       tags:
       - agents
+  /api/v1/attachment-uploads:
+    post:
+      operationId: uploadAttachment
+      parameters:
+      - description: Existing session that may stage or send this upload. Excludes
+          projectId.
+        in: query
+        name: sessionId
+        schema:
+          description: Existing session that may stage or send this upload. Excludes
+            projectId.
+          type: string
+      - description: Project in which to create or delegate a session carrying this
+          upload. Omit both IDs for a new standalone task.
+        in: query
+        name: projectId
+        schema:
+          description: Project in which to create or delegate a session carrying this
+            upload. Omit both IDs for a new standalone task.
+          type: string
+      requestBody:
+        content:
+          application/octet-stream: {}
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttachmentUploadResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Stream a file to disk for an attachment in the specified destination
+        scope
+      tags:
+      - sessions
   /api/v1/automations:
     get:
       operationId: listAutomations
@@ -23230,8 +23283,19 @@ components:
           type: string
         mimeType:
           type: string
+        uploadId:
+          type: string
+      type: object
+    AttachmentUploadResponse:
+      properties:
+        bytes:
+          format: int64
+          type: integer
+        uploadId:
+          type: string
       required:
-      - data
+      - uploadId
+      - bytes
       type: object
     AttentionAnswerReceipt:
       properties:
