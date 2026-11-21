@@ -42,6 +42,7 @@ func TestCoordinatorRequeuesEventArrivingDuringIngestion(t *testing.T) {
 		sources: []domain.UsageSourceRecord{watchableTestSource(2, path)},
 	}
 	watcher := newCoordinatorTestWatcher()
+	watcher.events = make(chan TranscriptEvent)
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	secondCalled := make(chan struct{})
@@ -61,11 +62,25 @@ func TestCoordinatorRequeuesEventArrivingDuringIngestion(t *testing.T) {
 	})
 
 	coordinator, cancel, done := startCoordinatorTest(t, store, ingestor, watcher, CoordinatorConfig{Workers: 1})
-	go coordinator.Flush(context.Background())
+	defer cancel()
+	flushed := make(chan struct{})
+	go func() {
+		coordinator.Flush(t.Context())
+		close(flushed)
+	}()
 	waitForCoordinatorSignal(t, firstStarted, "first ingestion did not start")
-	watcher.events <- TranscriptEvent{Path: path}
+	select {
+	case watcher.events <- TranscriptEvent{Path: path}:
+	case <-time.After(5 * time.Second):
+		t.Fatal("coordinator did not receive the watcher event")
+	}
 	close(releaseFirst)
-	waitForCoordinatorSignal(t, secondCalled, "event received during ingestion was dropped")
+	waitForCoordinatorSignal(t, flushed, "first flush did not finish")
+	select {
+	case <-secondCalled:
+	default:
+		t.Fatal("event received during ingestion was dropped")
+	}
 	stopCoordinatorTest(t, cancel, done)
 
 	if got := calls.Load(); got != 2 {
