@@ -1056,6 +1056,53 @@ c.call(['spawn','--help']);e.close()
             h.retirement_guard(self.root, run_id=self.run_id)
         self.assertTrue(list((self.directory / "journal.original/executions").glob("*/calls/*/stdout.raw")))
 
+    def test_retire_old_2a_requires_original_consuming_turn_before_freeze(self):
+        for consumed in (False, True):
+            with self.subTest(consumed=consumed):
+                fixture = RetirementTests()
+                fixture.setUp()
+                self.addCleanup(fixture.doCleanups)
+                handle = fixture.run_id + ":2a:old"
+                payload = dict(actor="detached-runner", run_id=fixture.run_id, phase="2a", old_id="old",
+                               new_id=None, recipient="old", authority_refs=["human"], instruction={})
+                entry = dict(id="old-directive", kind="message", role="user", origin="automation", senderSessionId="old",
+                             senderProjectId=h.PROJECT, clientMessageId=handle, turnId="turn", sequence=1,
+                             text="[from old] " + h.canonical(payload).decode())
+                fixture.snaps["old"] = snap = fixture.snapshot(turns=None if consumed else [], entries=[entry])
+                raw = fixture.data / "original-observation.json"
+                h.publish(raw, h.canonical(snap))
+                executable = Path(fixture.state["cli_path"])
+                executable.write_text("#!/bin/sh\nif [ \"$1\" = session ]; then cat \"$(dirname \"$0\")/original-observation.json\"; fi\n")
+                fixture.state.update(stage="2a", cli_sha256=h.digest(executable.read_bytes()))
+                h.replace_private(fixture.run / "state.json", fixture.state)
+                code = """import importlib.util,pathlib,sys
+s=importlib.util.spec_from_file_location('h',sys.argv[1]);h=importlib.util.module_from_spec(s);s.loader.exec_module(h)
+root,d=map(pathlib.Path,sys.argv[2:4]);j=h.Journal(d,root.name);e=j.register('_run','old')
+c=h.CLI(pathlib.Path(sys.argv[4]),'old',d,d/'running.json',d);c.execution=e;r=h.Run(root,c)
+h.publish(root/'runner-intent.json',b'{}')
+h.publish(root/'runner.json',h.canonical(dict(process=e.registration['process'])))
+r.send('old','2a',{});c.session('old');e.close()
+"""
+                subprocess.run([sys.executable, "-I", "-B", "-c", code, h.__file__, str(fixture.run), str(fixture.data),
+                                str(executable)], capture_output=True, check=True)
+                fixture.authorization["expected_effect_ids"] = [handle]
+                fixture.rebind_inputs()
+                next_journal = h.Journal(fixture.data, str(uuid.uuid4()))
+                with self.assertRaisesRegex(h.Stop, "old has unresolved prior journal"):
+                    h.prior_journal_guard(next_journal, "old")
+                if not consumed:
+                    with self.assertRaisesRegex(h.Stop, "old 2a.*consuming turn"):
+                        fixture.retire()
+                    self.assertEqual(fixture.journal.state()["status"], "open")
+                    self.assertFalse((fixture.directory / "receipt.json").exists())
+                    continue
+                receipt = fixture.retire()
+                effect, = receipt["closed_effects"]
+                self.assertEqual((effect["effect_id"], effect["turn_id"]), (handle, "turn"))
+                self.assertEqual(fixture.journal.state()["status"], "retired")
+                self.assertEqual(list(fixture.slot.iterdir()), [])
+                h.prior_journal_guard(next_journal, "old")
+
     def test_retirement_after_ao_update_binds_its_own_path_cli(self):
         # The run's original CLI was replaced by an AO update; retirement still runs with the ao on PATH now.
         Path(self.state["cli_path"]).write_bytes(b"#!/bin/sh\n# updated\nexit 0\n")

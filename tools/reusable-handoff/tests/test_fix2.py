@@ -549,6 +549,35 @@ class GitChainTests(unittest.TestCase):
                 if state == 'clean':
                     self.assertTrue(common.exists())
 
+    def test_old_can_produce_and_capture_after_a_linked_worktree_fetch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake = OldProducerTests().prepare(Path(temp))
+            self.git(fake.workspace, 'fetch', str(fake.repo), 'main')
+            gitdir = Path(self.git(fake.workspace, 'rev-parse', '--absolute-git-dir'))
+            fetch_head = gitdir / 'FETCH_HEAD'
+            before = fetch_head.read_bytes()
+            h.phase_2a(fake.run)
+            proof = h.decode(h.hash_reference(h.capture_old(fake.run)))
+            self.assertEqual(fetch_head.read_bytes(), before)
+            self.assertNotIn('FETCH_HEAD', proof['metadata'])
+            self.assertIn('index', proof['metadata'])
+
+    def test_old_rejects_non_regular_linked_worktree_fetch_head(self):
+        for kind in ('directory', 'symlink'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temp:
+                fake = OldProducerTests().prepare(Path(temp))
+                gitdir = Path(self.git(fake.workspace, 'rev-parse', '--absolute-git-dir'))
+                fetch_head = gitdir / 'FETCH_HEAD'
+                if kind == 'directory':
+                    fetch_head.mkdir()
+                else:
+                    target = Path(temp) / 'outside-gitdir'
+                    target.mkdir()
+                    fetch_head.symlink_to(target, target_is_directory=True)
+                with self.assertRaisesRegex(h.Stop, 'per-worktree FETCH_HEAD must be a regular file'):
+                    h.phase_2a(fake.run)
+                self.assertFalse((fake.run.root / 'old/phase-2a.json').exists())
+
     def test_old_dirty_or_unprotected_gitlink_stops_before_kill(self):
         for state in ('dirty', 'unprotected'):
             with self.subTest(state=state), tempfile.TemporaryDirectory() as temp:
@@ -620,17 +649,40 @@ class OldProducerTests(unittest.TestCase):
                 fake.transport.execute('old', 'old-receipt')
             self.assertEqual(h.private_read(fake.run.root / 'old/phase-2a.json'), before)
 
-    def test_old_partial_output_cannot_be_repaired_by_reinvocation(self):
+    def test_old_git_failure_can_finish_in_the_same_turn_without_resending(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake = self.prepare(Path(temp))
+            fake.preservation_problem = 'metadata'
+            with self.assertRaisesRegex(h.Stop, 'per-worktree Git dependency unresolved: unknown-state'):
+                h.phase_2a(fake.run)
+            old = fake.run.root / 'old'
+            for name in ('producer-intent.json', 'preservation.json', 'phase-2a.json'):
+                self.assertFalse((old / name).exists(), name)
+            gitdir = Path(GitChainTests().git(fake.workspace, 'rev-parse', '--absolute-git-dir'))
+            (gitdir / 'unknown-state').unlink()
+
+            def second_activity(snap, command, stdout, code, actor, turn, identifier, sequence):
+                return activity(snap, command, stdout, code, actor, turn, identifier + '-second', sequence)
+
+            with patch('producer_transport.activity', side_effect=second_activity):
+                receipt = fake.transport.execute('old', 'old-receipt')
+            self.assertEqual(h.phase_2a(fake.run), receipt)
+            self.assertEqual([event['exit'] for event in fake.helper_events], [1, 0])
+            self.assertEqual(fake.mutations.count('2a'), 1)
+            self.assertTrue(h.hash_reference(receipt['preservation']))
+
+    def test_old_intent_only_after_the_turn_ended_requires_retirement(self):
         with tempfile.TemporaryDirectory() as temp:
             fake = self.prepare(Path(temp))
             fake.preservation_problem = 'metadata'
             with self.assertRaises(h.Stop):
                 h.phase_2a(fake.run)
-            self.assertTrue((fake.run.root / 'old/producer-intent.json').exists())
-            self.assertTrue((fake.run.root / 'old/preservation.json').exists())
-            self.assertFalse((fake.run.root / 'old/phase-2a.json').exists())
-            with self.assertRaises(h.Stop):
-                fake.transport.execute('old', 'old-receipt')
+            path = fake.run.root / 'old/producer-intent.json'
+            if not path.exists():
+                h.publish(path, h.canonical({'run_id': fake.run_id, 'actor_id': 'old'}))
+            fake.snapshots['old']['transcript']['turns'][-1].update(state='completed', completedAt=h.now())
+            with self.assertRaisesRegex(h.Stop, '2a incomplete.*retire'):
+                h.phase_2a(fake.run)
             self.assertFalse((fake.run.root / 'old/phase-2a.json').exists())
 
 
