@@ -481,13 +481,13 @@ describe("preload application shortcut bridges", () => {
 		dispose();
 	});
 
-	it("buffers an open-settings event that arrives before subscription", () => {
-		openSettingsBufferListener?.({}, "billing");
+	it.each(["billing", "protectedSides"])("buffers %s before the settings subscription", (section) => {
+		openSettingsBufferListener?.({}, section);
 
 		const listener = vi.fn();
 		const dispose = exposedBridge().app.onOpenSettingsShortcut(listener);
 		expect(listener).toHaveBeenCalledTimes(1);
-		expect(listener).toHaveBeenCalledWith("billing");
+		expect(listener).toHaveBeenCalledWith(section);
 
 		// The buffer drains: a later subscription gets nothing replayed.
 		const lateListener = vi.fn();

@@ -10,6 +10,7 @@ import { initializeDesktopLog } from "./main/desktop-log";
 import { syncMacWindowButtons } from "./main/window-chrome";
 import { MAC_TRAFFIC_LIGHT_ROW_HEIGHT, MAC_WINDOW_BUTTON_X, MAC_WINDOW_BUTTON_RADIUS } from "./shared/window-chrome";
 import { finishUpdateQuit } from "./main/update-quit";
+import { showUpdateFailure } from "./main/update-failure";
 import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
 import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
 import {
@@ -48,6 +49,9 @@ import {
 	isUpdateRestartRequested,
 	clearUpdateRestartRequest,
 	setUpdateRestartFailureHandler,
+	setUpdateShutdownAdmission,
+	getUpdateRestartSignal,
+	didUpdateHandoffFail,
 	getUpdateStatus,
 	recordUpdateDiagnostic,
 	setUpdateSettings,
@@ -134,6 +138,7 @@ import { createTrayController, type TrayController } from "./main/tray";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
 import { createDesktopQuitController } from "./main/desktop-quit";
 import { requestDesktopShutdown } from "./main/desktop-shutdown";
+import { ProtectedSideShutdownRefusal, showProtectedSideShutdownRefusal } from "./main/protected-side-quit";
 import { createQuitConfirmController } from "./main/quit-confirm";
 import {
 	TRAY_RENDERER_READY_CHANNEL,
@@ -1440,9 +1445,13 @@ async function createWindowInternal(): Promise<void> {
 		terminalFocused = false;
 		terminalFontSizeFocused = false;
 		artifactZoomEngaged = false;
+		trayLifecycle.clearRendererReady();
 		trayLifecycle.clear();
 	});
-	shellWebContents.on("render-process-gone", () => trayLifecycle.clear());
+	shellWebContents.on("render-process-gone", () => {
+		trayLifecycle.clearRendererReady();
+		trayLifecycle.clear();
+	});
 
 	mainWindow.on("closed", () => {
 		disposeOperatorConsentLink();
@@ -3198,14 +3207,17 @@ function scheduleDaemonAutoRestart(
 	}, plan.delayMs);
 }
 
-async function shutdownDaemonForDesktopQuit(): Promise<void> {
+async function shutdownDaemonForDesktopQuit(
+	preserve = preserveAgentsOnQuit || isUpdateRestartRequested(),
+	updateSignal?: AbortSignal,
+): Promise<boolean> {
 	const launchKeepAlive = daemonProcess !== null ? daemonLaunchKeepAlive.get(daemonProcess) : undefined;
-	const preserve = preserveAgentsOnQuit || isUpdateRestartRequested();
 	if (preserve && launchKeepAlive === false && daemonStatus.state !== "ready") {
 		throw new Error("The app-owned daemon has not finished starting");
 	}
 	const accepted = await requestDesktopShutdown({
 		keepAlive: launchKeepAlive === true,
+		update: updateSignal && { signal: updateSignal, confirmDrafts: confirmDesktopQuitDrafts },
 		appRunId,
 		status: daemonStatus,
 		preserveAgents: () => preserve,
@@ -3218,16 +3230,18 @@ async function shutdownDaemonForDesktopQuit(): Promise<void> {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify(body),
-			signal: AbortSignal.timeout(3000),
+			signal: AbortSignal.timeout(updateSignal ? 12_000 : 3_000),
 		}),
 	});
 	if (preserve && launchKeepAlive === false && !accepted) {
 		throw new Error("Daemon ownership changed before desktop quit");
 	}
 	lifecycleLog("daemon_quit_shutdown", { accepted, daemonPid: daemonProcess?.pid ?? daemonStatus.pid ?? null, updateRestart: isUpdateRestartRequested() });
-	if (!accepted) return;
-	desktopAgentShutdownAccepted = true;
-	if (daemonProcess) daemonStoppingProcess = daemonProcess;
+	if (accepted) {
+		desktopAgentShutdownAccepted = true;
+		if (daemonProcess) daemonStoppingProcess = daemonProcess;
+	}
+	return accepted;
 }
 
 function stopDaemon(): DaemonStatus {
@@ -4242,12 +4256,20 @@ ipcMain.handle("updates:install", (_event, confirmedVersion?: string) => quitAnd
 // Retry after a failed macOS preparation: Squirrel can't reset a stalled staging
 // in-process, so restart AO like a manual quit-and-reopen. install-on-quit is
 // already off on the failed path, so quitting can't apply a half-prepared build.
-ipcMain.handle("updates:relaunch", () => {
+let relaunchAfterFailedHandoff = false;
+function relaunchAO(): void {
 	recordUpdateDiagnostic("retry-relaunch-requested");
 	preserveAgentsOnQuit = true;
-	app.relaunch();
+	if (didUpdateHandoffFail()) {
+		if (relaunchAfterFailedHandoff) return;
+		relaunchAfterFailedHandoff = true;
+		// Schedule relaunch when before-quit actually allows this new exit.
+	} else {
+		app.relaunch();
+	}
 	desktopQuit.quitCompletely();
-});
+}
+ipcMain.handle("updates:relaunch", relaunchAO);
 
 // Whether THIS boot is a post-update relaunch, so the startup loader can show
 // "Updating / Restarting" copy instead of the normal "Connecting" phrases. The
@@ -4982,26 +5004,93 @@ app.whenReady().then(async () => {
 // Ordinary macOS Quit closes the window and leaves the Dock; the tray stays.
 // Full exit drops the supervisor socket, stopping the app-owned daemon after
 // its grace period and stopping agents. Planned updates explicitly detach.
-setUpdateRestartFailureHandler(() => {
-	if (!browserQuitRequested) focusMainWindow();
+let updateFailurePrompt: Promise<void> | undefined;
+let updateShutdownInFlight = false;
+
+function confirmDesktopQuitDrafts(): boolean {
+	if (chatDraftQuitConfirmed) return true;
+	chatDraftQuitConfirmed = confirmUnsafeChatDraftLeave(
+		chatDraftRisks,
+		(options) => dialog.showMessageBoxSync(options),
+		chatDraftDialog,
+	);
+	return chatDraftQuitConfirmed;
+}
+
+function cancelDesktopQuitIntent(): void {
+	preserveAgentsOnQuit = false;
+	chatDraftQuitConfirmed = false;
+	chatDraftWindowCloseConfirmed = false;
+	browserQuitRequested = false;
+	relaunchAfterFailedHandoff = false;
+	desktopQuit.cancelQuit();
+}
+
+function promptUpdateFailure(): void {
+	if (updateFailurePrompt) return;
+	updateFailurePrompt = (async () => {
+		const file = runFilePath();
+		const locale = file ? (await readUiSettings(path.dirname(file))).locale : "en";
+		await showUpdateFailure(locale, { showMessageBox: (options) => dialog.showMessageBox(options), relaunch: relaunchAO });
+	})().catch((error) => console.error("AO: update failure prompt failed", error))
+		.finally(() => { updateFailurePrompt = undefined; });
+}
+
+setUpdateRestartFailureHandler((shutdownAccepted) => {
+	cancelDesktopQuitIntent();
+	if (!shutdownAccepted) {
+		agentQuitCleanupComplete = false;
+		focusMainWindow();
+		return;
+	}
+	cancelDaemonAutoRestart();
+	promptUpdateFailure();
 });
 
-let updateQuitDeadlineArmed = false;
+setUpdateShutdownAdmission(async (signal) => {
+	if (agentQuitCleanupPromise || browserQuitRequested) throw new Error("Orchestrator is already quitting.");
+	cancelDaemonAutoRestart();
+	updateShutdownInFlight = true;
+	try {
+		const accepted = await shutdownDaemonForDesktopQuit(true, signal);
+		agentQuitCleanupComplete = accepted || !signal.aborted;
+		return accepted;
+	} catch (error) {
+		cancelDesktopQuitIntent();
+		if (error instanceof ProtectedSideShutdownRefusal) promptProtectedSideShutdown(error);
+		throw error;
+	} finally {
+		updateShutdownInFlight = false;
+	}
+});
+
+let protectedSideShutdownPrompt: Promise<void> | undefined;
+
+function promptProtectedSideShutdown(refusal: ProtectedSideShutdownRefusal): void {
+	if (protectedSideShutdownPrompt) return;
+	focusMainWindow();
+	protectedSideShutdownPrompt = showProtectedSideShutdownRefusal(refusal, {
+		zh: operatorConsentZh,
+		showMessageBox: (options) => dialog.showMessageBox(options),
+		openEntry: () => trayLifecycle.openProtectedSides(),
+	}).catch((error) => console.error("AO: protected side shutdown prompt failed", error))
+		.finally(() => { protectedSideShutdownPrompt = undefined; });
+}
+
+let updateQuitDeadlineAttempt: AbortSignal | undefined;
 app.on("before-quit", (event) => {
+	if (updateShutdownInFlight) {
+		event.preventDefault();
+		return;
+	}
 	if (desktopQuit.handleBeforeQuit(event)) return;
 	if (chatDraftRisks.length > 0 && !chatDraftQuitConfirmed) {
 		event.preventDefault();
-		if (confirmUnsafeChatDraftLeave(
-			chatDraftRisks,
-			(options) => dialog.showMessageBoxSync(options),
-			chatDraftDialog,
-		)) {
-			chatDraftQuitConfirmed = true;
+		if (confirmDesktopQuitDrafts()) {
 			app.quit();
 		} else {
-			preserveAgentsOnQuit = false;
+			cancelDesktopQuitIntent();
 			clearUpdateRestartRequest();
-			desktopQuit.cancelQuit();
 		}
 		return;
 	}
@@ -5014,11 +5103,17 @@ app.on("before-quit", (event) => {
 			// Actual desktop exit can rely on owner loss. Update restart needs
 			// accepted preservation before it releases the supervisor.
 			agentQuitCleanupPromise = shutdownDaemonForDesktopQuit()
+				.then(() => true)
 				.catch((error) => {
-					if (preserveAgentsOnQuit || isUpdateRestartRequested()) {
-						preserveAgentsOnQuit = false;
+					if (error instanceof ProtectedSideShutdownRefusal) {
+						cancelDesktopQuitIntent();
 						clearUpdateRestartRequest();
-						desktopQuit.cancelQuit();
+						promptProtectedSideShutdown(error);
+						return false;
+					}
+					if (preserveAgentsOnQuit || isUpdateRestartRequested()) {
+						cancelDesktopQuitIntent();
+						clearUpdateRestartRequest();
 						dialog.showErrorBox("Could not restart Orchestrator", error instanceof Error ? error.message : String(error));
 						focusMainWindow();
 						return false;
@@ -5070,20 +5165,25 @@ app.on("before-quit", (event) => {
 			const finishQuit = () => {
 				browserCleanupComplete = true;
 				browserQuitCleanupPromise = null;
-				app.quit();
+				if (browserQuitRequested) app.quit();
 			};
 			browserQuitCleanupPromise = cleanup.then(() => undefined).finally(finishQuit);
 		}
-		if (isUpdateRestartRequested() && !updateQuitDeadlineArmed) {
-			updateQuitDeadlineArmed = true;
-			// Also cover a normal quit already waiting on the same cleanup.
+		const attempt = getUpdateRestartSignal();
+		if (isUpdateRestartRequested() && attempt && !attempt.aborted && updateQuitDeadlineAttempt !== attempt) {
+			updateQuitDeadlineAttempt = attempt;
 			void finishUpdateQuit(browserQuitCleanupPromise, {
+				signal: attempt,
 				quit: () => undefined, // The existing cleanup continuation owns normal quit.
-				exit: () => { if (isUpdateRestartRequested()) app.exit(0); },
+				exit: () => { if (browserQuitRequested && getUpdateRestartSignal() === attempt) app.exit(0); },
 				log: (error) => console.error("update shutdown:", error),
 			});
 		}
 		return;
+	}
+	if (relaunchAfterFailedHandoff) {
+		relaunchAfterFailedHandoff = false;
+		app.relaunch();
 	}
 });
 

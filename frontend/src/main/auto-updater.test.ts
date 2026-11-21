@@ -3641,6 +3641,142 @@ describe("quitAndInstallUpdate", () => {
     vi.resetModules();
   });
 
+  it.each(["darwin", "win32", "linux"] as const)("waits for actual shutdown admission before invoking the installer on %s", async (platform) => {
+    const restore = stubProcess(platform, "/usr/bin/node");
+    try {
+      const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+      await module.startAutoUpdates(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+      const pending = deferred<boolean>();
+      const admit = vi.fn(() => pending.promise);
+      module.setUpdateShutdownAdmission(admit);
+      const install = module.quitAndInstallUpdate();
+      await vi.waitFor(() => expect(admit).toHaveBeenCalledOnce());
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      pending.resolve(true);
+      await install;
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledExactlyOnceWith(false, true);
+    } finally { restore(); }
+  });
+
+  it("does not install a different staged version while shutdown admission is pending", async () => {
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+    await module.startAutoUpdates(stateDir);
+    updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+    const pending = deferred<boolean>();
+    const admit = vi.fn(() => pending.promise);
+    const failed = vi.fn();
+    module.setUpdateShutdownAdmission(admit);
+    module.setUpdateRestartFailureHandler(failed);
+    const install = module.quitAndInstallUpdate("2.0.0");
+    const failure = expect(install).rejects.toThrow("The prepared update changed");
+    await vi.waitFor(() => expect(admit).toHaveBeenCalledOnce());
+    updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+    expect(module.getUpdateStatus().staged?.version).toBe("2.1.0");
+    pending.resolve(true);
+    await failure;
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(failed).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("keeps a refused admission from starting the installer or entering the post-shutdown failure state", async () => {
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+    await module.startAutoUpdates(stateDir);
+    updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+    const failed = vi.fn();
+    module.setUpdateRestartFailureHandler(failed);
+    module.setUpdateShutdownAdmission(async () => { throw new Error("Protected side refused shutdown."); });
+    await expect(module.quitAndInstallUpdate()).rejects.toThrow("Protected side refused shutdown.");
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(failed).not.toHaveBeenCalled();
+    expect(module.didUpdateHandoffFail()).toBe(false);
+  });
+
+  it.each(["synchronously", "asynchronously"])("revokes the attempt and disables automatic install after the installer fails %s", async (mode) => {
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+    await module.startAutoUpdates(stateDir);
+    updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+    const failed = vi.fn();
+    const admit = vi.fn(async (_signal: AbortSignal) => true);
+    module.setUpdateRestartFailureHandler(failed);
+    module.setUpdateShutdownAdmission(admit);
+
+    if (mode === "synchronously") {
+      autoUpdater.quitAndInstall.mockImplementationOnce(() => { throw new Error("installer failed"); });
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow("installer failed");
+    } else {
+      await module.quitAndInstallUpdate();
+      updaterEvents.get("error")?.(new Error("installer failed"));
+      updaterEvents.get("error")?.(new Error("duplicate installer event"));
+    }
+
+    expect(admit.mock.calls[0][0].aborted).toBe(true);
+    expect(module.isUpdateRestartRequested()).toBe(false);
+    expect(module.didUpdateHandoffFail()).toBe(true);
+    expect(failed).toHaveBeenCalledExactlyOnceWith(true);
+    expect(autoUpdater.autoInstallOnAppQuit).toBe(false);
+    await expect(module.quitAndInstallUpdate()).rejects.toThrow(/Restart Orchestrator/);
+    expect(autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
+  });
+
+  it.each(["complete", "timeout"])("never admits or installs after a canceled macOS marker can %s", async (markerEnd) => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    const marker = deferred<void>();
+    const mark = vi.fn(() => marker.promise);
+    vi.doMock("./update-relaunch-flag", () => ({ markUpdateRelaunch: mark }));
+    try {
+      const { module, autoUpdater, updaterEvents, nativeAutoUpdater } = await importAutoUpdater();
+      await module.startAutoUpdates(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+      const admit = vi.fn(async () => true);
+      module.setUpdateShutdownAdmission(admit);
+      vi.useFakeTimers();
+      const install = module.quitAndInstallUpdate();
+      const failure = expect(install).rejects.toThrow();
+      await vi.waitFor(() => expect(mark).toHaveBeenCalledOnce());
+      const signal = module.getUpdateRestartSignal();
+      nativeAutoUpdater.emit("error", new Error("native handoff failed during marker"));
+      expect(signal?.aborted).toBe(true);
+      if (markerEnd === "complete") marker.resolve();
+      else await vi.advanceTimersByTimeAsync(750);
+      await failure;
+      await flushMicrotasks();
+      expect(admit).not.toHaveBeenCalled();
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      expect(module.didUpdateHandoffFail()).toBe(false);
+    } finally {
+      marker.resolve();
+      vi.doUnmock("./update-relaunch-flag");
+      vi.useRealTimers();
+      restore();
+    }
+  });
+
+  it("reports a late accepted shutdown after macOS cancellation without invoking the installer", async () => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    const pending = deferred<boolean>();
+    try {
+      const { module, autoUpdater, updaterEvents, nativeAutoUpdater } = await importAutoUpdater();
+      await module.startAutoUpdates(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+      const admit = vi.fn(() => pending.promise);
+      const failed = vi.fn();
+      module.setUpdateShutdownAdmission(admit);
+      module.setUpdateRestartFailureHandler(failed);
+      const install = module.quitAndInstallUpdate();
+      const failure = expect(install).rejects.toThrow();
+      await vi.waitFor(() => expect(admit).toHaveBeenCalledOnce());
+      nativeAutoUpdater.emit("error", new Error("native handoff failed during admission"));
+      await failure;
+      expect(failed).not.toHaveBeenCalled();
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/already in progress/);
+      pending.resolve(true);
+      await vi.waitFor(() => expect(failed).toHaveBeenCalledExactlyOnceWith(true));
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      expect(module.didUpdateHandoffFail()).toBe(true);
+    } finally { pending.resolve(false); restore(); }
+  });
+
   async function requestQuit(preserveAgents: () => boolean) {
     const requestShutdown = vi.fn(async (_port: number, _body: { stopAgents: boolean; appRunId: string }) => ({ ok: true, status: 202 }));
     await requestDesktopShutdown({
