@@ -128,6 +128,15 @@ class AO:
         require(catalog.get("agentId") == harness and binding.get("accountId") == target["accountId"] and
                 catalog.get("warningCode") not in ("auth_required", "auth_expired"),
                 "target account unavailable or not bound to the selected harness catalog")
+        require(catalog.get("stale") is False and catalog.get("refreshState") == "idle" and
+                not catalog.get("refreshError"), "target catalog stale or refresh unfinished")
+        try:
+            observed = dt.datetime.fromisoformat(field(catalog, "lastSuccessAt").replace("Z", "+00:00"))
+        except ValueError as error:
+            raise Stop("invalid target catalog lastSuccessAt") from error
+        now = dt.datetime.now().astimezone()
+        require(observed.tzinfo is not None and observed <= now and observed.astimezone().date() == now.date(),
+                "target catalog has no valid success for the current local day")
         models = [model for model in catalog["models"] if model.get("id") == target["model"]]
         require(len(models) == 1 and target["effort"] in (models[0].get("efforts") or []) and
                 not (models[0].get("requiresVersion") or models[0].get("unavailableReason")),
@@ -200,26 +209,48 @@ class AO:
                     accountId=binding["accountId"], conversationId=field(conversation, "conversationId"),
                     **{key: actual[key] for key in ("model", "reasoningEffort", "approvalMode")})
 
-    def notification_receipt(self, sid, conversation_id, handle):
-        snapshot = self.get(f"sessions/{identifier(sid)}/conversation?limit=500")
-        require(snapshot.get("sessionId") == sid and snapshot.get("conversationId") == conversation_id,
-                "notification conversation identity changed")
-        for activity in snapshot["activities"]:
-            detail = activity.get("detail") or {}
-            if (activity.get("activityKind") == "system" and activity.get("status") == "completed" and
-                    activity.get("providerItemId") == "steer:" + handle and detail.get("event") == "steer" and
-                    detail.get("clientMessageId") == handle):
-                return dict(clientMessageId=handle, activityId=field(activity, "id"))
-        messages = [message for message in snapshot["messages"]
-                    if message.get("role") == "user" and message.get("clientMessageId") == handle]
-        require(len(messages) <= 1, "ambiguous verification notification receipt")
-        if not messages:
-            return None
-        turn_id = messages[0].get("consumedByTurnId") or field(messages[0], "turnId")
-        for turn in snapshot["turns"]:
-            # A provider ID can be bound before a deferred prompt is forwarded.
-            if turn.get("id") == turn_id and turn.get("state") == "completed" and not turn.get("rolledBack"):
-                return dict(clientMessageId=handle, turnId=turn_id, providerTurnId=field(turn, "providerTurnId"))
+    def notification_receipt(self, sid, anchor, handle, deadline):
+        endpoint = f"sessions/{identifier(sid)}/conversation?"
+        floor = anchor["latestSequence"]
+        query = {"limit": 500}
+        if floor:
+            query["afterSequence"] = floor
+        turns = {}
+        turn_id = None
+        while time.monotonic() < deadline:
+            snapshot = self.get(endpoint + urlencode(query))
+            require(snapshot.get("sessionId") == sid and snapshot.get("conversationId") == anchor["conversationId"] and
+                    snapshot.get("activeBranchId") == anchor.get("activeBranchId"),
+                    "notification conversation or branch identity changed")
+            for activity in snapshot["activities"]:
+                detail = activity.get("detail") or {}
+                if (activity.get("sequence", 0) > floor and activity.get("activityKind") == "system" and
+                        activity.get("status") == "completed" and activity.get("providerItemId") == "steer:" + handle and
+                        detail.get("event") == "steer" and detail.get("clientMessageId") == handle):
+                    return dict(clientMessageId=handle, activityId=field(activity, "id"))
+            messages = [message for message in snapshot["messages"] if message.get("sequence", 0) > floor and
+                        message.get("role") == "user" and message.get("clientMessageId") == handle]
+            require(len(messages) <= 1, "ambiguous verification notification receipt")
+            if messages:
+                observed_turn = messages[0].get("consumedByTurnId") or field(messages[0], "turnId")
+                require(turn_id in (None, observed_turn), "notification consuming turn changed across pages")
+                turn_id = observed_turn
+            turns.update((turn["id"], turn) for turn in snapshot["turns"])
+            if turn_id in turns:
+                turn = turns[turn_id]
+                # A provider ID can be bound before a deferred prompt is forwarded.
+                if turn.get("state") == "completed" and not turn.get("rolledBack"):
+                    return dict(clientMessageId=handle, turnId=turn_id, providerTurnId=field(turn, "providerTurnId"))
+                return None
+            if snapshot.get("hasMoreBefore") is not True:
+                return None
+            cursor = snapshot.get("oldestSequence")
+            require(type(cursor) is int and cursor > 0 and
+                    ("beforeSequence" not in query or cursor < query["beforeSequence"]),
+                    "notification conversation cursor did not advance")
+            if cursor <= floor:
+                return None
+            query["beforeSequence"] = cursor
         return None
 
 
@@ -349,15 +380,21 @@ def handoff(ao, root, state, request):
     require(ao.receipt(state["sharedDir"], relative, expected) == receipt_hash, "original receipt changed after resume")
 
     handle = run + ":verified"
+    anchor = ao.get(f"sessions/{new}/conversation?limit=1")
+    require(anchor.get("sessionId") == new and anchor.get("conversationId") == after["conversationId"],
+            "notification conversation identity changed before send")
+    floor = anchor.get("latestSequence")
+    require(type(floor) is int and floor >= 0, "notification conversation sequence missing")
     record("verified", "notify-new", resumedLeaseEpoch=resumed_epoch, leaseRenewal=dict(lease_proof, hash=proof_hash),
-           notification=dict(clientMessageId=handle))
+           notification=dict(clientMessageId=handle, afterSequence=floor))
     ao.send(new, handle, f"手動換手已通過驗證。先執行 {status_command(root)} 確認 lastConfirmed 為 "
             f"verified 或 complete，且 newId 是你。依 {root / 'request.json'} 的 workers 授權，"
             f"以你自己的身分通知 {project} 中仍存活的具名 worker；依原 hold 與 D 接續。"
             "向使用者回報完成與待決事項。")
-    delivered = wait_for("verification notification delivery", 600,
-                         lambda: ao.notification_receipt(new, after["conversationId"], handle))
-    record("complete", outcome="complete", notification=delivered)
+    deadline = time.monotonic() + 600
+    delivered = wait_for("verification notification delivery", deadline - time.monotonic(),
+                         lambda: ao.notification_receipt(new, anchor, handle, deadline))
+    record("complete", outcome="complete", notification=dict(delivered, afterSequence=floor))
 
 
 def prepare(path):

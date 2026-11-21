@@ -173,8 +173,12 @@ class ManualHandoffTests(unittest.TestCase):
                     self.assertFalse(old_dead)
                     self.assertEqual(parse_qs(urlsplit(path).query), dict(
                         projectId=["project"], role=["orchestrator"], agentAccountId=["acct"], catalogOnly=["true"]))
+                    stale = failure == "stale-catalog"
                     return dict(agentId="codex",
                                 accountBinding=dict(accountId="other" if failure == "invalid-account" else "acct"),
+                                stale=stale, refreshState="error" if stale else "idle",
+                                refreshError="discovery unavailable" if stale else "",
+                                lastSuccessAt=dt.datetime.now(dt.timezone.utc).isoformat(),
                                 models=[dict(id="fixture-model", efforts=["low" if failure == "invalid-effort" else "high"])])
                 if path == "sessions/old":
                     return dict(session=dict(id="old", projectId="project", kind="orchestrator",
@@ -187,32 +191,44 @@ class ManualHandoffTests(unittest.TestCase):
                 if path == "agents/accounts/sessions/new":
                     account = None if failure == "empty-account" else "acct"
                     return dict(codex=account, bindings=dict(codex=dict(accountId=account, available=True)))
-                if path == "sessions/new/conversation?limit=500":
+                if path.startswith("sessions/new/conversation?limit=500"):
                     self.assertEqual(commands.count("run:verified"), 1)
+                    if failure == "notification-on-older-page":
+                        params = parse_qs(urlsplit(path).query)
+                        if "beforeSequence" in params:
+                            self.assertEqual(params["beforeSequence"], ["501"])
+                            self.assertEqual(params["afterSequence"], ["10"])
+                            return dict(sessionId="new", conversationId="conversation", activities=[], turns=[],
+                                        messages=[dict(role="user", clientMessageId="run:verified",
+                                                       turnId="notification", sequence=11)])
+                        return dict(sessionId="new", conversationId="conversation", messages=[], activities=[],
+                                    hasMoreBefore=True, oldestSequence=501, latestSequence=1000,
+                                    turns=[dict(id="notification", state="completed", providerTurnId="native-notification")])
                     if failure == "notification-steered":
                         return dict(sessionId="new", conversationId="conversation", messages=[], turns=[],
                                     activities=[dict(id="steer-receipt", activityKind="system", status="completed",
-                                                     providerItemId="steer:run:verified",
+                                                     providerItemId="steer:run:verified", sequence=11,
                                                      detail=dict(event="steer", clientMessageId="run:verified"))])
                     notification_reads += 1
                     queued = failure == "notification-queued" or notification_reads == 1
                     return dict(sessionId="new", conversationId="conversation",
-                                messages=[dict(role="user", clientMessageId="other:verified", turnId="other"),
-                                          dict(role="user", clientMessageId="run:verified", turnId="notification")],
+                                messages=[dict(role="user", clientMessageId="other:verified", turnId="other", sequence=12),
+                                          dict(role="user", clientMessageId="run:verified", turnId="notification", sequence=11)],
                                 activities=[],
                                 turns=[dict(id="other", state="completed", providerTurnId="native-other"),
                                        dict(id="notification", state="queued" if queued else "completed",
                                             providerTurnId="native-notification")])
                 self.assertEqual(path, "sessions/new/conversation?limit=1")
                 effort = None if failure == "empty-effort" or failure == "post-effort" and resumed else "high"
-                return dict(conversationId="conversation", settings=dict(
+                return dict(sessionId="new", conversationId="conversation", latestSequence=10, settings=dict(
                     model="fixture-model", reasoningEffort=effort, approvalMode="bypass-permissions"))
 
-            preflight_failed = failure in ("invalid-approval", "invalid-account", "invalid-effort")
+            preflight_failed = failure in ("invalid-approval", "invalid-account", "invalid-effort", "stale-catalog")
             expected_stop = {
                 "invalid-approval": "invalid target approvalMode",
                 "invalid-account": "target account",
                 "invalid-effort": "target model/effort",
+                "stale-catalog": "target catalog",
                 "notification-queued": "timed out waiting for verification notification delivery",
                 "missing": "no session with the exact run token", "multiple": "multiple sessions",
                 "scope": "wrong project", "predates": "predates intent", "permission": "permission denied",
@@ -293,6 +309,12 @@ class ManualHandoffTests(unittest.TestCase):
 
     def test_queued_verification_notification_does_not_complete_handoff(self):
         self.run_handoff("notification-queued")
+
+    def test_stale_catalog_with_matching_model_never_kills_old(self):
+        self.run_handoff("stale-catalog")
+
+    def test_verification_notification_is_recovered_from_an_older_page(self):
+        self.run_handoff("notification-on-older-page")
 
     def test_verification_notification_recovers_original_steer_receipt(self):
         self.run_handoff("notification-steered")
