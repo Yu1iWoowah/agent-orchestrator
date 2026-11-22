@@ -20,7 +20,11 @@ const functions = new Set([
 const controllerSource = source.statements.filter((node) => {
 	if (ts.isFunctionDeclaration(node)) return functions.has(node.name?.text ?? "");
 	if (ts.isVariableStatement(node)) return node.declarationList.declarations.every((declaration) =>
-		ts.isIdentifier(declaration.name) && (/^daemon/.test(declaration.name.text) || declaration.name.text === "forceReplaceAdoptedRequested"));
+		ts.isIdentifier(declaration.name) && (
+			/^daemon/.test(declaration.name.text) ||
+			declaration.name.text === "forceReplaceAdoptedRequested" ||
+			declaration.name.text === "updateShutdownInFlight"
+		));
 	if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) return false;
 	const call = node.expression;
 	const target = call.expression.getText(source);
