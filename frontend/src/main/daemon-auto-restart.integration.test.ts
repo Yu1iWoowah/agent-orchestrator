@@ -23,7 +23,8 @@ const controllerSource = source.statements.filter((node) => {
 		ts.isIdentifier(declaration.name) && (
 			/^daemon/.test(declaration.name.text) ||
 			declaration.name.text === "forceReplaceAdoptedRequested" ||
-			declaration.name.text === "updateShutdownInFlight"
+			declaration.name.text === "updateShutdownInFlight" ||
+			declaration.name.text === "updateQuitAfterFailedHandoff"
 		));
 	if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) return false;
 	const call = node.expression;

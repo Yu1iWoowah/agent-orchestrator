@@ -15,6 +15,7 @@ import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
 import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
 import {
 	app,
+	autoUpdater as nativeAutoUpdater,
 	BaseWindow,
 	BrowserWindow,
 	clipboard,
@@ -5006,6 +5007,7 @@ app.whenReady().then(async () => {
 // its grace period and stopping agents. Planned updates explicitly detach.
 let updateFailurePrompt: Promise<void> | undefined;
 let updateShutdownInFlight = false;
+let updateQuitAfterFailedHandoff = false;
 
 function confirmDesktopQuitDrafts(): boolean {
 	if (chatDraftQuitConfirmed) return true;
@@ -5078,8 +5080,14 @@ function promptProtectedSideShutdown(refusal: ProtectedSideShutdownRefusal): voi
 }
 
 let updateQuitDeadlineAttempt: AbortSignal | undefined;
+nativeAutoUpdater.on("before-quit-for-update", () => {
+	if (process.platform === "darwin" || !didUpdateHandoffFail()) return;
+	// BaseUpdater calls app.quit() right after this event, even if installer spawn failed.
+	updateQuitAfterFailedHandoff = true;
+	queueMicrotask(() => { updateQuitAfterFailedHandoff = false; });
+});
 app.on("before-quit", (event) => {
-	if (updateShutdownInFlight) {
+	if (updateShutdownInFlight || updateQuitAfterFailedHandoff) {
 		event.preventDefault();
 		return;
 	}
