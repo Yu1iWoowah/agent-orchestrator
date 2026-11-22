@@ -138,7 +138,7 @@ import { OPEN_SESSION_DEEP_LINK_CHANNEL, normalizeSessionDeepLink } from "./shar
 import { createTrayController, type TrayController } from "./main/tray";
 import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
 import { createDesktopQuitController } from "./main/desktop-quit";
-import { requestDesktopShutdown } from "./main/desktop-shutdown";
+import { DesktopShutdownTimeout, requestDesktopShutdown } from "./main/desktop-shutdown";
 import { ProtectedSideShutdownRefusal, showProtectedSideShutdownRefusal } from "./main/protected-side-quit";
 import { createQuitConfirmController } from "./main/quit-confirm";
 import {
@@ -3227,11 +3227,11 @@ async function shutdownDaemonForDesktopQuit(
 			if (!handshakePath) throw new Error("Daemon ownership record is unavailable");
 			return parseRunFile(await readFile(handshakePath, "utf8"));
 		},
-		requestShutdown: (port, body) => fetch(`http://127.0.0.1:${port}/shutdown`, {
+		requestShutdown: (port, body, signal) => fetch(`http://127.0.0.1:${port}/shutdown`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify(body),
-			signal: AbortSignal.timeout(updateSignal ? 12_000 : 3_000),
+			signal,
 		}),
 	});
 	if (preserve && launchKeepAlive === false && !accepted) {
@@ -5108,8 +5108,7 @@ app.on("before-quit", (event) => {
 		// shutdown request below.
 		cancelDaemonAutoRestart();
 		if (!agentQuitCleanupPromise) {
-			// Actual desktop exit can rely on owner loss. Update restart needs
-			// accepted preservation before it releases the supervisor.
+			// Wait for the daemon's preflight before releasing the supervisor.
 			agentQuitCleanupPromise = shutdownDaemonForDesktopQuit()
 				.then(() => true)
 				.catch((error) => {
@@ -5119,10 +5118,15 @@ app.on("before-quit", (event) => {
 						promptProtectedSideShutdown(error);
 						return false;
 					}
-					if (preserveAgentsOnQuit || isUpdateRestartRequested()) {
+					const restarting = preserveAgentsOnQuit || isUpdateRestartRequested();
+					if (restarting || error instanceof DesktopShutdownTimeout) {
 						cancelDesktopQuitIntent();
 						clearUpdateRestartRequest();
-						dialog.showErrorBox("Could not restart Orchestrator", error instanceof Error ? error.message : String(error));
+						const message = error instanceof Error ? error.message : String(error);
+						dialog.showErrorBox(
+							restarting ? "Could not restart Orchestrator" : "Could not quit Orchestrator",
+							restarting ? message : `${message} Try quitting again.`,
+						);
 						focusMainWindow();
 						return false;
 					}

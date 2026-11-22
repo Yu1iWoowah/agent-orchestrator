@@ -9,7 +9,7 @@ import ts from "typescript";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { parseRunFile } from "../shared/daemon-discovery";
 import { createDesktopQuitController } from "./desktop-quit";
-import { requestDesktopShutdown } from "./desktop-shutdown";
+import { DesktopShutdownTimeout, requestDesktopShutdown } from "./desktop-shutdown";
 import { ProtectedSideShutdownRefusal, showProtectedSideShutdownRefusal } from "./protected-side-quit";
 import { showUpdateFailure } from "./update-failure";
 
@@ -65,7 +65,7 @@ function setup() {
 	const context = vm.createContext({
 		app, nativeAutoUpdater, desktopQuit, dialog, focusMainWindow, queueMicrotask, AbortSignal, fetch, path,
 		console: { error: vi.fn() }, process: { platform: "win32" },
-		requestDesktopShutdown, parseRunFile, showUpdateFailure, showProtectedSideShutdownRefusal, ProtectedSideShutdownRefusal,
+		DesktopShutdownTimeout, requestDesktopShutdown, parseRunFile, showUpdateFailure, showProtectedSideShutdownRefusal, ProtectedSideShutdownRefusal,
 		setUpdateShutdownAdmission: registerAdmission, setUpdateRestartFailureHandler: registerFailure,
 		isUpdateRestartRequested: () => updateRestartRequested, didUpdateHandoffFail: () => handoffFailed,
 		clearUpdateRestartRequest: () => { updateRestartRequested = false; },
@@ -99,7 +99,10 @@ function setup() {
 }
 
 beforeEach(() => vi.useFakeTimers());
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+	vi.restoreAllMocks();
+	vi.useRealTimers();
+});
 
 it.each(["restart button", "ordinary Quit"] as const)("blocks the Windows installer's queued Quit after spawn fails and allows a new %s", async (action) => {
 	const h = setup();
@@ -134,4 +137,76 @@ it.each(["restart button", "ordinary Quit"] as const)("blocks the Windows instal
 	expect(h.exit).toHaveBeenCalledOnce();
 	expect(h.app.relaunch).toHaveBeenCalledTimes(action === "restart button" ? 1 : 0);
 	expect(h.fetch).toHaveBeenCalledOnce();
+});
+
+function useFakeShutdownDeadline() {
+	vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+		const deadline = new AbortController();
+		setTimeout(() => deadline.abort(new DOMException("Shutdown request timed out", "TimeoutError")), ms);
+		return deadline.signal;
+	});
+}
+
+function rejectOnAbort(signal: AbortSignal | null | undefined): Promise<never> {
+	return new Promise((_, reject) => {
+		signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+	});
+}
+
+it("waits past three seconds for a protected-side 409 and opens the global entry", async () => {
+	useFakeShutdownDeadline();
+	const h = setup();
+	h.dialog.showMessageBox.mockResolvedValue({ response: 0 });
+	h.fetch.mockImplementationOnce((_url, { signal }) => Promise.race([
+		rejectOnAbort(signal),
+		new Promise<Response>((resolve) => setTimeout(() => resolve(Response.json({
+			status: "shutdown_not_settled", reason: "protected_side", entry: "protected_side_chats",
+			protectedSide: { sideId: "held-side", reason: "scope_host_alive", orphan: false },
+		}, { status: 409 })), 4_000)),
+	]));
+	h.app.quit();
+	await vi.advanceTimersByTimeAsync(3_000);
+	expect(h.exit).not.toHaveBeenCalled();
+	expect(h.dialog.showMessageBox).not.toHaveBeenCalled();
+	await vi.advanceTimersByTimeAsync(1_000);
+	expect(h.exit).not.toHaveBeenCalled();
+	expect(h.dialog.showMessageBox).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+		buttons: ["開啟受保護 side", "留在 AO"],
+	}));
+	expect(h.openProtectedSides).toHaveBeenCalledOnce();
+	expect(h.dialog.showErrorBox).not.toHaveBeenCalled();
+});
+
+it.each(["headers", "409 body"] as const)("stays open and lets the user retry when shutdown times out waiting for %s", async (pending) => {
+	useFakeShutdownDeadline();
+	const h = setup();
+	h.fetch.mockImplementationOnce(async (_url, { signal }) => {
+		if (pending === "headers") return rejectOnAbort(signal);
+		const response = new Response(null, { status: 409 });
+		vi.spyOn(response, "json").mockImplementation(() => rejectOnAbort(signal));
+		return response;
+	});
+	h.app.quit();
+	await vi.advanceTimersByTimeAsync(10_000);
+	expect(h.exit).not.toHaveBeenCalled();
+	expect(h.dialog.showErrorBox).not.toHaveBeenCalled();
+	await vi.advanceTimersByTimeAsync(2_000);
+	expect(h.exit).not.toHaveBeenCalled();
+	expect(h.openProtectedSides).not.toHaveBeenCalled();
+	expect(h.dialog.showErrorBox).toHaveBeenCalledExactlyOnceWith("Could not quit Orchestrator", expect.stringContaining("Try quitting again."));
+	expect(h.focusMainWindow).toHaveBeenCalledOnce();
+	h.app.quit();
+	await vi.advanceTimersByTimeAsync(0);
+	expect(h.fetch).toHaveBeenCalledTimes(2);
+	expect(h.exit).toHaveBeenCalledOnce();
+});
+
+it("keeps an ordinary 409 on the existing Quit path without a protected-side prompt", async () => {
+	const h = setup();
+	h.fetch.mockResolvedValueOnce(Response.json({ status: "shutdown_not_settled", blockedSession: "worker" }, { status: 409 }));
+	h.app.quit();
+	await vi.advanceTimersByTimeAsync(0);
+	expect(h.exit).toHaveBeenCalledOnce();
+	expect(h.dialog.showMessageBox).not.toHaveBeenCalled();
+	expect(h.dialog.showErrorBox).not.toHaveBeenCalled();
 });
