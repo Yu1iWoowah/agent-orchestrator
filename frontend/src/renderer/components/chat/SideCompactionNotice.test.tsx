@@ -52,9 +52,12 @@ it("does not present a pending result as historical unknown", () => {
 	expect(screen.getByText("Compaction result not yet known (preserved)")).toBeVisible();
 });
 
-it.each(["deleted", "TUI", "ended", "new-launch-parent-present"])("finds and closes protected side with %s parent, even with side features off", async (parent) => {
+it.each([
+	{ parentState: "orphan", orphan: true },
+	{ parentState: "parent present", orphan: false },
+])("finds and closes a protected side ($parentState), even with side features off", async ({ orphan }) => {
 	useUiStore.setState({ developerMode: false, sideChats: false });
-	const side = { sideId: "old-side", sessionId: "old-parent", provider: "codex", state: "unknown", historical: true, orphan: parent !== "new-launch-parent-present", protection };
+	const side = { sideId: "old-side", sessionId: "old-parent", provider: "codex", state: "unknown", historical: true, orphan, protection };
 	get.mockResolvedValue({ data: { sides: [side] } });
 	remove.mockImplementation(async () => { get.mockResolvedValue({ data: { sides: [] } }); return {}; });
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
