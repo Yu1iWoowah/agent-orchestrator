@@ -38,6 +38,25 @@ function Panel({ showId }: { showId?: string } = {}) { const chat = useIndepende
 async function setup() { const hook = renderHook(() => useIndependentSideChats("session", [], [], async () => [], false)); await waitFor(() => expect(hook.result.current.activeId).toBe("side")); await waitFor(() => expect(getState).toHaveBeenCalled()); return hook; }
 async function deleteFromPanel(name = "Side") { await userEvent.click(screen.getByRole("button", { name: `Close ${name}` })); await userEvent.click(screen.getByRole("button", { name: "Delete" })); }
 
+it("renders the protected snapshot and closes it through the desktop confirmation", async () => {
+ const normal = get.getMockImplementation()!;
+ get.mockImplementation((path: string, options: unknown) => {
+  if (!path.endsWith("/{sideId}")) return normal(path, options);
+  const data = snapshot();
+  return { data: { snapshot: { ...data, side: { ...data.side, protection: {
+   result: "unknown", historical: true, closed: false, isolated: true, shutdownBlocked: true, reason: "codex_full_access",
+  } } } } };
+ });
+ render(<Panel />);
+ expect(await screen.findByText("Currently blocks shutdown and updates.")).toBeVisible();
+ await userEvent.click(screen.getByRole("button", { name: /^Close side$/ }));
+ expect(requestClose).not.toHaveBeenCalled();
+ await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+ await screen.findByText("No side chat opened.");
+ expect(requestClose).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sideId: "side", sessionId: "session" }));
+ expect(remove).not.toHaveBeenCalled();
+});
+
 it("keeps a confirmed shutdown removed across remount after a lost IPC reply", async () => {
  const hook = await setup();
  requestClose.mockImplementationOnce(async (request: SideCloseRequest) => { state = summary([entry("closed", 2, "side", request.requestId)], 2); throw new Error("IPC reply lost after main accepted shutdown"); });

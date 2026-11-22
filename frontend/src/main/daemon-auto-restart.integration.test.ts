@@ -8,6 +8,7 @@ import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { daemonExitWasUngraceful, planDaemonAutoRestart } from "./daemon-auto-restart";
 import { keepDaemonAlive } from "./daemon-owner";
+import { DesktopShutdownTimeout } from "./desktop-shutdown";
 import { createListenPortScanner, parseRunFile } from "../shared/daemon-discovery";
 import { browserDaemonOwnershipDecision, browserRuntimeRecoveryDecision, keepAliveForReplacement, portHolderPidToReplace, shouldReplaceDaemonForStartup } from "../shared/daemon-takeover";
 
@@ -20,7 +21,12 @@ const functions = new Set([
 const controllerSource = source.statements.filter((node) => {
 	if (ts.isFunctionDeclaration(node)) return functions.has(node.name?.text ?? "");
 	if (ts.isVariableStatement(node)) return node.declarationList.declarations.every((declaration) =>
-		ts.isIdentifier(declaration.name) && (/^daemon/.test(declaration.name.text) || declaration.name.text === "forceReplaceAdoptedRequested"));
+		ts.isIdentifier(declaration.name) && (
+			/^daemon/.test(declaration.name.text) ||
+			declaration.name.text === "forceReplaceAdoptedRequested" ||
+			declaration.name.text === "updateShutdownInFlight" ||
+			declaration.name.text === "updateQuitAfterFailedHandoff"
+		));
 	if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) return false;
 	const call = node.expression;
 	const target = call.expression.getText(source);
@@ -93,7 +99,7 @@ function setup() {
 		planDaemonAutoRestart, daemonExitWasUngraceful, disposeBrowserRuntimeLink: vi.fn(), captureSideChatState: async () => undefined,
 		desktopQuit: { handleBeforeQuit: () => false }, chatDraftRisks: [], browserCleanupComplete: true,
 		disposeBrowserStreamLink: vi.fn(), trayLifecycle: { dispose: vi.fn() },
-		agentQuitCleanupComplete: false, agentQuitCleanupPromise: null, shutdownDaemonForDesktopQuit: async () => undefined,
+		agentQuitCleanupComplete: false, agentQuitCleanupPromise: null, DesktopShutdownTimeout, shutdownDaemonForDesktopQuit: async () => undefined,
 	});
 	vm.runInContext(`${controller}\nfunction setDaemonStatus(status) { daemonStatus = status; }`, context);
 	return {

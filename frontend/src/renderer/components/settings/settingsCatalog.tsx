@@ -1,6 +1,7 @@
+import { ProtectedSides } from "../ProtectedSides";
 import { AppDiagnosticsSettings } from "./AppDiagnosticsSettings";
 import { BrowserIcon, type AppIcon } from "../icons";
-import { Activity, BadgeCheck, Bot, CircleHelp, CreditCard, Keyboard, MousePointerClick, RefreshCw, Server, Settings2, Smartphone, Users } from "@/components/app-icons";
+import { Activity, BadgeCheck, Bot, CircleHelp, CreditCard, Keyboard, MousePointerClick, RefreshCw, Server, Settings2, ShieldCheck, Smartphone, Users } from "@/components/app-icons";
 import { lazy, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import type { GlobalSettingsSection, HarnessDiagnosticsRequest } from "../../stores/ui-store";
@@ -96,6 +97,13 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		icon: Settings2,
 		label: (t) => t("settings.general"),
 		render: (_t, titleHidden) => <GeneralSettingsSection titleHidden={titleHidden} />,
+	},
+	{
+		id: "protectedSides",
+		pageOnly: true,
+		icon: ShieldCheck,
+		label: (t) => t("protectedSides.title"),
+		render: (_t, titleHidden) => <ProtectedSides titleHidden={titleHidden} />,
 	},
 	{
 		id: "harness",

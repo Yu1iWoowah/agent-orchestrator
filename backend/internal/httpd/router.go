@@ -175,6 +175,7 @@ func mountControl(r chi.Router, deps ControlDeps) {
 				body := map[string]any{"status": "shutdown_not_settled", "service": daemonmeta.ServiceName}
 				var side *ports.ChatShutdownSideError
 				if errors.As(err, &side) {
+					body["reason"] = "protected_side"
 					body["protectedSide"], body["entry"] = side, "protected_side_chats"
 				}
 				// Name what blocked shutdown (session and fixed reason code only).

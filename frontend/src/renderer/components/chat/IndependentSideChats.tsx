@@ -1,3 +1,4 @@
+import { SideCompactionNotice } from "./SideCompactionNotice";
 import { excerptSizeError, fitExcerptContext, LOCAL_CHAT_MESSAGE_BYTES } from "../../../shared/chat-excerpt";
 import { upgradeExcerpt } from "../../lib/chat-excerpt-snapshot";
 import { useChatDraftTranslation } from "../../lib/chat-draft-messages";
@@ -1535,6 +1536,12 @@ export function useIndependentSideChats(
 		), () => { void refreshList(); });
 	};
 
+	function confirmSideClose(sideId: string) {
+		if (isClosing(sideId) || closeStatus(closeProjection.current, sideId) === "cleanup_pending") return;
+		setFocusKey(0);
+		setConfirmClose({ id: crypto.randomUUID(), sideId, requestId: crypto.randomUUID(), scope: creationScopeRef.current });
+	}
+
 	const tabBar = enabled ? (
 		<header ref={tabRowRef} tabIndex={-1} className="browser-panel__tab-row side-chat__tab-row">
 			<div className="browser-panel__tab-bar">
@@ -1553,11 +1560,7 @@ export function useIndependentSideChats(
 							const closingTab = isClosing(side.id);
 							const closeDisabled = renaming || closingTab || closeStatus(closeProjection.current, side.id) === "cleanup_pending";
 							const label = side.label?.trim() || t("sideChat.defaultLabel");
-							const requestClose = () => {
-								if (isClosing(side.id) || closeStatus(closeProjection.current, side.id) === "cleanup_pending") return;
-								setFocusKey(0);
-								setConfirmClose({ id: crypto.randomUUID(), sideId: side.id, requestId: crypto.randomUUID(), scope: creationScopeRef.current });
-							};
+							const requestClose = () => confirmSideClose(side.id);
 							const frame = (
 								<TerminalTabFrame
 									action={
@@ -1819,6 +1822,11 @@ export function useIndependentSideChats(
 								</div>
 							</div>
 						) : null}
+						{snapshot.side.protection ? (
+							<div className="px-4 py-2">
+								<SideCompactionNotice protection={snapshot.side.protection} onClose={() => confirmSideClose(activeId)} busy={readOnly} />
+							</div>
+						) : null}
 						{!readOnly && snapshot.side.state === "failed" && snapshot.side.recreateRequired ? (
 							<Button
 								type="button"
@@ -1884,7 +1892,7 @@ export function useIndependentSideChats(
 								}
 							}}
 							files={[]}
-							ready={snapshot.side.state === "ready"}
+							ready={snapshot.side.state === "ready" && !snapshot.side.protection?.isolated}
 							deliveryPending={Boolean(drafts[activeId]?.pendingDelivery || drafts[activeId]?.pendingCommand)}
 							skills={skills}
 							focusKey={focusKey}

@@ -10601,6 +10601,7 @@ export interface components {
         ProtectedSide: {
             historical: boolean;
             orphan: boolean;
+            protection: components["schemas"]["SideProtection"];
             provider: string;
             sessionId: string;
             sideId: string;
@@ -12250,6 +12251,7 @@ export interface components {
             mainConversationId: string;
             manualLabel?: boolean;
             model?: string;
+            protection?: components["schemas"]["SideProtection"];
             recreateRequired?: boolean;
             selectedText?: string;
             sessionId: string;
@@ -12297,6 +12299,14 @@ export interface components {
             turnId: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        SideProtection: {
+            closed: boolean;
+            historical: boolean;
+            isolated: boolean;
+            reason: string;
+            result: string;
+            shutdownBlocked: boolean;
         };
         SideQuestionResponse: {
             turn: components["schemas"]["SideTurn"];

@@ -16,14 +16,14 @@ describe("desktop daemon shutdown", () => {
 	it("requests agent shutdown for full desktop exit", async () => {
 		const options = setup();
 		expect(await requestDesktopShutdown(options)).toBe(true);
-		expect(options.requestShutdown).toHaveBeenCalledWith(3002, { stopAgents: true, appRunId: "run-1" });
+		expect(options.requestShutdown).toHaveBeenCalledWith(3002, { stopAgents: true, appRunId: "run-1" }, expect.any(AbortSignal));
 	});
 
 	it("preserves agents for a planned update or relaunch", async () => {
 		const options = setup();
 		options.preserveAgents.mockReturnValue(true);
 		expect(await requestDesktopShutdown(options)).toBe(true);
-		expect(options.requestShutdown).toHaveBeenCalledWith(3002, { stopAgents: false, appRunId: "run-1" });
+		expect(options.requestShutdown).toHaveBeenCalledWith(3002, { stopAgents: false, appRunId: "run-1" }, expect.any(AbortSignal));
 	});
 
 	it("leaves keep-alive daemons alone", async () => {
@@ -52,7 +52,7 @@ describe("desktop daemon shutdown", () => {
 		const options = setup();
 		options.status.pid = 456;
 		expect(await requestDesktopShutdown(options)).toBe(true);
-		expect(options.requestShutdown).toHaveBeenCalledWith(3002, { stopAgents: true, appRunId: "run-1" });
+		expect(options.requestShutdown).toHaveBeenCalledWith(3002, { stopAgents: true, appRunId: "run-1" }, expect.any(AbortSignal));
 	});
 
 	it("does not accept a failed shutdown request", async () => {
@@ -72,4 +72,37 @@ describe("desktop daemon shutdown", () => {
 			}),
 		})).rejects.toThrow(/delivery_unverified.*worker-1/);
 	});
+});
+
+it("reports a protected side on the same owner-checked path used by desktop Quit and update", async () => {
+	const options = setup();
+	options.preserveAgents.mockReturnValue(true);
+	const requestShutdown = vi.fn(async () => ({
+		ok: false, status: 409, json: async () => ({
+			status: "shutdown_not_settled", reason: "protected_side", entry: "protected_side_chats",
+			protectedSide: { sideId: "old-side", reason: "scope_host_alive", orphan: true },
+		}),
+	}));
+	await expect(requestDesktopShutdown({ ...options, requestShutdown })).rejects.toMatchObject({
+		sideId: "old-side", reason: "scope_host_alive", orphan: true,
+	});
+	expect(requestShutdown).toHaveBeenCalledExactlyOnceWith(3002, { stopAgents: false, appRunId: "run-1" }, expect.any(AbortSignal));
+});
+
+it("leaves the daemon running if the update is canceled while reading the owner", async () => {
+	const options = setup();
+	const attempt = new AbortController();
+	const result = requestDesktopShutdown({ ...options, update: { signal: attempt.signal, confirmDrafts: () => true } });
+	attempt.abort();
+	await expect(result).rejects.toMatchObject({ name: "AbortError" });
+	expect(options.requestShutdown).not.toHaveBeenCalled();
+});
+
+it("leaves the daemon running and avoids the owner lookup when the user keeps the drafts", async () => {
+	const options = setup();
+	const update = { signal: new AbortController().signal, confirmDrafts: vi.fn(() => false) };
+	await expect(requestDesktopShutdown({ ...options, update })).rejects.toThrow("Update restart canceled.");
+	expect(update.confirmDrafts).toHaveBeenCalledOnce();
+	expect(options.readRunInfo).not.toHaveBeenCalled();
+	expect(options.requestShutdown).not.toHaveBeenCalled();
 });

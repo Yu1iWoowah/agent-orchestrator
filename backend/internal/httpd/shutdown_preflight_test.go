@@ -106,7 +106,7 @@ func TestShutdownReportsProtectedSideReasonAndEntry(t *testing.T) {
 	req.RemoteAddr = "127.0.0.1:1234"
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, req)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"sideId":"side-1"`) || !strings.Contains(response.Body.String(), `"reason":"scope_host_alive"`) || !strings.Contains(response.Body.String(), `"entry":"protected_side_chats"`) {
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"sideId":"side-1"`) || !strings.Contains(response.Body.String(), `"reason":"scope_host_alive"`) || !strings.Contains(response.Body.String(), `"reason":"protected_side"`) || !strings.Contains(response.Body.String(), `"entry":"protected_side_chats"`) {
 		t.Fatalf("%d %s", response.Code, response.Body.String())
 	}
 }

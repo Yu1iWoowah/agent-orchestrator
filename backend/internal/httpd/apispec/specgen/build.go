@@ -493,6 +493,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ChatSideRecoveryRecord":                               "SideRecoveryRecord",
 	"ChatSideRecoveryTurn":                                 "SideRecoveryTurn",
 	"DomainSideConversation":                               "SideConversation",
+	"DomainSideProtection":                                 "SideProtection",
 	"DomainSideTurn":                                       "SideTurn",
 	"DomainSideContent":                                    "SideContent",
 	"DomainSideMessage":                                    "SideMessage",
