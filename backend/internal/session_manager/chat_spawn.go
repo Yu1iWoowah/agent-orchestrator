@@ -416,8 +416,8 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	return m.getRecord(ctx, id)
 }
 
-// aoMCPServers is the tool server every chat session gets: `ao mcp` from the
-// daemon's own binary, which gives the agent the html_preview and html_render
+// aoMCPServers prepares the chat tool server using the daemon's executable.
+// The resulting `ao mcp` server gives the agent the html_preview and html_render
 // tools, and the computer-use tools while "Let agents use this computer" is
 // on, read like the system prompt when the chat starts or restores. Chat
 // Service keeps it for every later start and resume of the session (edit,
@@ -445,9 +445,8 @@ func (m *Manager) aoMCPServers(ctx context.Context, harness domain.AgentHarness,
 	if m.computerUseEnabled(ctx) {
 		serverEnv[envComputerUse] = "1"
 	}
-	command, args := mcpServerCommand(executable)
 	return []ports.ChatMCPServerConfig{{
-		Name: "ao", Type: "stdio", Command: command, Args: args, Env: serverEnv,
+		Name: "ao", Type: "stdio", Command: executable, Env: serverEnv,
 	}}
 }
 
@@ -949,15 +948,20 @@ func (m *Manager) restoredWorkspaceProjectDirectories(
 
 func (m *Manager) chatMCPServers(ctx context.Context, harness domain.AgentHarness, kind domain.SessionKind, id domain.SessionID, project domain.ProjectID, env map[string]string) []ports.ChatMCPServerConfig {
 	servers := m.aoMCPServers(ctx, harness, env)
-	if len(servers) == 0 || (kind != domain.KindWorker && kind != domain.KindOrchestrator) || (harness != domain.HarnessCodex && harness != domain.HarnessClaudeCode) {
+	if len(servers) == 0 {
+		return servers
+	}
+	// HCG needs the daemon CLI even when ao-mcp serves the main chat tools.
+	hcg := servers[0]
+	servers[0].Command, servers[0].Args = mcpServerCommand(hcg.Command)
+	if (kind != domain.KindWorker && kind != domain.KindOrchestrator) || (harness != domain.HarnessCodex && harness != domain.HarnessClaudeCode) {
 		return servers
 	}
 	resolver := m.hcgDelegation
 	if resolver == nil || !resolver.DelegationMountRequested(ports.HCGDelegationMount{SessionID: id, ProjectID: project, Kind: kind, Harness: harness, Mode: domain.SessionModeChat, DataRoot: m.dataDir}) {
 		return servers
 	}
-	server := servers[0]
-	server.Name = "hcg"
-	server.Args = []string{"usage", "delegation", "mcp"}
-	return append(servers, server)
+	hcg.Name = "hcg"
+	hcg.Args = []string{"usage", "delegation", "mcp"}
+	return append(servers, hcg)
 }
