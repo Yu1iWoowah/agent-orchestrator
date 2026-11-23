@@ -34,11 +34,11 @@ cd "$AO_DATA_DIR/artifacts/$AO_SESSION_ID/handoff" && \
 新主控依序做下面四步。任何一步失敗，就向使用者回報失敗的步驟並停止。
 
 1. 用 `cp -a --update=none` 把舊主控 artifact 複製到自己的 artifact。
-2. 用 `ao session settings` 讀 provider 回報的 model、effort 與帳號，用 `ao session get --json` 讀 harness；只比對腳本明確傳入的值，未傳入的不比對。
-3. 讀交接文件，向使用者回報接手與四個實際值；再以自己的身分寫含這四個值的 `handoff/receipt-<舊>-<新>.md`（`--expected-hash missing`）。寫入成功就表示已拿到共用資料夾的 lease。
+2. 記錄設定：harness 取 `ao session get --json` 的 `session.harness`；帳號、model、effort 依新主控看得到的來源照實記錄，讀不到的記 `UNKNOWN`。腳本傳入值只供記錄。這一步不比對，也不因此停（`ao session settings` 不能讀呼叫者自己，使用者 2026-11-23 manual-handoff-settings-1＝record）。
+3. 讀交接文件，向使用者回報接手、四個記下的值與腳本傳入值；再以自己的身分寫含這些值的 `handoff/receipt-<舊>-<新>.md`（`--expected-hash missing`）。寫入成功就表示已拿到共用資料夾的 lease。
 4. 依交接文件親自通知存活 worker。
 
-複製與核對由新主控自己做，所以不必等腳本放行。腳本只負責 kill 與 spawn，換手過程沒有固定等待，也沒有輪詢。
+複製與記錄由新主控自己做，所以不必等腳本放行。腳本只負責 kill 與 spawn，換手過程沒有固定等待，也沒有輪詢。
 
 ## 失敗時
 

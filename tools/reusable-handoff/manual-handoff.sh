@@ -33,8 +33,8 @@ AO=(env -u AO_SESSION_ID -u AO_PROJECT_ID ao)
 PROMPT=$(cat <<EOF
 你是接手 $OLD 的新主控（手動換主控）。依序做下面四步；任何一步失敗，就向使用者回報失敗的步驟與錯誤並停止，不重試、不做後面的步驟。
 1. 複製舊主控 artifact：cp -a --update=none "$DATA/artifacts/$OLD/." "$DATA/artifacts/\$AO_SESSION_ID/"。
-2. 核設定：用 ao session settings "\$AO_SESSION_ID"（Effective 的 model、effort、owner.accountId）與 ao session get "\$AO_SESSION_ID" --json（harness）讀實際的 harness、帳號、model、effort。腳本明確傳入的值：${APPROVED[*]:-（無）}；實際值須與這些一致，未傳入的項目不比對。
-3. 用 ao project documents read handoff/orchestrator-handoff.md --project $PROJECT 讀交接文件，向使用者回報接手、現況與步驟 2 讀到的四個實際值；再寫含這四個實際值的接手收據 handoff/receipt-$OLD-<你的 session id>.md（ao project documents write … --project $PROJECT --expected-hash missing）。寫入成功即代表你持有共用資料夾 lease，寫入被拒算失敗。
+2. 記錄設定：harness 取 ao session get "\$AO_SESSION_ID" --json 的 session.harness；帳號、model、effort 依你看得到的來源照實記錄。讀不到的記 UNKNOWN。腳本傳入值：${APPROVED[*]:-（無）}，只供記錄。這一步不比對，也不因此停。
+3. 用 ao project documents read handoff/orchestrator-handoff.md --project $PROJECT 讀交接文件，向使用者回報接手、現況、步驟 2 記下的四個值與腳本傳入值；再寫含這些值的接手收據 handoff/receipt-$OLD-<你的 session id>.md（ao project documents write … --project $PROJECT --expected-hash missing）。寫入成功即代表你持有共用資料夾 lease，寫入被拒算失敗。
 4. 依交接文件，以你自己的身分向存活 worker 送 FYI，告知你已接手。
 EOF
 )
