@@ -31,11 +31,11 @@ cd "$AO_DATA_DIR/artifacts/$AO_SESSION_ID/handoff" && \
 
 ## 新主控的初始 prompt
 
-新主控依序做下面四步（前三步依使用者 2026-11-23 manual-handoff-trim-1＝three；第 4 步依使用者 2026-11-23 補換手缺口的指示）。任何一步失敗，就向使用者回報失敗的步驟與錯誤。
+新主控依序做下面四步（前三步依使用者 2026-11-23 manual-handoff-trim-1＝three；第 4 步依使用者 2026-11-23 補換手缺口的指示）。任何一步失敗就停下，回報失敗的步驟與錯誤，不做後面的步驟。
 
 1. 用 `cp -a` 把舊主控 artifact 複製到自己的 artifact。
 2. 用 `ao project documents read … --json` 讀交接文件，向使用者回報已接手與現況；以回應的 `.file.content` 擬草稿，把 §A 更新為由自己接手，再以自己的身分用 `ao project documents write handoff/orchestrator-handoff.md --file <草稿> --project <專案> --expected-hash <.file.hash>` 寫回。寫入成功就表示已拿到共用資料夾的 lease；被拒就回報使用者。
-3. 依交接文件親自通知存活 worker；舊主控讓其暫停的 worker，一併告知恢復原工作。
+3. 依交接文件親自通知存活 worker；因本次換手而暫停的 worker，一併告知恢復原工作。
 4. 同一回合依交接文件 §A 執行使用者已核准的新主控待辦，不等與其無關的題目。
 
 複製由新主控自己做，所以不必等腳本放行。腳本只負責 kill 與 spawn，換手過程沒有固定等待，也沒有輪詢。
