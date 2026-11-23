@@ -53,6 +53,8 @@ type LaunchConfig struct {
 	// a binding can migrate provider-side history into a fresh process home.
 	// Empty on first start.
 	ProviderConversationID string
+	// MCPServers are the AO-supplied servers sent with the session request.
+	MCPServers []acpsdk.McpServer
 }
 
 // Config binds one harness to an ACP agent implementation.
@@ -543,6 +545,7 @@ func (d *Driver) openNewSession(
 ) error {
 	meta := map[string]any(nil)
 	if d.cfg.SessionMeta != nil {
+		launchCfg.MCPServers = mcpServers
 		meta = d.cfg.SessionMeta(launchCfg)
 	}
 	openCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
@@ -755,6 +758,7 @@ func (d *Driver) resumeSession(
 	defer cancel()
 	meta := map[string]any(nil)
 	if d.cfg.SessionMeta != nil {
+		launchCfg.MCPServers = mcpServers
 		meta = d.cfg.SessionMeta(launchCfg)
 	}
 	var configOptions []acpsdk.SessionConfigOption

@@ -77,6 +77,7 @@ func (d *Driver) ForkIntoHost(ctx context.Context, sourceID, lastTurnID string, 
 	}
 	meta := map[string]any(nil)
 	if d.cfg.SessionMeta != nil {
+		launchCfg.MCPServers = mcpServers
 		meta = d.cfg.SessionMeta(launchCfg)
 	}
 	operationCtx := ctx
