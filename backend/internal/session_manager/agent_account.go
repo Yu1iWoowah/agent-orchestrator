@@ -217,8 +217,6 @@ func (m *Manager) AccountLoginUsageOwners(ctx context.Context, id string) ([]dom
 				owner.Blocking = true
 				continue
 			}
-		} else if mode == domain.SessionModeTUI && rec.Metadata.RuntimeLaunchID == "" && rec.NeedsImportResume() {
-			owner.Blocking = false
 		}
 		if mode != domain.SessionModeChat || m.chat == nil {
 			continue
@@ -233,9 +231,9 @@ func (m *Manager) AccountLoginUsageOwners(ctx context.Context, id string) ([]dom
 				// A previous controller can leave a provider behind after host
 				// records are removed. Only a binding with no controller facts
 				// or an explicit exit for the recorded generation can clear it.
-				bindingOnly := rec.Metadata.ControllerGeneration == "" &&
-					(rec.Metadata.ProviderConversationID == "" || rec.NeedsImportResume())
-				if bindingOnly || rec.ChatExplicitlyExited() {
+				// A pending import can start before its controller facts commit.
+				bindingOnly := rec.Metadata.ControllerGeneration == "" && rec.Metadata.ProviderConversationID == ""
+				if !rec.NeedsImportResume() && (bindingOnly || rec.ChatExplicitlyExited()) {
 					owner.Blocking = false
 				}
 			case persistenthost.ProviderOwnershipPreviousBoot:
