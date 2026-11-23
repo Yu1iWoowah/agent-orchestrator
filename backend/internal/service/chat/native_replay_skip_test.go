@@ -68,8 +68,10 @@ func newReplayImportHarness(t *testing.T, events []ports.ChatEvent) *replayImpor
 			}
 			return chatsvc.ConversationRows{Conversation: rows.Conversation, Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities}, nil
 		}),
-		Drivers: fakeRegistry{driver: fakeDriver{conv: h.conv}},
-		Log:     slog.New(slog.NewTextHandler(syncWriter{&h.logs, h.log}, nil)),
+		Drivers: fakeRegistry{driver: fakeDriver{conv: h.conv,
+			start:  func(ports.ChatStartConfig) (ports.ChatConversation, error) { return h.conv, nil },
+			resume: func(ports.ChatResumeConfig) (ports.ChatConversation, error) { return h.conv, nil }}},
+		Log: slog.New(slog.NewTextHandler(syncWriter{&h.logs, h.log}, nil)),
 		NewID: func() string {
 			idMu.Lock()
 			defer idMu.Unlock()
@@ -98,8 +100,9 @@ func (h *replayImportHarness) resume(t *testing.T) (*chatsvc.Controller, string)
 	h.logs.Lock()
 	h.log.Reset()
 	h.logs.Unlock()
-	// Every resume or wake attaches a fresh provider connection.
-	h.conv.fakeConversation = newFakeConversation()
+	// Every resume or wake attaches a fresh provider connection. A stopped
+	// controller's delivery monitor may still read the previous one.
+	h.conv = &nativeHistoryConversation{fakeConversation: newFakeConversation(), events: h.conv.events}
 	ctrl, err := h.svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessClaudeCode,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryImport,

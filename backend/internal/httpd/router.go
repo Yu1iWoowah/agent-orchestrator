@@ -474,25 +474,6 @@ func localControlRequest(r *http.Request) bool {
 	return false
 }
 
-func mountHCGReporting(r chi.Router, svc controllers.HCGReportingService) {
-	r.Group(func(r chi.Router) {
-		r.Use(func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-				if !localControlRequest(req) {
-					envelope.WriteAPIError(w, req, http.StatusForbidden, "forbidden", "LOCAL_CONTROL_REQUIRED", "Native loopback access is required.", nil)
-					return
-				}
-				if svc == nil {
-					envelope.WriteAPIError(w, req, http.StatusNotImplemented, "not_implemented", "HCG_REPORTING_UNAVAILABLE", "Fixed reporting is unavailable.", nil)
-					return
-				}
-				next.ServeHTTP(w, req)
-			})
-		})
-		controllers.HCGReportingController{Svc: svc}.Register(r)
-	})
-}
-
 func mountHCGDelegation(r chi.Router, svc controllers.HCGDelegationService) {
 	r.Group(func(r chi.Router) {
 		r.Use(func(next http.Handler) http.Handler {

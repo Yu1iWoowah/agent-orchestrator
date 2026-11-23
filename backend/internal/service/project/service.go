@@ -92,7 +92,6 @@ type Service struct {
 	logger          *slog.Logger
 	withProjectGate func(context.Context, domain.ProjectID, func(context.Context) error) error
 
-	reportingPolicyChanged  func(domain.ProjectID, domain.HCGReportingPolicySnapshot)
 	delegationPolicyChanged func(domain.ProjectID, domain.HCGDelegationPolicySnapshot)
 	milestones              ports.InstallMilestones
 	githubRepos             ports.GitHubRepositoryResolver
@@ -127,8 +126,6 @@ type Deps struct {
 	Logger          *slog.Logger
 	WithProjectGate func(context.Context, domain.ProjectID, func(context.Context) error) error
 
-	// ReportingPolicyChanged cancels affected reports after durable policy changes.
-	ReportingPolicyChanged  func(domain.ProjectID, domain.HCGReportingPolicySnapshot)
 	DelegationPolicyChanged func(domain.ProjectID, domain.HCGDelegationPolicySnapshot)
 	// GitHubRepos resolves a github.com origin to its current owner/name so
 	// Get can report CanonicalRepo after a rename. Left nil, it is omitted.
@@ -155,7 +152,6 @@ func NewWithDeps(d Deps) *Service {
 		logger:          d.Logger,
 		withProjectGate: d.WithProjectGate,
 
-		reportingPolicyChanged:  d.ReportingPolicyChanged,
 		delegationPolicyChanged: d.DelegationPolicyChanged,
 		milestones:              d.Milestones,
 		githubRepos:             d.GitHubRepos,
@@ -956,9 +952,6 @@ func (m *Service) commitProjectRegistration(row domain.ProjectRecord, write func
 	if err := write(); err != nil {
 		return err
 	}
-	if m.reportingPolicyChanged != nil {
-		m.reportingPolicyChanged(domain.ProjectID(row.ID), row.Config.ReportingPolicySnapshot())
-	}
 	if m.delegationPolicyChanged != nil {
 		m.delegationPolicyChanged(domain.ProjectID(row.ID), row.Config.DelegationPolicySnapshot())
 	}
@@ -968,11 +961,6 @@ func (m *Service) commitProjectRegistration(row domain.ProjectRecord, write func
 func (m *Service) notifyReportingPolicyChanged(id domain.ProjectID, before, after domain.ProjectConfig) {
 	if m.delegationPolicyChanged != nil && !reflect.DeepEqual(before.DelegationPolicySnapshot(), after.DelegationPolicySnapshot()) {
 		m.delegationPolicyChanged(id, after.DelegationPolicySnapshot())
-	}
-	if m.reportingPolicyChanged != nil && !reflect.DeepEqual(
-		[]domain.HCGReportingConfig{before.HCGReporting, before.Worker.HCGReporting, before.Orchestrator.HCGReporting},
-		[]domain.HCGReportingConfig{after.HCGReporting, after.Worker.HCGReporting, after.Orchestrator.HCGReporting}) {
-		m.reportingPolicyChanged(id, after.ReportingPolicySnapshot())
 	}
 }
 

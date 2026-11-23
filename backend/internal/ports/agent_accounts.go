@@ -191,6 +191,18 @@ type ReviewerExecutionStore interface {
 	CreateReviewerAccountExecution(context.Context, string, string, domain.ResolvedAgentAccount, time.Time) (domain.Review, bool, error)
 }
 
+// ReviewerExecutionReplacer archives an idle current reviewer and installs its
+// fresh owner and binding in one transaction.
+type ReviewerExecutionReplacer interface {
+	ReplaceReviewerAccountExecution(context.Context, string, string, domain.ResolvedAgentAccount, time.Time) (domain.Review, bool, error)
+}
+
+// ReviewerAccountRebinder names the account a new pass moves to when the
+// reviewer's bound account can no longer be used.
+type ReviewerAccountRebinder interface {
+	ReviewerRebindTarget(context.Context, string, AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, bool, error)
+}
+
 // WorkerRoleAccountMismatchError carries only public launch selection identifiers.
 type WorkerRoleAccountMismatchError struct {
 	AccountID string

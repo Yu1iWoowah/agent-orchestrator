@@ -98,3 +98,11 @@ func (c HCGDelegationController) read(w http.ResponseWriter, r *http.Request) {
 	out, err := c.Svc.ReadDelegation(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")), reporting.DelegationRequest(in))
 	hcgWrite(w, r, HCGDelegationReadResponse(out), err)
 }
+
+func hcgWrite(w http.ResponseWriter, r *http.Request, result any, err error) {
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, result)
+}

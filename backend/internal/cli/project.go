@@ -86,7 +86,6 @@ type agentConfig struct {
 // roleOverride mirrors domain.RoleOverride.
 type roleOverride struct {
 	HCGDelegation hcgReportingConfig `json:"hcgDelegation,omitempty,omitzero"`
-	HCGReporting  hcgReportingConfig `json:"hcgReporting,omitempty,omitzero"`
 
 	AgentAccountID string      `json:"agentAccountId,omitempty"`
 	Agent          string      `json:"agent,omitempty"`
@@ -122,7 +121,6 @@ type orchestratorHandoffConfig struct {
 
 type projectConfig struct {
 	HCGDelegation         hcgDelegationConfig         `json:"hcgDelegation,omitempty,omitzero"`
-	HCGReporting          hcgReportingConfig          `json:"hcgReporting,omitempty,omitzero"`
 	GuardianObservability guardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`
 	AgentSettingsPolicy   *agentSettingsPolicy        `json:"agentSettingsPolicy,omitempty"`
 	OrchestratorHandoff   orchestratorHandoffConfig   `json:"orchestratorHandoff,omitempty,omitzero"`

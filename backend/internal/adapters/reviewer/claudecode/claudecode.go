@@ -142,7 +142,7 @@ func (r *Reviewer) freshSessionID(ctx context.Context, inv ports.ReviewInvocatio
 		return derived, nil
 	}
 	session := ports.SessionRef{ID: inv.ReviewerID, WorkspacePath: inv.WorkspacePath}
-	taken, err := probe.NativeConversationExists(ctx, session, derived, nil)
+	taken, err := probe.NativeConversationExists(ctx, session, derived, inv.Env)
 	if err != nil {
 		return "", err
 	}
@@ -234,7 +234,7 @@ func (r *Reviewer) restoreSessionID(ctx context.Context, inv ports.ReviewInvocat
 		// unconditionally, so probe that id here too rather than reporting a
 		// resume for a transcript that may never have been created.
 		fallbackID := workeragent.SessionUUID(inv.ReviewerID)
-		exists, err := probe.NativeConversationExists(ctx, session, fallbackID, nil)
+		exists, err := probe.NativeConversationExists(ctx, session, fallbackID, inv.Env)
 		if err != nil {
 			return "", false, err
 		}
@@ -243,7 +243,7 @@ func (r *Reviewer) restoreSessionID(ctx context.Context, inv ports.ReviewInvocat
 		}
 		return "", false, nil
 	}
-	exists, err := probe.NativeConversationExists(ctx, session, persistedID, nil)
+	exists, err := probe.NativeConversationExists(ctx, session, persistedID, inv.Env)
 	if err != nil {
 		return "", false, err
 	}
@@ -254,7 +254,7 @@ func (r *Reviewer) restoreSessionID(ctx context.Context, inv ports.ReviewInvocat
 		return "", false, nil
 	}
 	legacyID := workeragent.SessionUUID(persistedID)
-	exists, err = probe.NativeConversationExists(ctx, session, legacyID, nil)
+	exists, err = probe.NativeConversationExists(ctx, session, legacyID, inv.Env)
 	if err != nil {
 		return "", false, err
 	}

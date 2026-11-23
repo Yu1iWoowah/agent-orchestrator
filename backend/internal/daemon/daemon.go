@@ -991,7 +991,7 @@ func Run(buildVersion string) (retErr error) {
 	if githubRepos != nil {
 		sessionSvc.SetGitHubRepositoryResolver(githubRepos)
 	}
-	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Milestones: installMilestones(cfg), Logger: log, GitHubRepos: githubRepos, WithProjectGate: sessionSvc.WithOrchestratorProjectGate, ReportingPolicyChanged: hcgReporting.ProjectPolicyChanged, DelegationPolicyChanged: hcgReporting.DelegationProjectPolicyChanged})
+	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Milestones: installMilestones(cfg), Logger: log, GitHubRepos: githubRepos, WithProjectGate: sessionSvc.WithOrchestratorProjectGate, DelegationPolicyChanged: hcgReporting.DelegationProjectPolicyChanged})
 	go projectSvc.WarmCanonicalRepos(ctx)
 	reportSessions, ok := sessMgr.(reportSemanticSession)
 	if !ok {
@@ -1553,7 +1553,6 @@ func Run(buildVersion string) (retErr error) {
 		UsageLimitSetting:  store,
 		UsagePrices:        usagePrices(usagePricing),
 		UsageEvents:        usagesvc.NewEventsReader(store),
-		HCGReporting:       hcgReporting,
 		HCGDelegation:      hcgReporting,
 		SessionMemory:      memoryReader,
 		SessionSteps:       lcStack.LCM,

@@ -478,6 +478,11 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		if (hasConfigOverride || mode != "" && mode != reviewRow.InterfaceMode) && HasRunningRun(runs, harness) {
 			return TriggerResult{}, ports.ErrAgentSettingsConflict
 		}
+		if !HasRunningRun(runs, harness) {
+			if reviewRow, err = e.rebindReviewerAccount(ctx, worker, reviewRow, opts.AgentAccountID); err != nil {
+				return TriggerResult{}, err
+			}
+		}
 		ctx, err = e.reviewerAccountContext(ctx, worker, reviewRow, opts.AgentAccountID)
 		if err != nil {
 			return TriggerResult{}, err
