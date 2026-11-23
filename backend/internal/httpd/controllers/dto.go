@@ -67,15 +67,6 @@ type RCACompositionQuery struct {
 	Analyze   *bool  `query:"analyze,omitempty"`
 }
 
-// HCGReportingResponse contains effective policy without local paths.
-type HCGReportingResponse reporting.View
-
-// HCGEngineResponse reports fixed deployment availability without its executable path.
-type HCGEngineResponse reporting.EngineStatus
-
-// HCGReportResponse contains only safe external-analysis identity and numbers.
-type HCGReportResponse reporting.Snapshot
-
 // HCGEnabledRequest requires an explicit boolean; null is rejected.
 type HCGEnabledRequest struct {
 	Enabled *bool `json:"enabled" required:"true"`
@@ -84,18 +75,6 @@ type HCGEnabledRequest struct {
 // HCGStopResponse echoes the persisted reporting emergency-stop value.
 type HCGStopResponse struct {
 	Enabled bool `json:"enabled"`
-}
-
-// HCGEngineRequest registers one fixed, separately installed consumer.
-type HCGEngineRequest struct {
-	Engine          string `json:"engine" enum:"llm-usage-metrics"`
-	Executable      string `json:"executable"`
-	ExpectedVersion string `json:"expectedVersion" enum:"0.14.3"`
-}
-
-// HCGReportRequest selects the fixed consumer without changing policy.
-type HCGReportRequest struct {
-	Engine string `json:"engine" enum:"llm-usage-metrics"`
 }
 
 // ConversationFindParam identifies the chat whose retained text is searched.

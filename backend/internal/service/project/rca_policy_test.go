@@ -18,7 +18,7 @@ func TestRCAPolicyDurableAndIndependent(t *testing.T) {
 		t.Fatal(err)
 	}
 	on, off := true, false
-	rcaCalls, reportingCalls := 0, 0
+	rcaCalls := 0
 	notify := func(id domain.ProjectID, snapshot domain.RCAPolicySnapshot) {
 		rcaCalls++
 		p, ok, err := st.GetProject(t.Context(), string(id))
@@ -26,26 +26,19 @@ func TestRCAPolicyDurableAndIndependent(t *testing.T) {
 			t.Fatal("RCA notified before durable policy")
 		}
 	}
-	svc := project.NewWithDeps(project.Deps{Store: st, RCAPolicyChanged: notify, ReportingPolicyChanged: func(domain.ProjectID, domain.HCGReportingPolicySnapshot) { reportingCalls++ }})
+	svc := project.NewWithDeps(project.Deps{Store: st, RCAPolicyChanged: notify})
 	config := domain.ProjectConfig{RCA: domain.RCAConfig{Enabled: &on}}
 	if _, err := svc.SetConfig(t.Context(), "agent-orchestrator", project.SetConfigInput{Config: config}); err != nil {
 		t.Fatal(err)
 	}
-	if rcaCalls != 1 || reportingCalls != 0 {
-		t.Fatal("RCA changed reporting")
-	}
-	config.HCGReporting.Enabled = &on
-	if _, err := svc.SetConfig(t.Context(), "agent-orchestrator", project.SetConfigInput{Config: config}); err != nil {
-		t.Fatal(err)
-	}
-	if rcaCalls != 1 || reportingCalls != 1 {
-		t.Fatal("reporting changed RCA")
+	if rcaCalls != 1 {
+		t.Fatal("RCA not notified")
 	}
 	config.Worker.RCA.Enabled = &off
 	if _, err := svc.UpdateSettings(t.Context(), "agent-orchestrator", project.UpdateSettingsInput{DisplayName: "project", Config: config}); err != nil {
 		t.Fatal(err)
 	}
-	if rcaCalls != 2 || reportingCalls != 1 {
+	if rcaCalls != 2 {
 		t.Fatal("worker policy not independent")
 	}
 	if _, err := svc.PatchSettings(t.Context(), "agent-orchestrator", project.PatchSettingsInput{Config: map[string]any{"worker": map[string]any{"rca": map[string]any{"enabled": true}}}, Expected: map[string]any{"config": map[string]any{"worker": map[string]any{"rca": map[string]any{"enabled": false}}}}}); err != nil {
@@ -59,7 +52,7 @@ func TestRCAPolicyDurableAndIndependent(t *testing.T) {
 	if _, err := svc.SetConfig(t.Context(), "agent-orchestrator", project.SetConfigInput{Config: config}); err != nil {
 		t.Fatal(err)
 	}
-	if rcaCalls != 4 || reportingCalls != 1 {
+	if rcaCalls != 4 {
 		t.Fatal("orchestrator RCA policy did not independently notify")
 	}
 	failing := project.NewWithDeps(project.Deps{Store: failingProjectUpsertStore{st}, RCAPolicyChanged: notify})
