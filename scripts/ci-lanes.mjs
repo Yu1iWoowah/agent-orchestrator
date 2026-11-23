@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 const FRONTEND = /^(frontend\/(?!src\/docs\/|native\/)|packages\/(product-ui|shared|cloud-client)\/)/;
 
 export const LANES = {
-  go: [/^backend\//, /^cloud\//, /^components\/hcg\//, /^tools\/reusable-handoff\//, /^pricing\//, /^go\.work(\.sum)?$/, /^contracts\/session-start-interface\.json$/, /^frontend\/scripts\/prepare-cloudflared\.mjs$/, /^frontend\/src\/api\/schema\.ts$/, /^package(-lock)?\.json$/, /^\.github\/scripts\/go-test-parallel\.sh$/],
+  go: [/^backend\//, /^cloud\//, /^components\/hcg\//, /^pricing\//, /^go\.work(\.sum)?$/, /^contracts\/session-start-interface\.json$/, /^frontend\/scripts\/prepare-cloudflared\.mjs$/, /^frontend\/src\/api\/schema\.ts$/, /^package(-lock)?\.json$/, /^\.github\/scripts\/go-test-parallel\.sh$/],
   'cli-e2e': [/^backend\//, /^components\/hcg\//, /^test\/cli\//],
   frontend: [FRONTEND],
   docs: [/^frontend\/src\/docs\//],
