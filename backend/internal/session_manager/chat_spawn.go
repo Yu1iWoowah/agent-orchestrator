@@ -952,8 +952,8 @@ func (m *Manager) chatMCPServers(ctx context.Context, harness domain.AgentHarnes
 	if len(servers) == 0 || (kind != domain.KindWorker && kind != domain.KindOrchestrator) || (harness != domain.HarnessCodex && harness != domain.HarnessClaudeCode) {
 		return servers
 	}
-	resolver, ok := m.hcgReporting.(ports.HCGDelegationMountResolver)
-	if !ok || !resolver.DelegationMountRequested(ports.HCGDelegationMount{SessionID: id, ProjectID: project, Kind: kind, Harness: harness, Mode: domain.SessionModeChat, DataRoot: m.dataDir}) {
+	resolver := m.hcgDelegation
+	if resolver == nil || !resolver.DelegationMountRequested(ports.HCGDelegationMount{SessionID: id, ProjectID: project, Kind: kind, Harness: harness, Mode: domain.SessionModeChat, DataRoot: m.dataDir}) {
 		return servers
 	}
 	server := servers[0]

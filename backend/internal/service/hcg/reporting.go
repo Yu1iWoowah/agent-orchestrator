@@ -4,6 +4,7 @@ package hcg
 
 import (
 	"context"
+	"path/filepath"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -23,7 +24,7 @@ type Service struct {
 	delegation *reporting.DelegationConsumer
 	store      Store
 	root       string
-	metadata   *metadataObserver
+	sharedRoot func(context.Context, domain.ProjectID) (string, error)
 }
 
 // New builds the delegation service without a provider override.
@@ -31,8 +32,8 @@ func New(ctx context.Context, root string, store Store) *Service {
 	return NewWithDelegationProvider(ctx, root, store, nil, nil)
 }
 
-// NewWithDelegationProvider is a trusted constructor seam for the locked lab
-// owner and offline fixtures. Registration still requires an explicit run grant.
+// NewWithDelegationProvider is a trusted constructor seam for the locked owner
+// and offline fixtures.
 func NewWithDelegationProvider(ctx context.Context, root string, store Store, provider reporting.DelegationProvider, checkpoint func(context.Context, string)) *Service {
 	s := &Service{store: store, root: root}
 	if writer, ok := store.(interface {
@@ -42,23 +43,39 @@ func NewWithDelegationProvider(ctx context.Context, root string, store Store, pr
 		recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 5*time.Second)
 		// Failed projections retain their pending receipt and worst hold. Startup
 		// never retries the provider or changes native session/policy state.
-		if grant := s.delegation.LabGrant(); grant == nil || s.validateLabOwner(recoveryCtx, grant) == nil {
-			_ = s.delegation.RecoverDelegationReceipts(recoveryCtx)
-		}
+		_ = s.delegation.RecoverDelegationReceipts(recoveryCtx)
 		recoveryCancel()
+		if projects, err := store.ListProjects(ctx); err == nil {
+			for _, p := range projects {
+				s.delegation.ProjectPolicyChanged(p.ID, delegationPolicy(p.Config.DelegationPolicySnapshot()))
+			}
+		}
 	}
-	s.startMetadata(ctx)
 	return s
 }
 
-func (s *Service) identity(rec domain.SessionRecord) reporting.Identity {
-	idn := reporting.Identity{DataRoot: s.root, ProjectID: string(rec.ProjectID), SessionID: string(rec.ID), Role: string(rec.Kind), Mode: string(domain.NormalizeSessionMode(rec.Mode)), Harness: string(rec.Harness), Worktree: rec.Metadata.WorkspacePath, ArtifactDir: rec.Metadata.ArtifactDir, ControllerGeneration: rec.Metadata.ControllerGeneration}
-	if rec.Mode == domain.SessionModeChat {
-		idn.LaunchID, idn.NativeID = rec.Metadata.AgentSettingsLaunchID, rec.Metadata.ProviderConversationID
-	} else {
-		idn.LaunchID = rec.Metadata.RuntimeLaunchID
-		if rec.Metadata.AgentSessionIDLaunchID == idn.LaunchID && idn.LaunchID != "" {
-			idn.NativeID = rec.Metadata.AgentSessionID
+// Close stops in-flight delegated reads, never a native process.
+func (s *Service) Close() {
+	if s.delegation != nil {
+		s.delegation.Close()
+	}
+}
+
+// SetSharedRoot lets orchestrators also read the project's shared directory.
+func (s *Service) SetSharedRoot(resolve func(context.Context, domain.ProjectID) (string, error)) {
+	s.sharedRoot = resolve
+}
+
+// identity gives orchestrators two extra read-only roots: all session
+// artifacts under the data root and the project's shared directory.
+func (s *Service) identity(ctx context.Context, rec domain.SessionRecord) reporting.Identity {
+	idn := reporting.Identity{DataRoot: s.root, ProjectID: string(rec.ProjectID), SessionID: string(rec.ID), Role: string(rec.Kind), Mode: string(domain.NormalizeSessionMode(rec.Mode)), Harness: string(rec.Harness), Worktree: rec.Metadata.WorkspacePath}
+	if rec.Kind == domain.KindOrchestrator {
+		idn.ReadRoots = append(idn.ReadRoots, filepath.Join(s.root, "artifacts"))
+		if s.sharedRoot != nil {
+			if shared, err := s.sharedRoot(ctx, rec.ProjectID); err == nil {
+				idn.ReadRoots = append(idn.ReadRoots, shared)
+			}
 		}
 	}
 	return idn

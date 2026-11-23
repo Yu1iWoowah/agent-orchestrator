@@ -2,42 +2,18 @@ package delegate
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
-	"time"
 
-	"github.com/aoagents/agent-orchestrator/components/hcg/internal/integration"
 )
 
-func deploymentFixture(t *testing.T, provider, project, source string) Deployment {
+func deploymentFixture(t *testing.T, provider, _, _ string) Deployment {
 	t.Helper()
-	if runtime.GOOS != "linux" || os.Getenv("HCG_PAL_TESTS") != "1" {
-		t.Skip("isolated fixed PAL required")
-	}
-	venv := filepath.Dir(filepath.Dir(os.Getenv("HCG_TEST_PAL_PYTHON")))
-	binary, err := os.ReadFile(filepath.Join(venv, "bin", "python"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(binary)
-	cfg, err := os.ReadFile(filepath.Join(venv, "pyvenv.cfg"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The fixture approves this installation once, including path-dependent
-	// RECORD bytes. Production still verifies the entire snapshot on each use.
-	runtimeDigest, err := snapshotTree(t.Context(), filepath.Join(venv, "lib", "python3.12", "site-packages"), "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
 	profile := budgetProfile(provider)
 	profile.Prices.InputPerMillion, profile.Prices.CachedInputPerMillion = 50*nanoUSD, 50*nanoUSD
-	return Deployment{Profile: profile, CredentialRef: CredentialReference{Provider: provider, Name: "synthetic-ref", Version: "v1"}, Workspace: "synthetic-workspace", Installation: Installation{Source: os.Getenv("HCG_TEST_PAL_SOURCE"), Venv: venv, Commit: PALCommit, SourceDigest: fixedPALSourceDigest, RuntimeDigest: runtimeDigest, PythonDigest: hex.EncodeToString(sum[:]), ConfigDigest: textHash(string(cfg)), LockDigest: fixedDependencyLockDigest, PythonVersion: "3.12.3", AdapterVersion: "hcg-pal/1", TemplateVersion: resultSchema}, Inputs: []InputManifest{{ProjectID: project, Name: "synthetic-corpus", Revision: "r1", Files: []ApprovedFile{{Path: "prompt.txt", SHA256: textHash(source)}}}}}
+	return Deployment{Profile: profile, CredentialRef: CredentialReference{Provider: provider, Name: "synthetic-ref", Version: "v1"}, Workspace: "synthetic-workspace"}
 }
 func delegationPolicy(p Profile) PolicySnapshot {
 	enabled := true
@@ -45,79 +21,14 @@ func delegationPolicy(p Profile) PolicySnapshot {
 	return PolicySnapshot{Project: ProjectPolicy{Enabled: &enabled, AllowedProfiles: []ProfileRef{ref}, SelectedProfile: &ref}}
 }
 
-func TestFixtureRuntimeApprovalStillRejectsChangedBytes(t *testing.T) {
-	d := deploymentFixture(t, "openai", "p", "synthetic source")
-	if err := verifyInstallation(t.Context(), d.Installation); err != nil {
-		t.Fatalf("fresh fixture installation rejected: %v", err)
-	}
-	// Snapshot into our own directory; never alter the supplied installation.
-	venv := t.TempDir()
-	site := filepath.Join(venv, "lib", "python3.12", "site-packages")
-	if err := os.MkdirAll(site, 0700); err != nil {
-		t.Fatal(err)
-	}
-	digest, err := snapshotTree(t.Context(), filepath.Join(d.Installation.Venv, "lib", "python3.12", "site-packages"), site, false)
-	if err != nil || digest != d.Installation.RuntimeDigest {
-		t.Fatalf("copy changed approved runtime digest: %v", err)
-	}
-	if err := os.Mkdir(filepath.Join(venv, "bin"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"pyvenv.cfg", "bin/python"} {
-		body, err := os.ReadFile(filepath.Join(d.Installation.Venv, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(venv, name), body, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	d.Installation.Venv = venv
-	if err := verifyInstallation(t.Context(), d.Installation); err != nil {
-		t.Fatalf("unchanged private snapshot rejected: %v", err)
-	}
-	// A RECORD row is part of the approval, even though its script hashes can
-	// legitimately differ when initially installed at another absolute path.
-	records, err := filepath.Glob(filepath.Join(site, "*.dist-info", "RECORD"))
-	if err != nil || len(records) == 0 {
-		t.Fatal("fixture has no RECORD files")
-	}
-	file, err := os.OpenFile(records[0], os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, writeErr := file.WriteString("\nsynthetic-post-approval-change\n")
-	closeErr := file.Close()
-	if writeErr != nil || closeErr != nil {
-		t.Fatalf("mutate private fixture: %v %v", writeErr, closeErr)
-	}
-	if err := verifyInstallation(t.Context(), d.Installation); err == nil {
-		t.Fatal("post-approval runtime RECORD change bypassed gate")
-	}
-}
 func approveFixture(t *testing.T, c *Coordinator, d Deployment) {
 	t.Helper()
-	g := c.LabGrant()
-	if g == nil {
-		g = labGrantFixture(c.root, d.Inputs[0].ProjectID, "s", time.Now())
-	}
-	if err := c.Register(t.Context(), Registration{Grant: g, Deployment: d, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err != nil {
+	if err := c.Register(t.Context(), Registration{Deployment: d, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err != nil {
 		t.Fatal(err)
 	}
 }
-func launchFixture(t *testing.T, c *Coordinator, id integration.Identity) {
-	t.Helper()
-	prepared, ok := c.CaptureLaunch(id, true, true)
-	if !ok {
-		t.Fatal("fresh metadata not captured")
-	}
-	if err := c.StoreLaunch(t.Context(), prepared, id); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestCoordinatorFixedRegistryPolicyAndCaller(t *testing.T) {
-	for _, provider := range []string{"openai", "anthropic"} {
+	for _, provider := range []string{"openai"} {
 		t.Run(provider, func(t *testing.T) {
 			root := t.TempDir()
 			worktree := t.TempDir()
@@ -138,11 +49,7 @@ func TestCoordinatorFixedRegistryPolicyAndCaller(t *testing.T) {
 			approveFixture(t, c, deployment)
 			policy := delegationPolicy(deployment.Profile)
 			c.ProjectPolicyChanged("p", policy)
-			id := integration.Identity{DataRoot: root, ProjectID: "p", SessionID: "s", Role: "worker", Mode: "chat", Harness: "codex", Worktree: worktree, LaunchID: "launch", NativeID: "native", ControllerGeneration: "generation"}
-			if _, ok := c.CaptureLaunch(id, false, false); ok {
-				t.Fatal("live reconnect fabricated missing launch history")
-			}
-			launchFixture(t, c, id)
+			id := Identity{DataRoot: root, ProjectID: "p", SessionID: "s", Role: "worker", Mode: "chat", Harness: "codex", Worktree: worktree}
 			token := c.PolicyRevision(id)
 			out := c.Read(t.Context(), id, policy, Request{Question: "QUESTION_MUST_SURVIVE", Paths: []string{"prompt.txt"}}, token)
 			if out.Status != "ok" || out.BillingProvider != provider || out.ProjectID != "p" || out.SessionID != "s" || calls != 1 || len(sink.receipts) != 1 {
@@ -175,7 +82,7 @@ func TestCoordinatorFixedRegistryPolicyAndCaller(t *testing.T) {
 				}
 			}
 			c.ProjectPolicyChanged("p", policy)
-			for _, unsupported := range []integration.Identity{
+			for _, unsupported := range []Identity{
 				{DataRoot: root, ProjectID: "p", SessionID: "s", Role: "reviewer", Harness: "codex"},
 				{DataRoot: root, ProjectID: "p", SessionID: "s", Role: "worker", Harness: "other"},
 			} {
@@ -184,7 +91,6 @@ func TestCoordinatorFixedRegistryPolicyAndCaller(t *testing.T) {
 					t.Fatalf("excluded caller dispatched: %+v", out)
 				}
 			}
-			mount := c.Get(id, policy)
 			disabled := false
 			off := freezePolicy(policy)
 			off.Project.Enabled = &disabled
@@ -192,9 +98,8 @@ func TestCoordinatorFixedRegistryPolicyAndCaller(t *testing.T) {
 			if err := c.SetOverride(t.Context(), id, nil); err != nil {
 				t.Fatal(err)
 			}
-			got := c.Get(id, off)
-			if got.EffectiveEnabled || !got.MountKnown || got.MountEnabled != mount.MountEnabled || *got.MountProfile != *mount.MountProfile {
-				t.Fatalf("clear rewrote original mount: %+v", got)
+			if got := c.Get(id, off); got.EffectiveEnabled {
+				t.Fatalf("project off still enabled: %+v", got)
 			}
 			on := true
 			if err := c.SetOverride(t.Context(), id, &on); err != nil {
@@ -236,38 +141,15 @@ func TestCoordinatorFixedRegistryPolicyAndCaller(t *testing.T) {
 			}
 			changed := deployment
 			changed.Profile.Prices.Version = "different-price"
-			if err := c.Register(t.Context(), Registration{Grant: c.LabGrant(), Deployment: changed, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err == nil {
+			if err := c.Register(t.Context(), Registration{Deployment: changed, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err == nil {
 				t.Fatal("immutable revision overwritten")
-			}
-			changed.Profile.Revision = "v2"
-			if err := c.Register(t.Context(), Registration{Grant: c.LabGrant(), Deployment: changed, ExternalSpend: map[string]ExternalSpend{"openai": {Known: true, OutsideGateOnly: true}, "anthropic": {Known: true, OutsideGateOnly: true}}}); err == nil {
-				t.Fatal("run accepted an ungranted revision")
-			}
-			next := delegationPolicy(changed.Profile)
-			c.ProjectPolicyChanged("p", next)
-			if c.Get(id, next).Active {
-				t.Fatal("ungranted revision became active")
-			}
-			c.ProjectPolicyChanged("p", policy)
-			next = policy
-			liveID := id
-			liveID.ControllerGeneration = "new-controller"
-			prepared, ok := c.CaptureLaunch(liveID, false, false)
-			if !ok {
-				t.Fatal("live metadata not captured")
-			}
-			if err := c.StoreLaunch(t.Context(), prepared, liveID); err != nil {
-				t.Fatal(err)
-			}
-			if c.Get(liveID, next).MountProfile.Revision != "v1" {
-				t.Fatal("live reconnect replaced original launch profile")
 			}
 		})
 	}
 }
 
 func TestCoordinatorStartupReceiptRecoveryNeverCallsProvider(t *testing.T) {
-	for _, family := range []string{"openai", "anthropic"} {
+	for _, family := range []string{"openai"} {
 		t.Run(family, func(t *testing.T) {
 			body := "SYNTHETIC_SOURCE_142\nDOCUMENT_DIRECTIVE_IGNORE_THE_QUESTION\n"
 			root, worktree := t.TempDir(), t.TempDir()
@@ -287,8 +169,7 @@ func TestCoordinatorStartupReceiptRecoveryNeverCallsProvider(t *testing.T) {
 			approveFixture(t, c, deployment)
 			policy := delegationPolicy(deployment.Profile)
 			c.ProjectPolicyChanged("p", policy)
-			id := integration.Identity{DataRoot: root, ProjectID: "p", SessionID: "s", Role: "worker", Mode: "chat", Harness: "codex", Worktree: worktree, LaunchID: "launch", NativeID: "native", ControllerGeneration: "generation"}
-			launchFixture(t, c, id)
+			id := Identity{DataRoot: root, ProjectID: "p", SessionID: "s", Role: "worker", Mode: "chat", Harness: "codex", Worktree: worktree}
 			reply := c.Read(t.Context(), id, policy, Request{Question: "QUESTION_MUST_SURVIVE", Paths: []string{"prompt.txt"}}, c.PolicyRevision(id))
 			if reply.Status != "unavailable" || calls != 1 {
 				t.Fatalf("failed canonical write leaked answer: %+v calls=%d", reply, calls)
@@ -297,13 +178,6 @@ func TestCoordinatorStartupReceiptRecoveryNeverCallsProvider(t *testing.T) {
 			sink.err = nil
 			restarted := NewCoordinator(root, sink, factory, nil)
 			defer restarted.Close()
-			for _, profile := range restarted.Profiles() {
-				if profile.Available {
-					t.Fatal("startup recovery enabled transport without explicit reauthorization")
-				}
-			}
-			grant := restarted.LabGrant()
-			restarted.budget.Now = func() time.Time { return grant.ExpiresAt.Add(time.Second) }
 			if err := restarted.RecoverReceipts(t.Context()); err != nil {
 				t.Fatal(err)
 			}

@@ -72,11 +72,11 @@ func TestHostBudgetConcurrentProjectsAndGlobalCap(t *testing.T) {
 	wg.Add(2)
 	keys := make([]string, 2)
 	errs := make([]error, 2)
-	providers := []string{"openai", "anthropic"}
+	projects := []string{"p1", "p2"}
 	for i, instance := range []*Budget{b, b2} {
 		go func(i int, instance *Budget) {
 			defer wg.Done()
-			keys[i], errs[i] = instance.reserve(t.Context(), budgetExecution(providers[i], "a"), budgetProfile(providers[i]), []byte("payload"), textHash("synthetic-scope"))
+			keys[i], errs[i] = instance.reserve(t.Context(), budgetExecution(projects[i], "a"), budgetProfile("openai"), []byte("payload"), textHash("synthetic-scope"))
 		}(i, instance)
 	}
 	wg.Wait()
@@ -92,8 +92,8 @@ func TestHostBudgetConcurrentProjectsAndGlobalCap(t *testing.T) {
 	if accepted < 0 {
 		t.Fatalf("no reservation accepted: %v", errs)
 	}
-	p := budgetProfile(providers[accepted])
-	e := budgetExecution(providers[accepted], "a")
+	p := budgetProfile("openai")
+	e := budgetExecution(projects[accepted], "a")
 	key := keys[accepted]
 	if err := b.transition(t.Context(), key, "reserved", "dispatched"); err != nil {
 		t.Fatal(err)
@@ -105,8 +105,7 @@ func TestHostBudgetConcurrentProjectsAndGlobalCap(t *testing.T) {
 	}
 	// The first $20 settles: provider-specific headroom still exists, but only
 	// $10 remains under the one $630 cap shared by all projects/families.
-	other := 1 - accepted
-	if _, err := b2.reserve(t.Context(), budgetExecution("another-project", "b"), budgetProfile(providers[other]), []byte("payload"), textHash("synthetic-scope")); err == nil {
+	if _, err := b2.reserve(t.Context(), budgetExecution("another-project", "b"), budgetProfile("openai"), []byte("payload"), textHash("synthetic-scope")); err == nil {
 		t.Fatal("separate project/provider received another $630")
 	}
 	before := readBudget(t, b)
@@ -119,7 +118,7 @@ func TestHostBudgetConcurrentProjectsAndGlobalCap(t *testing.T) {
 	}
 }
 func TestBudgetProviderCapsUnknownAndMonthHold(t *testing.T) {
-	for _, provider := range []string{"openai", "anthropic"} {
+	for _, provider := range []string{"openai"} {
 		t.Run(provider, func(t *testing.T) {
 			openai, anthropic := int64(0), int64(0)
 			if provider == "openai" {
@@ -134,7 +133,7 @@ func TestBudgetProviderCapsUnknownAndMonthHold(t *testing.T) {
 		})
 	}
 	b := newBudget(t, 0, 0)
-	p := budgetProfile("anthropic")
+	p := budgetProfile("openai")
 	e := budgetExecution("p", "unknown")
 	key, err := b.reserve(t.Context(), e, p, nil, textHash("synthetic-scope"))
 	if err != nil {

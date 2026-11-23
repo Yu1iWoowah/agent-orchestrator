@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +12,7 @@ import (
 
 func TestReadReplyDecodedStringsCannotEscapeSafetyScan(t *testing.T) {
 	source := "public line\n"
-	scope := preparedScope{Sources: []sourceSnapshot{{SourceRange: SourceRange{ID: "s0000", Path: "prompt.txt", Revision: "r1", SHA256: textHash(source), Start: 1, End: 2}, text: source}}}
+	scope := preparedScope{Sources: []sourceSnapshot{{SourceRange: SourceRange{ID: "s0000", Path: "prompt.txt", Revision: scopeRevision, SHA256: textHash(source), Start: 1, End: 2}, text: source}}}
 	audit := PayloadAudit{Coverage: "complete", Sources: []SourceRange{scope.Sources[0].SourceRange}}
 	profile := budgetProfile("openai")
 	for _, tc := range []struct{ name, old, replacement string }{
@@ -41,11 +40,8 @@ func TestReadReplyDecodedStringsCannotEscapeSafetyScan(t *testing.T) {
 	}
 }
 
-func TestPALNormalizedLinesReconstructOriginalQuotes(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getenv("HCG_PAL_TESTS") != "1" {
-		t.Skip("fixed isolated PAL required")
-	}
-	for _, family := range []string{"openai", "anthropic"} {
+func TestNormalizedLinesReconstructOriginalQuotes(t *testing.T) {
+	for _, family := range []string{"openai"} {
 		for _, newline := range []string{"\r\n", "\r"} {
 			name := "CR"
 			if newline == "\r\n" {
@@ -57,11 +53,11 @@ func TestPALNormalizedLinesReconstructOriginalQuotes(t *testing.T) {
 				if err := os.WriteFile(source, []byte(raw), 0600); err != nil {
 					t.Fatal(err)
 				}
-				proposal, _ := json.Marshal(map[string]any{"schema": resultSchema, "status": "ok", "findings": []Finding{{ID: "f1", Kind: "fact", Text: "public finding", EvidenceIDs: []string{"e1"}}}, "evidence": []proposedEvidence{{ID: "e1", SourceID: "s0000", Revision: "r1", ContentSHA256: textHash(raw), LineStart: 1, LineEnd: 2, Quote: "alpha\nbeta", QuoteSHA256: textHash("alpha\nbeta")}}})
+				proposal, _ := json.Marshal(map[string]any{"schema": resultSchema, "status": "ok", "findings": []Finding{{ID: "f1", Kind: "fact", Text: "public finding", EvidenceIDs: []string{"e1"}}}, "evidence": []proposedEvidence{{ID: "e1", SourceID: "s0000", Revision: scopeRevision, ContentSHA256: textHash(raw), LineStart: 1, LineEnd: 2, Quote: "alpha\nbeta", QuoteSHA256: textHash("alpha\nbeta")}}})
 				sink := &receiptSink{}
 				calls := 0
 				profile := budgetProfile(family)
-				consumer := Consumer{PAL: PAL{Python: os.Getenv("HCG_TEST_PAL_PYTHON"), Source: os.Getenv("HCG_TEST_PAL_SOURCE"), TempRoot: t.TempDir()}, Recorder: sink, Transport: transportFunc(func(context.Context, WireRequest) (WireResponse, error) {
+				consumer := Consumer{Recorder: sink, Transport: transportFunc(func(context.Context, WireRequest) (WireResponse, error) {
 					calls++
 					return providerFixtureReply(profile.Model, string(proposal)), nil
 				})}

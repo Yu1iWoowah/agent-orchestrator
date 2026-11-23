@@ -8896,10 +8896,6 @@ export interface components {
             orchestratorId?: string;
             workerId: string;
         };
-        DelegationApprovedFile: {
-            path: string;
-            sha256: string;
-        };
         DelegationCoverage: {
             approved_ranges: components["schemas"]["DelegationSourceRange"][];
             coverage_status: string;
@@ -8914,8 +8910,6 @@ export interface components {
         };
         DelegationDeployment: {
             credentialRef: components["schemas"]["DelegationCredentialReference"];
-            inputs: components["schemas"]["DelegationInputManifest"][];
-            installation: components["schemas"]["DelegationInstallation"];
             profile: components["schemas"]["DelegationProfile"];
             workspace: string;
         };
@@ -8945,73 +8939,17 @@ export interface components {
             kind: string;
             text: string;
         };
-        DelegationInputManifest: {
-            files: components["schemas"]["DelegationApprovedFile"][];
-            name: string;
-            projectId: string;
-            revision: string;
-        };
-        DelegationInstallation: {
-            adapterVersion: string;
-            commit: string;
-            configDigest: string;
-            lockDigest: string;
-            pythonDigest: string;
-            pythonVersion: string;
-            runtimeDigest: string;
-            source: string;
-            sourceDigest: string;
-            templateVersion: string;
-            venv: string;
-        };
-        DelegationLabGrant: {
-            attemptsPerProvider: number;
-            bindings: components["schemas"]["DelegationLabSession"][];
-            canonicalOwner: components["schemas"]["DelegationLabSession"];
-            /** Format: date-time */
-            expiresAt: string;
-            ownerRoot: string;
-            profiles: {
-                [key: string]: components["schemas"]["DelegationProfileRef"];
-            } | null;
-            providerCapNanos: {
-                [key: string]: number;
-            } | null;
-            runId: string;
-            /** Format: date-time */
-            startsAt: string;
-            /** Format: int64 */
-            totalCapNanos: number;
-        };
-        DelegationLabSession: {
-            projectId: string;
-            sessionId: string;
-        };
-        DelegationLongContextPrices: {
-            /** Format: int64 */
-            cacheWriteNanoUSDPerMillion: number;
-            /** Format: int64 */
-            cachedInputNanoUSDPerMillion: number;
-            /** Format: int64 */
-            inputNanoUSDPerMillion: number;
-            /** Format: int64 */
-            outputNanoUSDPerMillion: number;
-            /** Format: int64 */
-            thresholdInputTokens: number;
-        };
         DelegationOmission: {
             reason: string;
             sourceId?: string;
         };
         DelegationPrices: {
             billableUsageCovered: boolean;
-            cacheWriteNanoUSDPerMillion?: null | number;
             /** Format: int64 */
             cachedInputNanoUSDPerMillion: number;
             /** Format: int64 */
             inputNanoUSDPerMillion: number;
             limitsCertified: boolean;
-            longContext?: components["schemas"]["DelegationLongContextPrices"];
             /** Format: int64 */
             outputNanoUSDPerMillion: number;
             period: string;
@@ -9028,9 +8966,7 @@ export interface components {
             /** Format: int64 */
             outputTokens: number;
             prices: components["schemas"]["DelegationPrices"];
-            reasoningEffort?: string;
             revision: string;
-            serviceTier?: string;
         };
         DelegationProfileRef: {
             id: string;
@@ -9043,11 +8979,9 @@ export interface components {
             digest: string;
             id: string;
             model: string;
-            ownerRoot: string;
             priceVersion: string;
             reason: string;
             revision: string;
-            runId: string;
         };
         DelegationSourceRange: {
             endLine: number;
@@ -9490,7 +9424,6 @@ export interface components {
             externalSpend: {
                 [key: string]: components["schemas"]["DelegationExternalSpend"];
             } | null;
-            grant: null | components["schemas"]["DelegationLabGrant"];
         };
         HCGDelegationResponse: {
             active: boolean;
@@ -9500,12 +9433,6 @@ export interface components {
             emergencyStop: boolean;
             hostProfileCurrentRevision: string;
             inputs: components["schemas"]["HCGReportingInputs"];
-            manifestRevision: number;
-            mountConfigured: boolean;
-            mountEnabled: boolean;
-            mountKnown: boolean;
-            mountProfile: null | components["schemas"]["DelegationProfileRef"];
-            ownerRoot: string;
             profileEligibility: string;
             projectId: string;
             projectOptIn: boolean;
@@ -9513,7 +9440,6 @@ export interface components {
             reason: string;
             requested: boolean;
             resolvedProfile: null | components["schemas"]["DelegationResolvedProfile"];
-            runId: string;
             selectedProfile: null | components["schemas"]["DelegationProfileRef"];
             selectionSource: string;
             sessionId: string;

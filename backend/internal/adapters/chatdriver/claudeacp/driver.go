@@ -550,6 +550,9 @@ func claudeSessionMeta(cfg acpdriver.LaunchConfig) map[string]any {
 		// --disallowedTools; deny rules hold in every permission mode.
 		options["allowedTools"] = claudecode.ReviewerAllowedTools
 		options["disallowedTools"] = claudecode.ReviewerDisallowedTools
+	} else {
+		// The fixed HCG delegated read is pre-approved so auto mode never asks.
+		options["allowedTools"] = []string{"mcp__hcg__hcg_delegate_read"}
 	}
 	if len(options) > 0 {
 		claudeCode["options"] = options

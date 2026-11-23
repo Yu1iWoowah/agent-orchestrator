@@ -15,17 +15,15 @@ import (
 	"unicode/utf8"
 )
 
-const maxSourceBytes = 64 << 10
+// scopeRevision names the files as read now; content_sha256 pins their bytes.
+const scopeRevision = "current"
 
-// ApprovedScope comes from AO's reviewed synthetic/public input manifest, never
-// from the tool's model-authored arguments. Hash changes require new approval.
+// ApprovedScope comes from AO's session facts, never from the tool's
+// model-authored arguments. Roots[0] is the session worktree; relative paths
+// resolve there, and absolute paths must fall inside one of the read-only roots.
 type ApprovedScope struct {
-	Name, Revision, Root string
-	Files                []ApprovedFile
-}
-type ApprovedFile struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	Name, Revision string
+	Roots          []string
 }
 type SourceRange struct {
 	ID       string `json:"id"`
@@ -102,51 +100,66 @@ func safeSourcePath(path string) bool {
 	}
 	return true
 }
-func textHash(s string) string { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }
+func textHash(s string) string  { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }
+func validDigest(s string) bool { b, err := hex.DecodeString(s); return err == nil && len(b) == 32 }
 
-func prepareScope(ctx context.Context, approved ApprovedScope, question string, paths []string) (preparedScope, error) {
+// prepareScope reads each requested file once and hashes what it read. limit
+// bounds the total bytes so a scope cannot exceed the model context.
+func prepareScope(ctx context.Context, approved ApprovedScope, question string, paths []string, limit int64) (preparedScope, error) {
 	out := preparedScope{}
-	if !profileToken.MatchString(approved.Name) || !profileToken.MatchString(approved.Revision) || !filepath.IsAbs(approved.Root) || len(paths) == 0 || len(paths) > 16 || len(question) == 0 || len(question) > 16<<10 || !safeText(question) {
+	if !profileToken.MatchString(approved.Name) || !profileToken.MatchString(approved.Revision) || len(approved.Roots) == 0 || len(paths) == 0 || len(paths) > 16 || len(question) == 0 || len(question) > 16<<10 || !safeText(question) {
 		return out, scopeFailure("blocked", "", "scope_not_approved")
+	}
+	for _, root := range approved.Roots {
+		if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+			return out, scopeFailure("blocked", "", "scope_not_approved")
+		}
 	}
 	manifest, err := json.Marshal(approved)
 	if err != nil {
 		return out, err
 	}
 	out.ManifestDigest = textHash(string(manifest))
-	allowed := map[string]string{}
-	for _, file := range approved.Files {
-		if filepath.IsAbs(file.Path) || filepath.Clean(file.Path) != file.Path || !filepath.IsLocal(file.Path) || !safeSourcePath(file.Path) || len(file.SHA256) != 64 || allowed[file.Path] != "" {
-			return out, scopeFailure("blocked", "", "invalid_input_manifest")
-		}
-		if _, err := hex.DecodeString(file.SHA256); err != nil {
-			return out, scopeFailure("blocked", "", "invalid_input_manifest")
-		}
-		allowed[file.Path] = file.SHA256
-	}
-	root, err := os.OpenRoot(approved.Root)
-	if err != nil {
-		return out, scopeFailure("blocked", "", "source_unavailable")
-	}
-	defer root.Close()
 	seen := map[string]bool{}
-	total := 0
+	var total int64
 	for i, path := range paths {
 		id := fmt.Sprintf("s%04d", i)
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
+		base, rel := approved.Roots[0], path
 		if filepath.IsAbs(path) {
-			path, err = filepath.Rel(approved.Root, path)
-			if err != nil {
+			base = ""
+			for _, root := range approved.Roots {
+				if r, err := filepath.Rel(root, path); err == nil && filepath.IsLocal(r) {
+					base, rel = root, r
+					break
+				}
+			}
+			if base == "" {
 				return out, scopeFailure("blocked", id, "outside_scope")
 			}
 		}
-		if !filepath.IsLocal(path) || filepath.Clean(path) != path || !safeSourcePath(path) || allowed[path] == "" || seen[path] {
+		if !filepath.IsLocal(rel) || filepath.Clean(rel) != rel || !safeSourcePath(rel) || seen[filepath.Join(base, rel)] {
 			return out, scopeFailure("blocked", id, "outside_scope")
 		}
-		seen[path] = true
-		f, err := root.OpenFile(path, sourceOpenFlags, 0)
+		seen[filepath.Join(base, rel)] = true
+		// OpenRoot follows symlinks inside the root, so the real target must
+		// pass the same sensitive-path rules as the requested path.
+		real, realErr := filepath.EvalSymlinks(filepath.Join(base, rel))
+		baseReal, baseErr := filepath.EvalSymlinks(base)
+		if realErr != nil || baseErr != nil {
+			return out, scopeFailure("blocked", id, "source_unavailable")
+		}
+		if target, err := filepath.Rel(baseReal, real); err != nil || !filepath.IsLocal(target) || !safeSourcePath(target) {
+			return out, scopeFailure("blocked", id, "outside_scope")
+		}
+		root, err := os.OpenRoot(base)
+		if err != nil {
+			return out, scopeFailure("blocked", id, "source_unavailable")
+		}
+		f, err := root.OpenFile(rel, sourceOpenFlags, 0)
+		root.Close()
 		if err != nil {
 			return out, scopeFailure("blocked", id, "source_unavailable")
 		}
@@ -155,11 +168,11 @@ func prepareScope(ctx context.Context, approved ApprovedScope, question string, 
 			f.Close()
 			return out, scopeFailure("blocked", id, "source_not_regular")
 		}
-		if info.Size() > maxSourceBytes {
+		if total+info.Size() > limit {
 			f.Close()
-			return out, scopeFailure("scope_too_large", id, "source_size_limit")
+			return out, scopeFailure("scope_too_large", id, "payload_context_limit")
 		}
-		body, err := readSource(ctx, f)
+		body, err := readSource(ctx, f, limit-total)
 		closeErr := f.Close()
 		if err != nil {
 			if ctx.Err() != nil {
@@ -170,23 +183,29 @@ func prepareScope(ctx context.Context, approved ApprovedScope, question string, 
 		if closeErr != nil {
 			return out, scopeFailure("blocked", id, "source_read_failed")
 		}
-		total += len(body)
-		if len(body) > maxSourceBytes || total > 2*maxSourceBytes {
-			return out, scopeFailure("scope_too_large", id, "source_size_limit")
+		total += int64(len(body))
+		if total > limit {
+			return out, scopeFailure("scope_too_large", id, "payload_context_limit")
 		}
-		if textHash(string(body)) != allowed[path] || !safeText(string(body)) {
-			return out, scopeFailure("blocked", id, "source_changed_or_sensitive")
+		if !safeText(string(body)) {
+			return out, scopeFailure("blocked", id, "source_sensitive")
+		}
+		// Worktree files keep their relative path; other roots show where they live.
+		display := filepath.ToSlash(rel)
+		if base != approved.Roots[0] {
+			display = filepath.ToSlash(path)
 		}
 		text, lines := sourceView(string(body))
-		out.Sources = append(out.Sources, sourceSnapshot{SourceRange: SourceRange{ID: id, Path: filepath.ToSlash(path), Revision: approved.Revision, SHA256: allowed[path], Start: 1, End: len(lines)}, text: text, originalText: string(body), observedAt: time.Now().UTC()})
+		out.Sources = append(out.Sources, sourceSnapshot{SourceRange: SourceRange{ID: id, Path: display, Revision: approved.Revision, SHA256: textHash(string(body)), Start: 1, End: len(lines)}, text: text, originalText: string(body), observedAt: time.Now().UTC()})
 	}
 	return out, nil
 }
 
-func readSource(ctx context.Context, r io.Reader) ([]byte, error) {
+// readSource stops one byte past limit so an oversized file is detected.
+func readSource(ctx context.Context, r io.Reader, limit int64) ([]byte, error) {
 	var body []byte
 	buf := make([]byte, 4096)
-	for len(body) <= maxSourceBytes {
+	for int64(len(body)) <= limit {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
