@@ -251,6 +251,10 @@ func validateSavedDeployments(s deploymentState) error {
 // Register stores an immutable profile and approves the current budget month.
 func (c *Coordinator) Register(ctx context.Context, r Registration) error {
 	d := r.Deployment
+	// The delegation meter cannot price Luna's long context or cache writes.
+	if d.Profile.Model == "gpt-6-luna" {
+		return ErrUnavailable
+	}
 	if err := validateDeployment(d); err != nil {
 		return err
 	}
