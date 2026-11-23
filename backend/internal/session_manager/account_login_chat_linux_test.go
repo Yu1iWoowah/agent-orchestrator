@@ -1,6 +1,7 @@
 package sessionmanager
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -18,7 +19,69 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/agentaccounts"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
+
+func TestAccountSignInAgainAllowsBindingOnlySession(t *testing.T) {
+	accounts, accountID := newLoginOwnerAccount(t, domain.SessionRecord{Mode: domain.SessionModeChat})
+	start, err := accounts.StartSignInAgain(t.Context(), accountID)
+	if err != nil || start.OperationID == "" || start.Terminal.HandleID == "" {
+		t.Fatalf("sign in again did not start for a binding-only session: %v", err)
+	}
+}
+
+func TestAccountSignInAgainKeepsPendingImportBlocking(t *testing.T) {
+	for _, mode := range []domain.SessionMode{domain.SessionModeTUI, domain.SessionModeChat} {
+		t.Run(string(mode), func(t *testing.T) {
+			// The binding survived the interrupted first launch. Its runtime
+			// or controller identity was never committed and no host record remains.
+			rec := domain.SessionRecord{Mode: mode, Metadata: domain.SessionMetadata{
+				ProviderConversationID: "imported-native",
+				ImportSource:           &domain.SessionImportSource{NativeID: "imported-native"},
+			}}
+			accounts, accountID := newLoginOwnerAccount(t, rec)
+			_, err := accounts.StartSignInAgain(t.Context(), accountID)
+			var inUse *ports.AgentAccountInUseError
+			if !errors.As(err, &inUse) || len(inUse.Owners) != 1 || !inUse.Owners[0].Blocking {
+				t.Fatalf("sign in again = %v, want AGENT_ACCOUNT_IN_USE for the pending import", err)
+			}
+		})
+	}
+}
+
+func newLoginOwnerAccount(t *testing.T, rec domain.SessionRecord) (*agentaccounts.Service, string) {
+	t.Helper()
+	const accountID = "saved-codex"
+	root := t.TempDir()
+	m, sessions, _, _ := newManager()
+	m.dataDir, m.chat = root, &transitionChat{}
+	rec.ID, rec.Harness = "bound-session", domain.HarnessCodex
+	rec.ProvisionState = domain.SessionProvisionReady
+	rec.Activity.State = domain.ActivityIdle
+	sessions.sessions[rec.ID] = rec
+	m.store = &reviewerOwnerStore{fakeStore: sessions, owners: []domain.AgentAccountUsageOwner{
+		{Kind: "session", SessionID: rec.ID, Harness: rec.Harness, Blocking: true},
+	}}
+	profiles := filepath.Join(root, "accounts")
+	db := sqlitetest.MustOpen(t)
+	if err := db.CreateAgentAccount(t.Context(), domain.AgentAccount{
+		ID: accountID, Provider: domain.AgentAccountProviderCodex, ProfileKind: domain.AgentAccountProfileContained,
+		Home: filepath.Join(profiles, "codex", accountID), CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider := launchBoundaryProvider{&agentaccount.Codex{Binary: func(context.Context) (string, error) { return "/bin/true", nil }}}
+	accounts := agentaccounts.New(db, []ports.AgentAccountProviderCLI{provider}, profiles, loginOwnerTerminals{}, nil)
+	accounts.SetLoginUsageOwners(m.AccountLoginUsageOwners)
+	return accounts, accountID
+}
+
+type loginOwnerTerminals struct{ agentaccounts.Terminals }
+
+func (loginOwnerTerminals) OpenCommandTerminal(_ context.Context, in shellterm.OpenCommandTerminalInput) (shellterm.ShellTerminal, error) {
+	return shellterm.ShellTerminal{HandleID: in.HandleID}, nil
+}
 
 func TestAccountSignInAgainKeepsOrphanedChatProviderBlocking(t *testing.T) {
 	const sessionID domain.SessionID = "orphaned-chat"

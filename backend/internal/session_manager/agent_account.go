@@ -197,12 +197,13 @@ func (m *Manager) AccountLoginUsageOwners(ctx context.Context, id string) ([]dom
 			owner.Blocking = true
 			continue
 		}
+		mode := domain.NormalizeSessionMode(rec.Mode)
 		if rec.Metadata.RuntimeHandleID != "" {
 			ref := ports.FencedRuntimeRef{Handle: runtimeHandle(rec.Metadata), SessionID: rec.ID, Generation: rec.Metadata.RuntimeLaunchID, NativeIdentity: rec.Metadata.AgentSessionID}
 			if ref.Generation != "" && m.runtime != nil {
 				switch m.runtime.ProbeFencedRuntime(ctx, ref).Liveness {
 				case ports.FencedDead:
-					if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeTUI {
+					if mode == domain.SessionModeTUI {
 						owner.Blocking = false
 					}
 				case ports.FencedAlive:
@@ -217,7 +218,7 @@ func (m *Manager) AccountLoginUsageOwners(ctx context.Context, id string) ([]dom
 				continue
 			}
 		}
-		if domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat || m.chat == nil {
+		if mode != domain.SessionModeChat || m.chat == nil {
 			continue
 		}
 		if m.chat.HasLiveChatController(rec.ID) {
@@ -226,6 +227,15 @@ func (m *Manager) AccountLoginUsageOwners(ctx context.Context, id string) ([]dom
 			switch persistenthost.ProbeProviderOwnership(m.dataDir, string(rec.ID)) {
 			case persistenthost.ProviderOwnershipUncertain:
 				owner.Blocking = true
+			case persistenthost.ProviderOwnershipUnrecorded:
+				// A previous controller can leave a provider behind after host
+				// records are removed. Only a binding with no controller facts
+				// or an explicit exit for the recorded generation can clear it.
+				// A pending import can start before its controller facts commit.
+				bindingOnly := rec.Metadata.ControllerGeneration == "" && rec.Metadata.ProviderConversationID == ""
+				if !rec.NeedsImportResume() && (bindingOnly || rec.ChatExplicitlyExited()) {
+					owner.Blocking = false
+				}
 			case persistenthost.ProviderOwnershipPreviousBoot:
 				if rec.Harness == domain.HarnessCodex || rec.Harness == domain.HarnessClaudeCode {
 					owner.Blocking = false

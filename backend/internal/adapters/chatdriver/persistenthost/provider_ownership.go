@@ -15,7 +15,7 @@ type ProviderOwnership int
 const (
 	// ProviderOwnershipUncertain includes same-boot owners, even if the host died.
 	ProviderOwnershipUncertain ProviderOwnership = iota
-	// ProviderOwnershipUnrecorded leaves the caller's durable ownership unchanged.
+	// ProviderOwnershipUnrecorded means no descriptor, lock or spawn record exists.
 	ProviderOwnershipUnrecorded
 	// ProviderOwnershipPreviousBoot identifies records from a previous boot.
 	ProviderOwnershipPreviousBoot
