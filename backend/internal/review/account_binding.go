@@ -44,11 +44,11 @@ func (e *Engine) reviewerAccountRequest(ctx context.Context, worker domain.Sessi
 	}, nil
 }
 
-// rebindReviewerAccount moves a new pass to a fresh execution when it resolves
-// to another account than the reviewer's binding. The old conversation lives in
-// the old account's profile, so it cannot be resumed under the new one. A Chat
-// reviewer is stopped first; a new terminal launch replaces the old pane. The
-// old review, conversation, passes and binding stay as they were.
+// rebindReviewerAccount moves a new pass to a fresh execution when the
+// reviewer's bound account can no longer be used. The old conversation lives
+// in that account's profile, so it cannot be resumed under another one. The
+// old reviewer is stopped before its row is archived; the old review,
+// conversation, passes and binding stay as they were.
 func (e *Engine) rebindReviewerAccount(ctx context.Context, worker domain.SessionRecord, review domain.Review, override string) (domain.Review, error) {
 	rebinder, ok := e.accounts.(ports.ReviewerAccountRebinder)
 	replacer, replaceable := e.store.(ports.ReviewerExecutionReplacer)
@@ -65,6 +65,12 @@ func (e *Engine) rebindReviewerAccount(ctx context.Context, worker domain.Sessio
 	}
 	if err := e.stopReviewChatWork(ctx, review); err != nil {
 		return review, err
+	}
+	// The archive clears the handle, so stop the old pane while it is known.
+	if review.InterfaceMode != domain.ReviewerInterfaceChat && review.ReviewerHandleID != "" {
+		if err := e.launcher.Destroy(ctx, review.ReviewerHandleID); err != nil {
+			return review, err
+		}
 	}
 	next, replaced, err := replacer.ReplaceReviewerAccountExecution(ctx, review.ID, e.newID(), selected, e.clock())
 	if err != nil || !replaced {

@@ -2,6 +2,7 @@ package agentaccounts
 
 import (
 	"context"
+	"errors"
 	"runtime"
 
 	"github.com/google/uuid"
@@ -34,10 +35,10 @@ func (s *Service) currentReviewerExecution(ctx context.Context, id string) error
 	return nil
 }
 
-// ReviewerRebindTarget reports the account a new pass resolves to when it
-// differs from the reviewer's binding, for example after that account signed
-// out or the project chose another one. It reports false when the pass keeps
-// the bound account or cannot resolve one.
+// ReviewerRebindTarget reports the account a new pass moves to when the
+// reviewer's bound account can no longer be used (removed or signed out). A
+// usable binding stays, even when settings now choose another account. A LAN
+// request is refused for a managed binding before anything is replaced.
 func (s *Service) ReviewerRebindTarget(ctx context.Context, id string, in ports.AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, bool, error) {
 	p, supported := domain.AgentAccountProviderFor(in.Harness)
 	bindings, bound := s.store.(ports.ReviewerAgentAccountStore)
@@ -48,7 +49,13 @@ func (s *Service) ReviewerRebindTarget(ctx context.Context, id string, in ports.
 	if err != nil || !found {
 		return domain.ResolvedAgentAccount{}, false, err
 	}
-	// An unresolvable pass keeps the binding; its own resolution reports why.
+	if ports.IsRemoteAccountRequest(ctx) && binding.AccountID != domain.DeviceAgentAccountID(p) {
+		return domain.ResolvedAgentAccount{}, false, ports.ErrAgentAccountLocalOnly
+	}
+	// Other failures keep the binding; resolving the pass reports them.
+	if unusable := s.reviewerBindingUsable(ctx, binding, p); !errors.Is(unusable, ports.ErrAgentAccountUnknown) && !errors.Is(unusable, ports.ErrAgentAccountSignedOut) {
+		return domain.ResolvedAgentAccount{}, false, nil
+	}
 	if selected, err := s.ResolveAccount(ctx, in); err == nil && selected.AccountID != "" && selected.AccountID != binding.AccountID {
 		return selected, true, nil
 	}

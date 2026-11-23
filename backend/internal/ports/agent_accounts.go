@@ -197,8 +197,8 @@ type ReviewerExecutionReplacer interface {
 	ReplaceReviewerAccountExecution(context.Context, string, string, domain.ResolvedAgentAccount, time.Time) (domain.Review, bool, error)
 }
 
-// ReviewerAccountRebinder names the account a new pass resolves to when it
-// differs from the reviewer's binding.
+// ReviewerAccountRebinder names the account a new pass moves to when the
+// reviewer's bound account can no longer be used.
 type ReviewerAccountRebinder interface {
 	ReviewerRebindTarget(context.Context, string, AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, bool, error)
 }
