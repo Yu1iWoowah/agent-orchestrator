@@ -3,6 +3,7 @@ package chat_test
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -112,11 +113,24 @@ func TestStalledPromptHoldKeepsStopCutoff(t *testing.T) {
 	}
 	clock.advance(time.Second)
 	sendQueued(t, h, "after stop")
+	// The stall forces a monitor sweep. Park it in its host query so the
+	// settlement below is what it reads; advancing the clock instead would
+	// also expire the deadline of the recheck the release starts.
+	gate := make(chan struct{})
+	conv.gate.Store(&gate)
+	var released sync.Once
+	release := func() { released.Do(func() { conv.gate.Store(nil); close(gate) }) }
+	t.Cleanup(release)
 	emitStall(t, h, conv)
+	select {
+	case <-conv.blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stall's monitor sweep never queried the host")
+	}
 	assertTurnStaysQueued(t, h, "before stop")
 
 	settleHostReceipt(conv, a.ID)
-	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	release()
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		states := turnStateByText(t, s)
 		return states["before stop"] == domain.TurnStateInterrupted && states["after stop"] != domain.TurnStateQueued

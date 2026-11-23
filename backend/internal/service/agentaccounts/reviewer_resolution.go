@@ -52,20 +52,28 @@ func (s *Service) ResolveReviewerAccount(ctx context.Context, id string, in port
 	if ports.IsRemoteAccountRequest(ctx) && selected.AccountID != domain.DeviceAgentAccountID(p) {
 		return domain.ResolvedAgentAccount{}, ports.ErrAgentAccountLocalOnly
 	}
-	account, err := s.find(ctx, selected.AccountID)
-	if err != nil {
+	if err := s.reviewerBindingUsable(ctx, selected, p); err != nil {
 		return domain.ResolvedAgentAccount{}, err
-	}
-	if account.Provider != p {
-		return domain.ResolvedAgentAccount{}, ports.ErrAgentAccountProviderMismatch
-	}
-	if err := accountAvailability(account); err != nil {
-		return domain.ResolvedAgentAccount{}, err
-	}
-	if r := s.cachedReading(account.ID); !account.Device() && r != nil && r.knownUnusable() && s.now().Sub(r.at) <= freshFor {
-		return domain.ResolvedAgentAccount{}, ports.ErrAgentAccountSignedOut
 	}
 	return selected, nil
+}
+
+// reviewerBindingUsable reports why a reviewer's bound account cannot serve it.
+func (s *Service) reviewerBindingUsable(ctx context.Context, selected domain.ResolvedAgentAccount, p domain.AgentAccountProvider) error {
+	account, err := s.find(ctx, selected.AccountID)
+	if err != nil {
+		return err
+	}
+	if account.Provider != p {
+		return ports.ErrAgentAccountProviderMismatch
+	}
+	if err := accountAvailability(account); err != nil {
+		return err
+	}
+	if r := s.cachedReading(account.ID); !account.Device() && r != nil && r.knownUnusable() && s.now().Sub(r.at) <= freshFor {
+		return ports.ErrAgentAccountSignedOut
+	}
+	return nil
 }
 
 // ReviewerLaunchEnv revalidates the independent reviewer binding.

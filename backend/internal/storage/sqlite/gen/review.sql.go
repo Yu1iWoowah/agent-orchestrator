@@ -13,6 +13,21 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+const archiveReview = `-- name: ArchiveReview :exec
+UPDATE review SET is_archived = TRUE, reviewer_handle_id = '', reviewer_launch_id = '',
+    controller_generation = '', reviewer_activity_state = 'exited', updated_at = ? WHERE id = ?
+`
+
+type ArchiveReviewParams struct {
+	UpdatedAt time.Time
+	ID        string
+}
+
+func (q *Queries) ArchiveReview(ctx context.Context, arg ArchiveReviewParams) error {
+	_, err := q.db.ExecContext(ctx, archiveReview, arg.UpdatedAt, arg.ID)
+	return err
+}
+
 const archiveReviewsBySession = `-- name: ArchiveReviewsBySession :exec
 UPDATE review SET is_archived = TRUE, reviewer_handle_id = '', reviewer_launch_id = '',
     controller_generation = '', reviewer_activity_state = 'exited', updated_at = ? WHERE session_id = ?
