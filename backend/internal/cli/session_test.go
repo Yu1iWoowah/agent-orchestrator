@@ -604,7 +604,7 @@ func TestSessionRestore_ExitedOrchestratorResumesAgentInPlace(t *testing.T) {
 	want := []string{
 		"GET /api/v1/sessions/demo-orch",
 		"POST /api/v1/sessions/demo-orch/resume-agent",
-		"GET /api/v1/sessions/demo-orch/resume-agent",
+		"GET /api/v1/sessions/demo-orch/resume-agent?poll=true",
 	}
 	if got := log.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v, want %#v", got, want)
@@ -637,7 +637,7 @@ func TestSessionExitAndResumeAgentUseProcessOnlyRoutes(t *testing.T) {
 		"GET /api/v1/sessions/demo-1",
 		"POST /api/v1/sessions/demo-1/exit-agent",
 		"POST /api/v1/sessions/demo-1/resume-agent",
-		"GET /api/v1/sessions/demo-1/resume-agent",
+		"GET /api/v1/sessions/demo-1/resume-agent?poll=true",
 	}
 	if got := log.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v, want %#v", got, want)

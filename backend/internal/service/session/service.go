@@ -185,7 +185,7 @@ type ResumeAgentStatus struct {
 	Mode       RestoreModeView
 	Err        error
 	FinishedAt *time.Time
-	Session    domain.Session
+	Session    *domain.Session
 }
 
 // resumeAgentOperation is the in-memory record of one resume-agent request;
@@ -1269,8 +1269,9 @@ func (s *Service) finishResumeAgent(id domain.SessionID, op *resumeAgentOperatio
 }
 
 // ResumeAgentStatus reports the session's latest resume-agent request since the
-// daemon started. With none recorded it answers not found.
-func (s *Service) ResumeAgentStatus(ctx context.Context, id domain.SessionID) (ResumeAgentStatus, error) {
+// daemon started. With none recorded it answers not found. Polling only needs
+// the session after success, when the CLI can return it to the caller.
+func (s *Service) ResumeAgentStatus(ctx context.Context, id domain.SessionID, poll bool) (ResumeAgentStatus, error) {
 	s.resumeAgentsMu.Lock()
 	op := s.resumeAgents[id]
 	var status ResumeAgentStatus
@@ -1288,8 +1289,15 @@ func (s *Service) ResumeAgentStatus(ctx context.Context, id domain.SessionID) (R
 	if !ok {
 		return ResumeAgentStatus{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
-	status.Session, err = s.toSession(ctx, rec)
-	return status, err
+	if poll && status.State != ResumeAgentSucceeded {
+		return status, nil
+	}
+	sess, err := s.toSession(ctx, rec)
+	if err != nil {
+		return ResumeAgentStatus{}, err
+	}
+	status.Session = &sess
+	return status, nil
 }
 
 func (s *Service) resumeAgentError(ctx context.Context, id domain.SessionID, err error) error {

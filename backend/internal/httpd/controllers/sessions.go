@@ -100,7 +100,7 @@ type SessionService interface {
 	Restore(ctx context.Context, id domain.SessionID) (sessionsvc.RestoreOutcome, error)
 	ExitAgent(ctx context.Context, id domain.SessionID) (sessionsvc.ExitAgentOutcome, error)
 	StartResumeAgent(ctx context.Context, id domain.SessionID, automatic bool) (domain.Session, error)
-	ResumeAgentStatus(ctx context.Context, id domain.SessionID) (sessionsvc.ResumeAgentStatus, error)
+	ResumeAgentStatus(ctx context.Context, id domain.SessionID, poll bool) (sessionsvc.ResumeAgentStatus, error)
 	RequestKill(ctx context.Context, id domain.SessionID) (sessionmanager.KillResult, error)
 	DeleteArtifacts(ctx context.Context, id domain.SessionID) error
 	RegisterArtifacts(ctx context.Context, id domain.SessionID, references []string) (sessionsvc.ArtifactRegistration, error)
@@ -2262,7 +2262,7 @@ func (c *SessionsController) resumeAgentStatus(w http.ResponseWriter, r *http.Re
 		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/resume-agent")
 		return
 	}
-	status, err := c.Svc.ResumeAgentStatus(r.Context(), sessionID(r))
+	status, err := c.Svc.ResumeAgentStatus(r.Context(), sessionID(r), r.URL.Query().Get("poll") == "true")
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -2272,7 +2272,10 @@ func (c *SessionsController) resumeAgentStatus(w http.ResponseWriter, r *http.Re
 		State:      string(status.State),
 		ResumeMode: status.Mode,
 		FinishedAt: status.FinishedAt,
-		Session:    sessionView(r, status.Session),
+	}
+	if status.Session != nil {
+		view := sessionView(r, *status.Session)
+		res.Session = &view
 	}
 	if status.Err != nil {
 		code, body := envelope.Describe(status.Err)

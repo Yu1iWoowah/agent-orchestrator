@@ -17042,6 +17042,12 @@ paths:
         schema:
           description: Session identifier, e.g. project-1.
           type: string
+      - description: When true, include the session only after a successful resume.
+        in: query
+        name: poll
+        schema:
+          description: When true, include the session only after a successful resume.
+          type: boolean
       responses:
         "200":
           content:
@@ -32423,7 +32429,6 @@ components:
       required:
       - sessionId
       - state
-      - session
       type: object
     RetryAccountRecoveryResponse:
       properties:

@@ -393,7 +393,7 @@ describe("mobile Chat API boundaries", () => {
 			await vi.advanceTimersByTimeAsync(2_000);
 			await expect(resumed).resolves.toBeUndefined();
 			const [url, init] = vi.mocked(fetch).mock.calls[2];
-			expect(url).toBe("http://ao.test:3011/api/v1/sessions/chat-1/resume-agent");
+			expect(url).toBe("http://ao.test:3011/api/v1/sessions/chat-1/resume-agent?poll=true");
 			expect(init?.method).toBeUndefined();
 		});
 

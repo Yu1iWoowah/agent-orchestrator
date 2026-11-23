@@ -145,7 +145,7 @@ func TestPRMovedNoticeRespectsExplicitChatExit(t *testing.T) {
 			if err := manager.WaitBackgroundWorkers(ctx); err != nil {
 				t.Fatal(err)
 			}
-			status, err := svc.ResumeAgentStatus(ctx, source.ID)
+			status, err := svc.ResumeAgentStatus(ctx, source.ID, false)
 			if err != nil || launcher.starts.Load() != tc.wantStarts {
 				t.Fatalf("PR takeover starts = %d, want %d, resume state = %s, error = %v", launcher.starts.Load(), tc.wantStarts, status.State, err)
 			}

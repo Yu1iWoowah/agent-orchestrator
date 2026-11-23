@@ -1431,7 +1431,7 @@ export async function resumeSessionAgent(cfg: ServerConfig, id: string): Promise
 	const deadline = Date.now() + RESUME_WAIT_LIMIT_MS;
 	for (;;) {
 		await new Promise((resolve) => setTimeout(resolve, RESUME_POLL_INTERVAL_MS));
-		const res = await req(cfg, path, undefined, Math.max(1, Math.min(REQUEST_TIMEOUT_MS, deadline - Date.now())));
+		const res = await req(cfg, path + "?poll=true", undefined, Math.max(1, Math.min(REQUEST_TIMEOUT_MS, deadline - Date.now())));
 		const status = (await res.json()) as { state?: string; error?: { status?: number; code?: string; message?: string } };
 		if (status.state === "succeeded") return;
 		if (status.state === "failed") {

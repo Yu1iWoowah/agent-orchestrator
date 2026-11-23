@@ -10929,7 +10929,7 @@ export interface components {
             finishedAt?: null | string;
             /** @enum {string} */
             resumeMode?: "native" | "saved_prompt" | "fresh";
-            session: components["schemas"]["ControllersSessionView"];
+            session?: components["schemas"]["ControllersSessionView"];
             sessionId: string;
             /** @enum {string} */
             state: "running" | "succeeded" | "failed";
@@ -33936,7 +33936,10 @@ export interface operations {
     };
     getResumeAgentStatus: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description When true, include the session only after a successful resume. */
+                poll?: boolean;
+            };
             header?: never;
             path: {
                 /** @description Session identifier, e.g. project-1. */

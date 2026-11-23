@@ -70,7 +70,7 @@ func TestSessionResumeAgentPrintsTheSameJSONOnceTheResumeSucceeds(t *testing.T) 
 	if session, _ := got["session"].(map[string]any); session["id"] != "demo-1" || session["status"] != "idle" {
 		t.Fatalf("session = %#v, want the resumed session", got["session"])
 	}
-	if reads := strings.Count(strings.Join(log.all(), "\n"), "GET /api/v1/sessions/demo-1/resume-agent"); reads != 3 {
+	if reads := strings.Count(strings.Join(log.all(), "\n"), "GET /api/v1/sessions/demo-1/resume-agent?poll=true"); reads != 3 {
 		t.Fatalf("status reads = %d, want 3", reads)
 	}
 }

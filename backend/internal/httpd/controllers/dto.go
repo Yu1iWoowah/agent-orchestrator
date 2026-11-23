@@ -1383,7 +1383,7 @@ type ResumeAgentStatusResponse struct {
 	ResumeMode sessionsvc.RestoreModeView `json:"resumeMode,omitempty" enum:"native,saved_prompt,fresh"`
 	Error      *ResumeAgentFailure        `json:"error,omitempty"`
 	FinishedAt *time.Time                 `json:"finishedAt,omitempty"`
-	Session    SessionView                `json:"session"`
+	Session    *SessionView               `json:"session,omitempty"`
 }
 
 // ResumeAgentFailure is the error a failed background resume reports: the
@@ -1493,6 +1493,11 @@ type RollbackSessionResponse struct {
 // ResumeAgentQuery declares the caller's passive resume intent.
 type ResumeAgentQuery struct {
 	Automatic bool `query:"automatic,omitempty" description:"Whether this resume comes from passive viewing. Omit for an explicit Resume agent action."`
+}
+
+// ResumeAgentStatusQuery selects the response used by polling clients.
+type ResumeAgentStatusQuery struct {
+	Poll bool `query:"poll,omitempty" description:"When true, include the session only after a successful resume."`
 }
 
 // DeleteSessionQuery is the query string accepted by DELETE /api/v1/sessions/{sessionId}.

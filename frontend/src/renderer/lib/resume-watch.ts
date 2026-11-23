@@ -167,7 +167,7 @@ async function readResume(sessionId: string, hostId: string | undefined, limitMs
 	const timer = setTimeout(() => abort.abort(), Math.max(0, limitMs));
 	try {
 		const { data, response } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/resume-agent", {
-			params: { path: { sessionId } },
+			params: { path: { sessionId }, query: { poll: true } },
 			signal: abort.signal,
 		});
 		if (response.status === 404 || response.status === 405) return "gone";

@@ -449,12 +449,15 @@ func (f *fakeSessionService) StartResumeAgent(_ context.Context, id domain.Sessi
 	return s, nil
 }
 
-func (f *fakeSessionService) ResumeAgentStatus(_ context.Context, id domain.SessionID) (sessionsvc.ResumeAgentStatus, error) {
+func (f *fakeSessionService) ResumeAgentStatus(_ context.Context, id domain.SessionID, poll bool) (sessionsvc.ResumeAgentStatus, error) {
 	status, ok := f.resumeStatus[id]
 	if !ok {
 		return sessionsvc.ResumeAgentStatus{}, apierr.NotFound("AGENT_RESUME_NOT_FOUND", "No resume of this agent is recorded since the daemon started")
 	}
-	status.Session = f.sessions[id]
+	if !poll || status.State == sessionsvc.ResumeAgentSucceeded {
+		sess := f.sessions[id]
+		status.Session = &sess
+	}
 	return status, nil
 }
 
@@ -1323,7 +1326,7 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 			`"error":{"status":503,"code":"SERVICE_UNAVAILABLE"`},
 	} {
 		svc.resumeStatus["ao-2"] = tc.status
-		body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-2/resume-agent", "")
+		body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-2/resume-agent?poll=true", "")
 		if status != http.StatusOK || !strings.Contains(string(body), tc.want) || !strings.Contains(string(body), `"sessionId":"ao-2"`) {
 			t.Fatalf("resume status = %d %s, want %s", status, body, tc.want)
 		}

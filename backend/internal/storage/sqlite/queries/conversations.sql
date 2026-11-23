@@ -1528,12 +1528,16 @@ LIMIT 1;
 -- A native history import has the provider turn identity but not AO's turn id.
 -- Looking through the turn also detects a message AO wrote before dispatch, which
 -- prevents a Chat -> TUI -> Chat cycle from rendering the same prompt twice.
+-- Constrain both sides so SQLite can find the provider turn first, then use the
+-- message turn index instead of scanning a conversation's messages per replayed turn.
 -- name: SelectConversationUserMessageByTurn :one
 SELECT conversation_messages.*
 FROM conversation_messages
 JOIN conversation_turns ON conversation_turns.id = conversation_messages.turn_id
-WHERE conversation_messages.conversation_id = ?
-  AND conversation_turns.provider_turn_id = ?
+WHERE conversation_messages.conversation_id = sqlc.arg(conversation_id)
+  AND conversation_turns.conversation_id = sqlc.arg(conversation_id)
+  AND conversation_turns.provider_turn_id = sqlc.arg(provider_turn_id)
+  AND conversation_turns.provider_turn_id <> ''
   AND conversation_messages.role = 'user'
 LIMIT 1;
 
