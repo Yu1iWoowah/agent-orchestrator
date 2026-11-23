@@ -86,8 +86,6 @@ type Service struct {
 	onAccountChanged        func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged  func(domain.SessionID, string, ports.CodexCapacityObservation)
 
-	rcaClaude ports.RCAClaudeLaunchControl // guarded by mu
-
 	findMu         sync.Mutex
 	findCache      map[string]cachedFind
 	recheckAccount func(domain.SessionID, domain.AgentHarness)
@@ -1096,12 +1094,6 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	if generation == "" {
 		generation = s.newID()
 	}
-	rcaEnvironment, rcaReady := s.claudeRCAForLaunch(cfg, generation)
-	defer func() {
-		if rcaReady != nil {
-			rcaReady(ctx, false, false)
-		}
-	}()
 	cfg.Env, err = s.settingsLaunchEnvironment(ctx, cfg, generation, cfg.Env)
 	if err != nil {
 		return nil, err
@@ -1144,7 +1136,6 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			WorkspacePath:          cfg.WorkspacePath,
 			Env:                    cfg.Env,
 			PrepareEnv:             prepareEnv,
-			RCAEnvironment:         rcaEnvironment,
 			Model:                  cfg.Model,
 			Effort:                 cfg.Effort,
 			FastMode:               cfg.FastMode,
@@ -1164,7 +1155,6 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			WorkspacePath:         cfg.WorkspacePath,
 			Env:                   cfg.Env,
 			PrepareEnv:            prepareEnv,
-			RCAEnvironment:        rcaEnvironment,
 			Model:                 cfg.Model,
 			Effort:                cfg.Effort,
 			FastMode:              cfg.FastMode,
@@ -1634,15 +1624,6 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	go func() {
 		controller.Wait()
 		controller.waitForBranchHandoff()
-		s.mu.RLock()
-		rcaControl := s.rcaClaude
-		s.mu.RUnlock()
-		if rcaControl != nil && owner.Kind == domain.ConversationOwnerSession {
-			func() {
-				defer func() { _ = recover() }()
-				rcaControl.ClaudeControllerStopped(cfg.SessionID, generation)
-			}()
-		}
 		s.mu.Lock()
 		if current, ok := s.ownerControllers[owner]; ok && current == controller {
 			controller.mu.Lock()
@@ -1658,11 +1639,6 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		}
 		s.mu.Unlock()
 	}()
-
-	if rcaReady != nil {
-		rcaReady(ctx, true, liveReconnect)
-		rcaReady = nil
-	}
 
 	return controller, nil
 }
@@ -2305,17 +2281,6 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 	s.mu.RLock()
 	controller, ok := s.controllers[id]
 	s.mu.RUnlock()
-	if ok {
-		s.mu.RLock()
-		rcaControl := s.rcaClaude
-		s.mu.RUnlock()
-		if rcaControl != nil {
-			func() {
-				defer func() { _ = recover() }()
-				rcaControl.ClaudeControllerStopped(id, controller.Generation())
-			}()
-		}
-	}
 	if !ok {
 		s.mu.Lock()
 		delete(s.startConfigs, owner)
