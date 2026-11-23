@@ -16,24 +16,61 @@ func (e *Engine) reviewerAccountContext(ctx context.Context, worker domain.Sessi
 	if e.accounts == nil {
 		return ctx, nil
 	}
+	request, err := e.reviewerAccountRequest(ctx, worker, review, override)
+	if err != nil {
+		return ctx, err
+	}
+	selected, err := e.accounts.ResolveReviewerAccount(ctx, review.ID, request)
+	if err != nil {
+		return ctx, err
+	}
+	return ports.WithAgentAccount(ctx, selected), nil
+}
+
+func (e *Engine) reviewerAccountRequest(ctx context.Context, worker domain.SessionRecord, review domain.Review, override string) (ports.AgentAccountResolutionRequest, error) {
 	var config domain.ProjectConfig
 	if e.projects != nil && worker.ProjectID != "" {
 		project, found, err := e.projects.GetProject(ctx, string(worker.ProjectID))
 		if err != nil {
-			return ctx, err
+			return ports.AgentAccountResolutionRequest{}, err
 		}
 		if found {
 			config = project.Config
 		}
 	}
-	selected, err := e.accounts.ResolveReviewerAccount(ctx, review.ID, ports.AgentAccountResolutionRequest{
+	return ports.AgentAccountResolutionRequest{
 		Harness: domain.AgentHarness(review.Harness), Role: domain.AgentAccountRoleReviewer,
 		ProjectConfig: config, AccountID: override,
-	})
-	if err != nil {
-		return ctx, err
+	}, nil
+}
+
+// rebindReviewerAccount moves a new pass to a fresh execution when it resolves
+// to another account than the reviewer's binding. The old conversation lives in
+// the old account's profile, so it cannot be resumed under the new one. A Chat
+// reviewer is stopped first; a new terminal launch replaces the old pane. The
+// old review, conversation, passes and binding stay as they were.
+func (e *Engine) rebindReviewerAccount(ctx context.Context, worker domain.SessionRecord, review domain.Review, override string) (domain.Review, error) {
+	rebinder, ok := e.accounts.(ports.ReviewerAccountRebinder)
+	replacer, replaceable := e.store.(ports.ReviewerExecutionReplacer)
+	if !ok || !replaceable {
+		return review, nil
 	}
-	return ports.WithAgentAccount(ctx, selected), nil
+	request, err := e.reviewerAccountRequest(ctx, worker, review, override)
+	if err != nil {
+		return review, err
+	}
+	selected, rebind, err := rebinder.ReviewerRebindTarget(ctx, review.ID, request)
+	if err != nil || !rebind {
+		return review, err
+	}
+	if err := e.stopReviewChatWork(ctx, review); err != nil {
+		return review, err
+	}
+	next, replaced, err := replacer.ReplaceReviewerAccountExecution(ctx, review.ID, e.newID(), selected, e.clock())
+	if err != nil || !replaced {
+		return review, err
+	}
+	return next, nil
 }
 
 // holdReviewerAccount keeps account mutations excluded until a native launch

@@ -112,11 +112,18 @@ func TestStalledPromptHoldKeepsStopCutoff(t *testing.T) {
 	}
 	clock.advance(time.Second)
 	sendQueued(t, h, "after stop")
+	// The stall forces a monitor sweep. Park it in its host query so the
+	// settlement below is what it reads; advancing the clock instead would
+	// also expire the deadline of the recheck the release starts.
+	gate := make(chan struct{})
+	conv.gate.Store(&gate)
 	emitStall(t, h, conv)
+	<-conv.blocked
 	assertTurnStaysQueued(t, h, "before stop")
 
 	settleHostReceipt(conv, a.ID)
-	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	conv.gate.Store(nil)
+	close(gate)
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		states := turnStateByText(t, s)
 		return states["before stop"] == domain.TurnStateInterrupted && states["after stop"] != domain.TurnStateQueued

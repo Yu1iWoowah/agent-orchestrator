@@ -344,6 +344,10 @@ WHERE status IN ('launching', 'running') AND batch_id != ''
 UPDATE review SET is_archived = TRUE, reviewer_handle_id = '', reviewer_launch_id = '',
     controller_generation = '', reviewer_activity_state = 'exited', updated_at = ? WHERE session_id = ?;
 
+-- name: ArchiveReview :exec
+UPDATE review SET is_archived = TRUE, reviewer_handle_id = '', reviewer_launch_id = '',
+    controller_generation = '', reviewer_activity_state = 'exited', updated_at = ? WHERE id = ?;
+
 -- A rebuild is a new immutable execution, never a binding rewrite. The path's
 -- old ID is the CAS predecessor; replay cannot create another fresh owner.
 -- name: InsertReviewerAccountExecution :one

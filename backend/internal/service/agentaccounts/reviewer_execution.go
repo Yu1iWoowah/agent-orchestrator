@@ -34,6 +34,27 @@ func (s *Service) currentReviewerExecution(ctx context.Context, id string) error
 	return nil
 }
 
+// ReviewerRebindTarget reports the account a new pass resolves to when it
+// differs from the reviewer's binding, for example after that account signed
+// out or the project chose another one. It reports false when the pass keeps
+// the bound account or cannot resolve one.
+func (s *Service) ReviewerRebindTarget(ctx context.Context, id string, in ports.AgentAccountResolutionRequest) (domain.ResolvedAgentAccount, bool, error) {
+	p, supported := domain.AgentAccountProviderFor(in.Harness)
+	bindings, bound := s.store.(ports.ReviewerAgentAccountStore)
+	if !supported || !bound || id == "" {
+		return domain.ResolvedAgentAccount{}, false, nil
+	}
+	binding, found, err := bindings.GetReviewerAgentAccount(ctx, id, p)
+	if err != nil || !found {
+		return domain.ResolvedAgentAccount{}, false, err
+	}
+	// An unresolvable pass keeps the binding; its own resolution reports why.
+	if selected, err := s.ResolveAccount(ctx, in); err == nil && selected.AccountID != "" && selected.AccountID != binding.AccountID {
+		return selected, true, nil
+	}
+	return domain.ResolvedAgentAccount{}, false, nil
+}
+
 // RebuildReviewer creates a fresh native execution only after explicit archive.
 // The old review, conversation, passes and account binding remain immutable.
 func (s *Service) RebuildReviewer(ctx context.Context, id, targetID string) (domain.Review, error) {
