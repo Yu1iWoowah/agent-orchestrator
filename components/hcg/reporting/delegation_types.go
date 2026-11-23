@@ -4,6 +4,29 @@ import "time"
 
 // Fixed delegation DTOs keep the backend edge independent of internal types.
 
+type Inputs struct {
+	Project       *bool `json:"project"`
+	Role          *bool `json:"role"`
+	Session       *bool `json:"session"`
+	EmergencyStop bool  `json:"emergencyStop"`
+}
+
+// Identity is constructed by AO from its owned session records. HTTP callers
+// must never supply source paths or native ownership.
+type Identity struct {
+	DataRoot             string
+	ProjectID            string
+	SessionID            string
+	Role                 string
+	Mode                 string
+	Harness              string
+	Worktree             string
+	ArtifactDir          string
+	NativeID             string
+	LaunchID             string
+	ControllerGeneration string
+}
+
 type DelegationProfileRef struct {
 	ID       string `json:"id"`
 	Revision string `json:"revision"`
