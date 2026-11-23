@@ -144,6 +144,16 @@ func prepareScope(ctx context.Context, approved ApprovedScope, question string, 
 			return out, scopeFailure("blocked", id, "outside_scope")
 		}
 		seen[filepath.Join(base, rel)] = true
+		// OpenRoot follows symlinks inside the root, so the real target must
+		// pass the same sensitive-path rules as the requested path.
+		real, realErr := filepath.EvalSymlinks(filepath.Join(base, rel))
+		baseReal, baseErr := filepath.EvalSymlinks(base)
+		if realErr != nil || baseErr != nil {
+			return out, scopeFailure("blocked", id, "source_unavailable")
+		}
+		if target, err := filepath.Rel(baseReal, real); err != nil || !filepath.IsLocal(target) || !safeSourcePath(target) {
+			return out, scopeFailure("blocked", id, "outside_scope")
+		}
 		root, err := os.OpenRoot(base)
 		if err != nil {
 			return out, scopeFailure("blocked", id, "source_unavailable")
