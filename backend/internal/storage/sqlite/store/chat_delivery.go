@@ -150,8 +150,51 @@ func (s *Store) BlockChatDeliveryWithAttention(ctx context.Context, next domain.
 	return next, err
 }
 
+// SettleInterruptedUnknownDelivery closes the original inputs without making
+// them replayable. The caller has proved that their execution scope ended.
+func (s *Store) SettleInterruptedUnknownDelivery(ctx context.Context, original domain.ChatDeliveryAttempt, actor domain.AgentSettingsOwner, at time.Time) error {
+	if original.ExecutionSettled || original.Disposition != domain.ChatDeliveryUnknown && original.Disposition != domain.ChatDeliveryReserved {
+		return ports.ErrAgentSettingsInvalid
+	}
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "settle interrupted unknown delivery", func(q *gen.Queries) error {
+		code := "CHAT_DELIVERY_HOST_GONE_SETTLED"
+		for _, id := range original.TurnIDs {
+			turn, err := q.SelectConversationTurnByID(ctx, id)
+			if err != nil {
+				return err
+			}
+			if turn.ConversationID != original.ConversationID {
+				return ports.ErrAgentSettingsConflict
+			}
+			if turn.State != domain.TurnStateCompleted {
+				code = "CHAT_DELIVERY_HOST_GONE_INTERRUPTED"
+			}
+			if turn.State == domain.TurnStateQueued || turn.State == domain.TurnStateRunning {
+				if err := settleLostChatTurn(ctx, q, turn, at); err != nil {
+					return err
+				}
+			}
+		}
+		receipt := domain.ChatDeliveryReceipt{AttemptID: original.ID, Disposition: domain.ChatDeliveryUnknown, Source: "incomplete", ExecutionSettled: true, ObservedAt: at}
+		if old := original.Receipt; old != nil {
+			receipt.ProviderEpoch, receipt.ProviderRequestID, receipt.ProviderTurnID = old.ProviderEpoch, old.ProviderRequestID, old.ProviderTurnID
+		}
+		next := original
+		next.Version++
+		next.UpdatedAt = at
+		next.Disposition, next.Receipt, next.ExecutionSettled, next.EvidenceLevel = domain.ChatDeliveryUnknown, &receipt, true, 0
+		next.NextCheckAt, next.BlockedSince, next.ErrorCode = nil, nil, code
+		return updateChatDelivery(ctx, q, next, original.Version, actor, false)
+	})
+}
+
 // SettlePreviousBootAcceptance records that execution ended without rewriting
-// what the provider originally acknowledged. The caller has verified the boot.
+// what the provider originally acknowledged. The caller has verified the end
+// of the original execution scope.
 func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domain.ChatDeliveryAttempt, actor domain.AgentSettingsOwner, at time.Time) error {
 	if original.ExecutionSettled || original.Disposition != domain.ChatDeliveryAccepted || original.Receipt == nil ||
 		original.Receipt.ExecutionSettled || original.Receipt.ProviderTurnID == "" || !original.Accepts(*original.Receipt) ||
@@ -195,7 +238,8 @@ func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domai
 			providerTurn := original.Receipt.ProviderTurnID
 			running := turn.State == domain.TurnStateRunning
 			reconnectFailed := turn.State == domain.TurnStateFailed && turn.CompletedAt.Valid && turn.ErrorMessage == reconnectUnconfirmedDelivery
-			needsBinding := turn.ProviderTurnID == "" && (running || reconnectFailed)
+			interrupted := turn.State == domain.TurnStateInterrupted
+			needsBinding := turn.ProviderTurnID == "" && (running || reconnectFailed || interrupted)
 			if turn.ProviderTurnID != providerTurn && !needsBinding {
 				return ports.ErrAgentSettingsConflict
 			}

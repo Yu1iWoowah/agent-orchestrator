@@ -59,8 +59,9 @@ func BindAdapterOwner(dataDir string, session domain.SessionID, epoch, conversat
 }
 
 // ReconcileExitedAdapters examines only bound launch records. A successful
-// callback consumes that generation's record, leaving later owners untouched.
-func ReconcileExitedAdapters(ctx context.Context, dataDir string, stopped func(domain.SessionID, string) bool, settle func(context.Context, domain.SessionID, string, string, string) error) error {
+// callback can consume that generation's record once it no longer needs proof
+// of the original process scope ending.
+func ReconcileExitedAdapters(ctx context.Context, dataDir string, stopped func(domain.SessionID, string) bool, settle func(context.Context, domain.SessionID, string, string, string, bool) (bool, error)) error {
 	root := filepath.Join(dataDir, "chat-hosts")
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, os.ErrNotExist) {
@@ -88,8 +89,13 @@ func ReconcileExitedAdapters(ctx context.Context, dataDir string, stopped func(d
 				filepath.Base(path) != adapterOwnerPrefix+owner.Generation+".json" || !stopped(owner.Session, owner.Generation) || !processscope.AdapterExited(owner.Scope) {
 				continue
 			}
-			if err := settle(ctx, owner.Session, owner.Conversation, owner.Branch, owner.Generation); err != nil {
+			ended, _ := processscope.Ended(ctx, owner.Scope)
+			consumed, err := settle(ctx, owner.Session, owner.Conversation, owner.Branch, owner.Generation, ended)
+			if err != nil {
 				failures = append(failures, err)
+				continue
+			}
+			if !consumed {
 				continue
 			}
 			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {

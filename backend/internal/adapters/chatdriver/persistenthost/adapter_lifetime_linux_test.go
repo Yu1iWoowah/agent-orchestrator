@@ -62,12 +62,12 @@ func TestAdapterOwnerSurvivesDescriptorReplacementAndSettlesOnlyAfterExit(t *tes
 		t.Helper()
 		if err := ReconcileExitedAdapters(ctx, dataDir, func(id domain.SessionID, _ string) bool {
 			return id == session
-		}, func(_ context.Context, id domain.SessionID, conversation, branch, generation string) error {
+		}, func(_ context.Context, id domain.SessionID, conversation, branch, generation string, _ bool) (bool, error) {
 			if id != session || conversation != "conversation" || branch != "branch" {
 				t.Fatalf("unexpected adapter owner: %s/%s/%s", id, conversation, branch)
 			}
 			settled = append(settled, generation)
-			return nil
+			return true, nil
 		}); err != nil {
 			t.Fatal(err)
 		}
