@@ -181,22 +181,26 @@ func (r *CompositionReader) Composition(ctx context.Context, id domain.SessionID
 			if err != nil {
 				return out, err
 			}
-			var codex []domain.UsageSourceRecord
+			// A rebuilt or relocated file keeps its replaced generation; read only
+			// the latest generation per kind and native session, as the collector
+			// does for Codex.
+			latest := map[string]domain.UsageSourceRecord{}
+			var order []string
 			for _, source := range sources {
-				if source.SubagentID != "" {
+				if source.SubagentID != "" || (source.Kind != domain.UsageSourceClaudeMain && source.Kind != domain.UsageSourceCodexRollout) {
 					continue
 				}
-				switch source.Kind {
-				case domain.UsageSourceClaudeMain:
-					files = append(files, compositionFile{kind: source.Kind, path: source.ArtifactPath})
-				case domain.UsageSourceCodexRollout:
-					codex = append(codex, source)
+				key := string(source.Kind) + "\x00" + source.NativeSessionID
+				current, seen := latest[key]
+				if !seen {
+					order = append(order, key)
+				}
+				if !seen || source.Generation > current.Generation || (source.Generation == current.Generation && source.ID > current.ID) {
+					latest[key] = source
 				}
 			}
-			// A relocated rollout keeps its replaced generation; read only the
-			// latest generation per native session, as the collector does.
-			for _, source := range latestCodexSourcesByNativeSession(codex) {
-				files = append(files, compositionFile{kind: source.Kind, path: source.ArtifactPath})
+			for _, key := range order {
+				files = append(files, compositionFile{kind: latest[key].Kind, path: latest[key].ArtifactPath})
 			}
 		}
 	}
