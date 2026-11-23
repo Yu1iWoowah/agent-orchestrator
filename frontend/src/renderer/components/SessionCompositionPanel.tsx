@@ -40,7 +40,7 @@ export const SessionCompositionPanel = memo(function SessionCompositionPanel({ s
 				{data?.status === "ok" ? (
 					<>
 						<p>{t("composition.method")}</p>
-						<div className="max-h-80 overflow-y-auto">
+						<div className="max-h-80 overflow-auto [&_[data-slot=table-container]]:overflow-visible">
 							<Table className="text-xs" aria-label={t("composition.title")}>
 								<TableHeader>
 									<TableRow>
