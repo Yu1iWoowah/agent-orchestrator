@@ -16,7 +16,7 @@ cd "$AO_DATA_DIR/artifacts/$AO_SESSION_ID/handoff" && \
   </dev/null >/dev/null 2>&1 &
 ```
 
-四個設定參數都可省略；省略的不傳給 `ao spawn`，由專案設定的 orchestrator 決定。`--approval-mode` 預設 `bypass-permissions`；省略時 AO 會用 `auto`，新主控可能卡在核准提示。
+四個設定參數都可省略；省略的不傳給 `ao spawn`，由 AO 自行解析，新主控也不比對。使用者確認了具體值時，就全部明確傳入。`--approval-mode` 預設 `bypass-permissions`；省略時 AO 會用 `auto`，新主控可能卡在核准提示。
 
 ## 腳本做什麼
 
@@ -34,12 +34,12 @@ cd "$AO_DATA_DIR/artifacts/$AO_SESSION_ID/handoff" && \
 新主控依序做下面四步。任何一步失敗，就向使用者回報失敗的步驟並停止。
 
 1. 用 `cp -a --update=none` 把舊主控 artifact 複製到自己的 artifact。
-2. 用 `ao session settings` 讀 provider 回報的 model、effort 與帳號，用 `ao session get --json` 讀 harness，確認與核准設定一致。
-3. 讀交接文件，向使用者回報接手；再以自己的身分寫 `handoff/receipt-<舊>-<新>.md`（`--expected-hash missing`）。寫入成功就表示已拿到共用資料夾的 lease。
+2. 用 `ao session settings` 讀 provider 回報的 model、effort 與帳號，用 `ao session get --json` 讀 harness；只比對腳本明確傳入的值，未傳入的不比對。
+3. 讀交接文件，向使用者回報接手與四個實際值；再以自己的身分寫含這四個值的 `handoff/receipt-<舊>-<新>.md`（`--expected-hash missing`）。寫入成功就表示已拿到共用資料夾的 lease。
 4. 依交接文件親自通知存活 worker。
 
 複製與核對由新主控自己做，所以不必等腳本放行。腳本只負責 kill 與 spawn，換手過程沒有固定等待，也沒有輪詢。
 
 ## 失敗時
 
-看 log 最後一行的 `STOP step=`。kill 失敗時，舊主控仍在。spawn 失敗時，舊主控已終止，專案暫時沒有主控，下一步由使用者決定；這時已無法以舊主控身分重跑腳本。新主控那四步失敗，會由新主控自己回報。
+看 log 最後一行的 `STOP step=`。不論停在 kill 或 spawn，舊主控與新主控的狀態都未確認：kill 回錯時舊主控仍可能已終止，spawn 回錯時新 session 仍可能已建立並啟動。先用 `ao session ls`／`ao session get` 確認現況，再由使用者決定下一步；腳本不自動恢復，也不自動再 spawn。新主控那四步失敗，會由新主控自己回報。
