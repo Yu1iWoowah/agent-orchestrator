@@ -485,7 +485,7 @@ type Manager struct {
 	tuiSettingsValidator        ports.ChatAgentSettingsValidator
 	tuiSettingsFences           map[domain.SessionID]string
 	settingsGrants              ports.AgentSettingsGrantEnvironment
-	hcgReporting                ports.HCGReportingLaunchObserver
+	hcgDelegation               ports.HCGDelegationMountResolver
 	accountOverrideMu           sync.Mutex
 	accountOverrides            map[domain.SessionID]string
 	attachments                 *attachmentstore.Store
@@ -928,7 +928,7 @@ const (
 
 // Deps are the collaborators a Session Manager needs; New wires them together.
 type Deps struct {
-	HCGReporting  ports.HCGReportingLaunchObserver
+	HCGDelegation ports.HCGDelegationMountResolver
 	ReplyLanguage settingssvc.ReplyLanguageSource
 	Runtime       runtimeController
 	Agents        ports.AgentResolver
@@ -1012,7 +1012,7 @@ func New(d Deps) *Manager {
 		agents:        d.Agents,
 		workspace:     d.Workspace,
 		store:         d.Store,
-		hcgReporting:  d.HCGReporting,
+		hcgDelegation: d.HCGDelegation,
 		replyLanguage: d.ReplyLanguage,
 
 		forkSeeds:                      gitForkSeeds{},
@@ -1942,7 +1942,6 @@ func (m *Manager) spawn(ctx context.Context, cfg ports.SpawnConfig, replacement 
 	}
 	namingHandedOff = true
 	m.nameTaskBranchLater(ctx, rec, ws, workspaceProject, taskName, cancelNaming)
-	m.notifyHCGReporting(rec, env[ports.EnvHCGDelegationMCP] == "1")
 	return rec, promptBytes, systemPromptBytes, nil
 }
 
@@ -4636,7 +4635,6 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	if err != nil {
 		return RestoreResult{}, err
 	}
-	m.notifyHCGReporting(updated, env[ports.EnvHCGDelegationMCP] == "1")
 
 	if rec.NeedsImportResume() {
 		// Terminal providers redraw native history themselves. There is no Chat
@@ -7538,7 +7536,7 @@ func (m *Manager) prepareWorkerLaunchEnv(
 	if err != nil {
 		return rec, nil, fmt.Errorf("persist browser capability verifier: %w", err)
 	}
-	if resolver, ok := m.hcgReporting.(ports.HCGDelegationMountResolver); ok && (rec.Kind == domain.KindWorker || rec.Kind == domain.KindOrchestrator) && rec.Harness == domain.HarnessCodex && resolver.DelegationMountRequested(ports.HCGDelegationMount{SessionID: rec.ID, ProjectID: rec.ProjectID, Kind: rec.Kind, Harness: rec.Harness, Mode: domain.SessionModeTUI, DataRoot: m.dataDir}) {
+	if resolver := m.hcgDelegation; resolver != nil && (rec.Kind == domain.KindWorker || rec.Kind == domain.KindOrchestrator) && rec.Harness == domain.HarnessCodex && resolver.DelegationMountRequested(ports.HCGDelegationMount{SessionID: rec.ID, ProjectID: rec.ProjectID, Kind: rec.Kind, Harness: rec.Harness, Mode: domain.SessionModeTUI, DataRoot: m.dataDir}) {
 		env[ports.EnvHCGDelegationMCP] = "1"
 	}
 	return rec, env, nil

@@ -15,7 +15,7 @@ import (
 )
 
 var delegationMCPTools = []any{map[string]any{
-	"name": "hcg_delegate_read", "description": "Read explicitly approved relative files through fixed HCG/PAL policy, budget and evidence gates; unavailable falls back to native read/rg.",
+	"name": "hcg_delegate_read", "description": "Delegate a read of explicit files to a fixed API model and get findings with verified path/line quotes. Paths are relative to your worktree; orchestrators may also give absolute paths under the AO artifacts or project shared directory. unavailable falls back to native read/rg.",
 	"inputSchema": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"question", "paths"}, "properties": map[string]any{"question": map[string]any{"type": "string", "minLength": 1, "maxLength": 16384}, "paths": map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "items": map[string]any{"type": "string"}}, "focus": map[string]any{"type": "string", "maxLength": 4096}, "output_limit": map[string]any{"type": "integer", "minimum": 0, "maximum": 65536}}},
 	"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "openWorldHint": true},
 }}

@@ -1,4 +1,4 @@
-package integration
+package delegate
 
 import "testing"
 

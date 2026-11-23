@@ -10,12 +10,12 @@ import (
 )
 
 func validProposal(source string) string {
-	b, _ := json.Marshal(map[string]any{"schema": resultSchema, "status": "ok", "findings": []Finding{{ID: "f1", Kind: "fact", Text: "fixture-answer", EvidenceIDs: []string{"e1"}}}, "evidence": []proposedEvidence{{ID: "e1", SourceID: "s0000", Revision: "r1", ContentSHA256: textHash(source), LineStart: 1, LineEnd: 1, Quote: strings.Split(source, "\n")[0], QuoteSHA256: textHash(strings.Split(source, "\n")[0])}}})
+	b, _ := json.Marshal(map[string]any{"schema": resultSchema, "status": "ok", "findings": []Finding{{ID: "f1", Kind: "fact", Text: "fixture-answer", EvidenceIDs: []string{"e1"}}}, "evidence": []proposedEvidence{{ID: "e1", SourceID: "s0000", Revision: scopeRevision, ContentSHA256: textHash(source), LineStart: 1, LineEnd: 1, Quote: strings.Split(source, "\n")[0], QuoteSHA256: textHash(strings.Split(source, "\n")[0])}}})
 	return string(b)
 }
 func TestReadReplyEvidenceAndScope(t *testing.T) {
 	source := "first line\nsecond line\n"
-	scope := preparedScope{Sources: []sourceSnapshot{{SourceRange: SourceRange{ID: "s0000", Path: "prompt.txt", Revision: "r1", SHA256: textHash(source), Start: 1, End: 3}, text: source}}}
+	scope := preparedScope{Sources: []sourceSnapshot{{SourceRange: SourceRange{ID: "s0000", Path: "prompt.txt", Revision: scopeRevision, SHA256: textHash(source), Start: 1, End: 3}, text: source}}}
 	audit := PayloadAudit{Coverage: "complete", Sources: []SourceRange{scope.Sources[0].SourceRange}, Omissions: []Omission{}}
 	p := Profile{BillingProvider: "openai", Model: "fixture", ID: "fixture", Revision: "r1"}
 	receipt := Receipt{RequestID: "request", ProfileDigest: strings.Repeat("a", 64)}
@@ -94,7 +94,7 @@ func TestReadReplyEvidenceAndScope(t *testing.T) {
 func TestVerifyReplyNamesFirstFailurePrivately(t *testing.T) {
 	source := "first line\nsecond line\n"
 	baseScope := func() preparedScope {
-		return preparedScope{Sources: []sourceSnapshot{{SourceRange: SourceRange{ID: "s0000", Path: "prompt.txt", Revision: "r1", SHA256: textHash(source), Start: 1, End: 3}, text: source}}}
+		return preparedScope{Sources: []sourceSnapshot{{SourceRange: SourceRange{ID: "s0000", Path: "prompt.txt", Revision: scopeRevision, SHA256: textHash(source), Start: 1, End: 3}, text: source}}}
 	}
 	baseAudit := func() PayloadAudit {
 		return PayloadAudit{Coverage: "complete", Sources: []SourceRange{baseScope().Sources[0].SourceRange}, Omissions: []Omission{}}

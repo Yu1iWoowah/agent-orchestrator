@@ -360,9 +360,6 @@ func Run(buildVersion string) (retErr error) {
 	// Open the durable store and bring up the CDC substrate: DB triggers capture
 	// changes into change_log, the poller tails it, and the broadcaster fans
 	// events out to live transports.
-	if err := hcgsvc.CheckDelegationOwnerStartup(context.Background(), cfg.DataDir); err != nil {
-		return fmt.Errorf("HCG canonical owner unavailable: %w", err)
-	}
 	store, err := sqlite.Open(cfg.DataDir)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
@@ -390,8 +387,8 @@ func Run(buildVersion string) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("initialize settings authority: %w", err)
 	}
-	hcgReporting := hcgsvc.NewLabOwner(context.Background(), cfg.DataDir, store, dataDirLock != nil)
-	defer hcgReporting.Close()
+	hcgDelegation := hcgsvc.NewOwner(context.Background(), cfg.DataDir, store, dataDirLock != nil)
+	defer hcgDelegation.Close()
 	rcaRoots, _ := usagesvc.DefaultSourceRoots(context.Background(), cfg.DataDir, cfg.StateDir)
 	rcaService := rcasvc.New(context.Background(), cfg.DataDir, store, usagesvc.NewEventsReader(store), rcaRoots)
 	defer rcaService.Close()
@@ -682,7 +679,6 @@ func Run(buildVersion string) (retErr error) {
 			}
 		},
 	})
-	chatSvc.SetHCGReportingObserver(hcgReporting)
 	chatSvc.SetRCAClaudeLaunchControl(rcaService)
 	chatSvc.SetRenderCheck(renderViaDesktop(browserBroker, "__render-check"))
 	chatSvc.SetRenderMeasure(renderViaDesktop(browserBroker, "__render-measure"))
@@ -797,7 +793,7 @@ func Run(buildVersion string) (retErr error) {
 		}
 		return fmt.Errorf("reviewer resolver: %w", err)
 	}
-	sessionSvc, reviewSvc, wiredSessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, lcStack.ArtifactVersions, messenger, telemetrySink, notificationWriter, agents, agentSvc, managedPreview, browserLifecycle, browserAuthority, chatLauncher{svc: chatSvc, persistentHostReconcileDone: persistentHostsReconciled}, reviewerChatsRecovered, settingsSvc, settingsSvc, tracker, codexOperationGate, reviewers, reviewRefresher, agentAccountSvc, hcgReporting, log)
+	sessionSvc, reviewSvc, wiredSessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, lcStack.ArtifactVersions, messenger, telemetrySink, notificationWriter, agents, agentSvc, managedPreview, browserLifecycle, browserAuthority, chatLauncher{svc: chatSvc, persistentHostReconcileDone: persistentHostsReconciled}, reviewerChatsRecovered, settingsSvc, settingsSvc, tracker, codexOperationGate, reviewers, reviewRefresher, agentAccountSvc, hcgDelegation, log)
 	if err != nil {
 		stop()
 		lcStack.Stop()
@@ -998,7 +994,7 @@ func Run(buildVersion string) (retErr error) {
 	if githubRepos != nil {
 		sessionSvc.SetGitHubRepositoryResolver(githubRepos)
 	}
-	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Milestones: installMilestones(cfg), Logger: log, GitHubRepos: githubRepos, WithProjectGate: sessionSvc.WithOrchestratorProjectGate, DelegationPolicyChanged: hcgReporting.DelegationProjectPolicyChanged, RCAPolicyChanged: rcaService.ProjectPolicyChanged})
+	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Milestones: installMilestones(cfg), Logger: log, GitHubRepos: githubRepos, WithProjectGate: sessionSvc.WithOrchestratorProjectGate, DelegationPolicyChanged: hcgDelegation.DelegationProjectPolicyChanged, RCAPolicyChanged: rcaService.ProjectPolicyChanged})
 	go projectSvc.WarmCanonicalRepos(ctx)
 	reportSessions, ok := sessMgr.(reportSemanticSession)
 	if !ok {
@@ -1496,6 +1492,7 @@ func Run(buildVersion string) (retErr error) {
 	chatSvc.SetReplacementMutationGate(replacementRuntime)
 	chatSvc.SetSwitchModelCatalog(agentSvc)
 	sharedDocuments := projectdocssvc.New(projectdocssvc.Deps{Store: store, DataDir: cfg.DataDir, Capabilities: browserAuthority})
+	hcgDelegation.SetSharedRoot(sharedDocuments.ReadRoot)
 	replacementSvc := replacementsvc.New(replacementsvc.Deps{Store: store, Runtime: replacementRuntime, Documents: sharedDocuments, NativeTranscripts: nativeTranscripts, WithProjectGate: replacementRuntime.WithNativeReplacementProjectGate})
 	var usageHooks controllers.UsageHookRecorder = usageCollector
 	if usageHookQueue != nil {
@@ -1561,7 +1558,7 @@ func Run(buildVersion string) (retErr error) {
 		UsagePrices:        usagePrices(usagePricing),
 		UsageEvents:        usagesvc.NewEventsReader(store),
 		RCA:                rcaService,
-		HCGDelegation:      hcgReporting,
+		HCGDelegation:      hcgDelegation,
 		SessionMemory:      memoryReader,
 		SessionSteps:       lcStack.LCM,
 		Telemetry:          telemetrySink,

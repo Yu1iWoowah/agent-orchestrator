@@ -5,17 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 )
 
-func TestPALBudgetedCallerBothProfiles(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getenv("HCG_PAL_TESTS") != "1" {
-		t.Skip("isolated PAL required")
-	}
+func TestBudgetedCaller(t *testing.T) {
 	b := newBudget(t, 0, 0)
-	for _, provider := range []string{"openai", "anthropic"} {
+	for _, provider := range []string{"openai"} {
 		t.Run(provider, func(t *testing.T) {
 			root := t.TempDir()
 			source := filepath.Join(root, "prompt.txt")
@@ -28,7 +24,7 @@ func TestPALBudgetedCallerBothProfiles(t *testing.T) {
 			actual := &captureTransport{t: t, profile: p}
 			sink := &receiptSink{}
 			bridge := &budgetBridge{budget: b, execution: execution, profile: p, actual: actual, canonical: sink, authorize: func(context.Context) bool { return true }}
-			c := Consumer{PAL: PAL{Python: os.Getenv("HCG_TEST_PAL_PYTHON"), Source: os.Getenv("HCG_TEST_PAL_SOURCE"), TempRoot: root}, Transport: bridge, Recorder: bridge}
+			c := Consumer{Transport: bridge, Recorder: bridge}
 			result, err := c.DelegateRead(t.Context(), execution, p, approvedRequest(t, &c, "QUESTION_MUST_SURVIVE", source))
 			state := readBudget(t, b)
 			attempt := state.Attempts[bridge.key]
@@ -40,10 +36,7 @@ func TestPALBudgetedCallerBothProfiles(t *testing.T) {
 }
 
 func TestBudgetedCallerKeepsLateReceiptAfterCancellation(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getenv("HCG_PAL_TESTS") != "1" {
-		t.Skip("isolated PAL required")
-	}
-	for _, provider := range []string{"openai", "anthropic"} {
+	for _, provider := range []string{"openai"} {
 		t.Run(provider, func(t *testing.T) {
 			b := newBudget(t, 0, 0)
 			p := budgetProfile(provider)
@@ -61,7 +54,7 @@ func TestBudgetedCallerKeepsLateReceiptAfterCancellation(t *testing.T) {
 				<-release
 				return providerFixtureReply("fixture-model", "unused late answer"), ctx.Err()
 			})}
-			c := Consumer{PAL: PAL{Python: os.Getenv("HCG_TEST_PAL_PYTHON"), Source: os.Getenv("HCG_TEST_PAL_SOURCE"), TempRoot: t.TempDir()}, Transport: bridge, Recorder: bridge}
+			c := Consumer{Transport: bridge, Recorder: bridge}
 			request := approvedRequest(t, &c, "inspect")
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()

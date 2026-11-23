@@ -24,10 +24,10 @@ type labRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f labRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func labCredentialFixture(t *testing.T, family string) (string, string) {
+func providerCredentialFixture(t *testing.T, family string) (string, string) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
-		t.Skip("lab requires Linux isolation")
+		t.Skip("credential reader requires Linux")
 	}
 	root := t.TempDir()
 	for _, path := range []string{root, filepath.Join(root, family), filepath.Join(root, family, "synthetic-ref")} {
@@ -47,14 +47,14 @@ func labCredentialFixture(t *testing.T, family string) (string, string) {
 	return root, path
 }
 
-func TestLabDefaultHTTPVerifiesTLSAndIgnoresProxy(t *testing.T) {
-	root, _ := labCredentialFixture(t, "openai")
+func TestProviderDefaultHTTPVerifiesTLSAndIgnoresProxy(t *testing.T) {
+	root, _ := providerCredentialFixture(t, "openai")
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
 	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("untrusted TLS peer received an HTTP request")
 	}))
 	defer server.Close()
-	p := NewLabHTTPProvider(root, nil).(*labHTTPProvider)
+	p := NewHTTPProvider(root, nil).(*httpProvider)
 	transport := p.client.Transport.(*http.Transport)
 	dials := 0
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -75,18 +75,18 @@ func labRequest(family string) reporting.DelegationProviderRequest {
 	return reporting.DelegationProviderRequest{BillingProvider: family, ProfileID: family + "-fixture", ProfileRevision: "v1", Model: "fixture-model", Endpoint: "https://api." + family + ".com/v1/chat/completions", Workspace: "synthetic-workspace", CredentialRef: reporting.DelegationCredentialReference{Provider: family, Name: "synthetic-ref", Version: "v1"}, Payload: []byte(`{"model":"fixture-model","max_completion_tokens":64,"messages":[{"role":"system","content":"fixed"},{"role":"user","content":"synthetic"}]}`)}
 }
 
-func TestLabTransportFixedFamiliesAndSafeProjection(t *testing.T) {
-	for _, family := range []string{"openai", "anthropic"} {
+func TestProviderFixedFamilyAndSafeProjection(t *testing.T) {
+	for _, family := range []string{"openai"} {
 		t.Run(family, func(t *testing.T) {
-			root, _ := labCredentialFixture(t, family)
+			root, _ := providerCredentialFixture(t, family)
 			calls := 0
-			provider := NewLabHTTPProvider(root, labRoundTripper(func(r *http.Request) (*http.Response, error) {
+			provider := NewHTTPProvider(root, labRoundTripper(func(r *http.Request) (*http.Response, error) {
 				calls++
 				body, _ := io.ReadAll(r.Body)
 				if r.URL.String() != labRequest(family).Endpoint || r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer "+labFixtureMarker || strings.Contains(string(body), labFixtureMarker) {
 					t.Error("fixed endpoint/auth/payload boundary failed")
 				}
-				if family == "openai" && r.Header.Get("OpenAI-Project") != "synthetic-workspace" {
+				if r.Header.Get("OpenAI-Project") != "synthetic-workspace" {
 					t.Error("project accounting binding missing")
 				}
 				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Request-Id": {"synthetic-request"}, "Set-Cookie": {labFixtureMarker}}, Body: io.NopCloser(strings.NewReader(`{"model":"fixture-model","usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)), Request: r}, nil
@@ -99,10 +99,10 @@ func TestLabTransportFixedFamiliesAndSafeProjection(t *testing.T) {
 	}
 }
 
-func TestLabResolverRejectsBeforeHTTP(t *testing.T) {
+func TestProviderResolverRejectsBeforeHTTP(t *testing.T) {
 	for _, name := range []string{"family", "version", "workspace", "endpoint", "file_mode", "directory_mode", "symlink"} {
 		t.Run(name, func(t *testing.T) {
-			root, path := labCredentialFixture(t, "openai")
+			root, path := providerCredentialFixture(t, "openai")
 			r := labRequest("openai")
 			switch name {
 			case "family":
@@ -130,7 +130,7 @@ func TestLabResolverRejectsBeforeHTTP(t *testing.T) {
 				}
 			}
 			calls := 0
-			p := NewLabHTTPProvider(root, labRoundTripper(func(*http.Request) (*http.Response, error) { calls++; return nil, errors.New("unexpected HTTP") }))
+			p := NewHTTPProvider(root, labRoundTripper(func(*http.Request) (*http.Response, error) { calls++; return nil, errors.New("unexpected HTTP") }))
 			out, err := p.Call(t.Context(), r)
 			if err == nil || !errors.Is(err, reporting.ErrDelegationNotSent) || calls != 0 || len(out.Body) != 0 || strings.Contains(err.Error(), labFixtureMarker) {
 				t.Fatal("resolver refusal reached HTTP or exposed unsafe output")
@@ -139,12 +139,12 @@ func TestLabResolverRejectsBeforeHTTP(t *testing.T) {
 	}
 }
 
-func TestLabHTTPRejectsRedirectAndSecretEcho(t *testing.T) {
+func TestProviderHTTPRejectsRedirectAndSecretEcho(t *testing.T) {
 	for _, mode := range []string{"redirect", "error_body", "decoded_echo", "completion_echo"} {
 		t.Run(mode, func(t *testing.T) {
-			root, _ := labCredentialFixture(t, "openai")
+			root, _ := providerCredentialFixture(t, "openai")
 			calls := 0
-			p := NewLabHTTPProvider(root, labRoundTripper(func(r *http.Request) (*http.Response, error) {
+			p := NewHTTPProvider(root, labRoundTripper(func(r *http.Request) (*http.Response, error) {
 				calls++
 				status, body := 200, `{"echo":"\u0053YNTHETIC_TRANSPORT_MARKER"}`
 				if mode == "completion_echo" {
@@ -167,10 +167,10 @@ func TestLabHTTPRejectsRedirectAndSecretEcho(t *testing.T) {
 	}
 }
 
-func TestLabHTTPInFlightCancellation(t *testing.T) {
-	root, _ := labCredentialFixture(t, "openai")
+func TestProviderHTTPInFlightCancellation(t *testing.T) {
+	root, _ := providerCredentialFixture(t, "openai")
 	entered := make(chan struct{})
-	p := NewLabHTTPProvider(root, labRoundTripper(func(r *http.Request) (*http.Response, error) {
+	p := NewHTTPProvider(root, labRoundTripper(func(r *http.Request) (*http.Response, error) {
 		close(entered)
 		<-r.Context().Done()
 		return nil, r.Context().Err()
@@ -187,46 +187,5 @@ func TestLabHTTPInFlightCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("transport did not stop after caller cancellation")
-	}
-}
-
-// The parent keeps every received body (≤1MiB) verbatim for the attempt
-// owner's private record, yet still forwards only a fully checked 200 body.
-func TestLabParentCapturesEveryBodyPrivately(t *testing.T) {
-	okBody := `{"model":"fixture-model","usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`
-	echoBody := `{"echo":"` + labFixtureMarker + `"}` + "\r\n"
-	big := strings.Repeat("b", (1<<20)+5)
-	for name, tc := range map[string]struct {
-		status                       int
-		body                         string
-		dialErr                      error
-		outcome, stage, code, stored string
-		complete                     bool
-		observed                     int64
-	}{
-		"ok":              {200, okBody, nil, "response", "", "", okBody, true, int64(len(okBody))},
-		"non_200":         {429, `{"error":"synthetic rate limit"}`, nil, "response", "http_status", "http_status_not_ok", `{"error":"synthetic rate limit"}`, true, 32},
-		"credential_echo": {200, echoBody, nil, "response", "credential_scan", "credential_echo", echoBody, true, int64(len(echoBody))},
-		"too_large":       {200, big, nil, "response", "body_size", "body_too_large", big[:1<<20], false, (1 << 20) + 1},
-		"no_response":     {0, "", errors.New("synthetic dial failure"), "no_response", "network", "request_failed", "", false, 0},
-	} {
-		t.Run(name, func(t *testing.T) {
-			root, _ := labCredentialFixture(t, "openai")
-			p := NewLabHTTPProvider(root, labRoundTripper(func(r *http.Request) (*http.Response, error) {
-				if tc.dialErr != nil {
-					return nil, tc.dialErr
-				}
-				return &http.Response{StatusCode: tc.status, Header: http.Header{"X-Request-Id": {"synthetic-request"}}, Body: io.NopCloser(strings.NewReader(tc.body)), Request: r}, nil
-			}))
-			out, err := p.Call(t.Context(), labRequest("openai"))
-			c := out.Capture
-			if c == nil || c.Outcome != tc.outcome || c.Stage != tc.stage || c.Code != tc.code || string(c.Body) != tc.stored || c.Complete != tc.complete || c.ObservedAtLeast != tc.observed {
-				t.Fatalf("private capture: %+v", c)
-			}
-			forwarded := name == "ok"
-			if forwarded != (err == nil && len(out.Body) > 0) || (forwarded && string(out.Body) != okBody) || (err != nil && strings.Contains(err.Error(), labFixtureMarker)) {
-				t.Fatalf("forwarding boundary changed: body=%d err=%v", len(out.Body), err)
-			}
-		})
 	}
 }

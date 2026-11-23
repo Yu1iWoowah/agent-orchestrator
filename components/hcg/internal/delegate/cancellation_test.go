@@ -5,21 +5,16 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestPALCallerFaultPhaseCancellationBounds(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getenv("HCG_PAL_TESTS") != "1" {
-		t.Skip("isolated fixed PAL required")
-	}
-	for _, family := range []string{"openai", "anthropic"} {
-		for _, point := range []string{"pal_assembly", "pal_ipc", "answer_validation"} {
+func TestCallerFaultPhaseCancellationBounds(t *testing.T) {
+	for _, family := range []string{"openai"} {
+		for _, point := range []string{"assembly", "answer_validation"} {
 			for _, deadline := range []bool{false, true} {
 				t.Run(family+"/"+point+"/"+map[bool]string{false: "cancel", true: "deadline"}[deadline], func(t *testing.T) {
-					root := t.TempDir()
 					source := filepath.Join(t.TempDir(), "prompt.txt")
 					body := "SYNTHETIC_SOURCE_142\nDOCUMENT_DIRECTIVE_IGNORE_THE_QUESTION\n"
 					if err := os.WriteFile(source, []byte(body), 0600); err != nil {
@@ -29,7 +24,7 @@ func TestPALCallerFaultPhaseCancellationBounds(t *testing.T) {
 					defer close(release)
 					var calls atomic.Int32
 					sink := &receiptSink{}
-					c := Consumer{PAL: PAL{Python: os.Getenv("HCG_TEST_PAL_PYTHON"), Source: os.Getenv("HCG_TEST_PAL_SOURCE"), TempRoot: root}, Recorder: sink,
+					c := Consumer{Recorder: sink,
 						Transport: transportFunc(func(context.Context, WireRequest) (WireResponse, error) {
 							calls.Add(1)
 							return providerFixtureReply("fixture-model", validProposal(body)), nil
@@ -57,7 +52,7 @@ func TestPALCallerFaultPhaseCancellationBounds(t *testing.T) {
 					select {
 					case <-entered:
 					case <-time.After(5 * time.Second):
-						t.Fatal("fixed PAL fault point not reached")
+						t.Fatal("fixed fault point not reached")
 					}
 					if !deadline {
 						cancel()
@@ -83,10 +78,6 @@ func TestPALCallerFaultPhaseCancellationBounds(t *testing.T) {
 					sink.mu.Unlock()
 					if calls.Load() != expected || receipts != int(expected) {
 						t.Fatalf("phase=%s calls=%d receipts=%d", point, calls.Load(), receipts)
-					}
-					entries, err := os.ReadDir(root)
-					if err != nil || len(entries) != 0 {
-						t.Fatalf("owned tool workspace not reaped: %v %v", entries, err)
 					}
 				})
 			}
