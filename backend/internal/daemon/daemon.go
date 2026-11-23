@@ -1490,6 +1490,11 @@ func Run(buildVersion string) (retErr error) {
 	chatSvc.SetSwitchModelCatalog(agentSvc)
 	sharedDocuments := projectdocssvc.New(projectdocssvc.Deps{Store: store, DataDir: cfg.DataDir, Capabilities: browserAuthority})
 	replacementSvc := replacementsvc.New(replacementsvc.Deps{Store: store, Runtime: replacementRuntime, Documents: sharedDocuments, NativeTranscripts: nativeTranscripts, WithProjectGate: replacementRuntime.WithNativeReplacementProjectGate})
+	var locateNative func(context.Context, domain.AgentHarness, string) (string, error)
+	if usageCollector != nil {
+		locateNative = usageCollector.LocateNativeSource
+	}
+	compositionReader := usagesvc.NewCompositionReader(store, locateNative)
 	var usageHooks controllers.UsageHookRecorder = usageCollector
 	if usageHookQueue != nil {
 		usageHooks = usageHookQueue
@@ -1553,6 +1558,7 @@ func Run(buildVersion string) (retErr error) {
 		UsageLimitSetting:  store,
 		UsagePrices:        usagePrices(usagePricing),
 		UsageEvents:        usagesvc.NewEventsReader(store),
+		UsageComposition:   compositionReader,
 		HCGDelegation:      hcgReporting,
 		SessionMemory:      memoryReader,
 		SessionSteps:       lcStack.LCM,

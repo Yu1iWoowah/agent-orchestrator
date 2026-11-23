@@ -5384,6 +5384,14 @@ type UsageEventsQuery struct {
 	Limit     *int64 `query:"limit,omitempty" minimum:"1" maximum:"1000"`
 }
 
+// UsageCompositionResponse is per-request context composition, computed on demand.
+type UsageCompositionResponse domain.UsageComposition
+
+// UsageCompositionQuery selects one of the session's reviewers instead.
+type UsageCompositionQuery struct {
+	Review string `query:"review,omitempty"`
+}
+
 // HCGDelegationResponse exposes effective fixed delegation policy.
 type HCGDelegationResponse reporting.DelegationView
 

@@ -220,6 +220,7 @@ var legacyActorlessUserCLICommands = map[string]struct{}{
 	"ao stop":                              {},
 	"ao version":                           {},
 	"ao usage":                             {},
+	"ao usage composition":                 {},
 	"ao usage report":                      {},
 	"ao usage integration":                 {},
 	"ao usage integration get":             {},

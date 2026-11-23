@@ -15,6 +15,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/procmem"
+	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 )
 
 // UsageSummaryService is the controller-facing compact usage read contract.
@@ -48,6 +49,11 @@ type UsageEventsService interface {
 	Events(context.Context, domain.SessionID, int64, *int64, int64) (domain.UsageEventsPage, error)
 }
 
+// UsageCompositionService computes per-request composition on demand.
+type UsageCompositionService interface {
+	Composition(ctx context.Context, id domain.SessionID, reviewID string) (domain.UsageComposition, error)
+}
+
 // SessionMemoryService samples resident memory per live session.
 type SessionMemoryService interface {
 	ListMemory(context.Context, domain.ProjectID) ([]domain.SessionMemory, error)
@@ -74,8 +80,10 @@ type SessionStepsReader interface {
 type UsageController struct {
 	Svc    UsageSummaryService
 	Events UsageEventsService
-	Log    *slog.Logger
-	Memory SessionMemoryService
+	// Composition is optional: without it the composition route is 501.
+	Composition UsageCompositionService
+	Log         *slog.Logger
+	Memory      SessionMemoryService
 	// Steps is optional: without it rows carry no activity.
 	Steps SessionStepsReader
 	// Pressure is optional: without it the pressure route is 501.
@@ -97,6 +105,7 @@ func (c *UsageController) Register(r chi.Router) {
 	r.Get("/usage/sessions/memory", c.listMemory)
 	r.Get("/usage/memory/pressure", c.getPressure)
 	r.Get("/usage/sessions/{sessionId}/events", c.getEvents)
+	r.Get("/usage/sessions/{sessionId}/composition", c.getComposition)
 
 }
 
@@ -423,4 +432,21 @@ func (c *UsageController) getEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, UsageEventsResponse(page))
+}
+
+func (c *UsageController) getComposition(w http.ResponseWriter, r *http.Request) {
+	if c.Composition == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/usage/sessions/{sessionId}/composition")
+		return
+	}
+	out, err := c.Composition.Composition(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")), r.URL.Query().Get("review"))
+	if errors.Is(err, usagesvc.ErrCompositionReviewNotFound) {
+		envelope.WriteError(w, r, apierr.NotFound("REVIEW_NOT_FOUND", "Review not found for this session"))
+		return
+	}
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, UsageCompositionResponse(out))
 }
