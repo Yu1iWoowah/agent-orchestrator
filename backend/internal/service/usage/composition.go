@@ -13,50 +13,51 @@ import (
 
 // Composition categories, in display order.
 const (
-	catSystem = iota
-	catTools
-	catMCPTools
-	catInjectedSystem
-	catHistory
-	catToolUse
-	catToolResult
-	catThinking
-	catThinkingEncrypted
-	catWorldState
-	catCount
+	CategorySystem = iota
+	CategoryTools
+	CategoryMCPTools
+	CategoryInjectedSystem
+	CategoryHistory
+	CategoryToolUse
+	CategoryToolResult
+	CategoryThinking
+	CategoryThinkingEncrypted
+	CategoryWorldState
+	CategoryCount
 )
 
-var compositionCategoryNames = [catCount]string{
+var compositionCategoryNames = [CategoryCount]string{
 	"system", "tools", "mcp_tools", "injected_system", "history",
 	"tool_use", "tool_result", "thinking", "thinking_encrypted", "world_state",
 }
 
-// compositionCounts holds bytes per category; -1 marks UNKNOWN.
-type compositionCounts [catCount]int64
+// CompositionCounts holds bytes per category; -1 marks UNKNOWN.
+type CompositionCounts [CategoryCount]int64
 
-func (c *compositionCounts) add(o compositionCounts) {
+func (c *CompositionCounts) add(o CompositionCounts) {
 	for i := range c {
 		c[i] += o[i]
 	}
 }
 
-type compositionRequest struct {
-	timestamp  string
-	input      *int64
-	unresolved int
-	counts     compositionCounts
+// CompositionRequest is one model request's exact input and category bytes.
+type CompositionRequest struct {
+	Timestamp  string
+	Input      *int64
+	Unresolved int
+	Counts     CompositionCounts
 }
 
-// compositionRow allocates the exact input by byte share with the largest
+// CompositionRow allocates the exact input by byte share with the largest
 // remainder method, so allocated tokens sum to the input. World state and
 // UNKNOWN categories keep their bytes but get no tokens.
-func compositionRow(ordinal int, req compositionRequest, unknownMCP bool) domain.UsageCompositionRequest {
-	counts := req.counts
+func CompositionRow(ordinal int, req CompositionRequest, unknownMCP bool) domain.UsageCompositionRequest {
+	counts := req.Counts
 	if unknownMCP {
-		counts[catMCPTools] = -1
+		counts[CategoryMCPTools] = -1
 	}
 	allocated := func(i int) bool {
-		return i != catWorldState && counts[i] >= 0
+		return i != CategoryWorldState && counts[i] >= 0
 	}
 	var total int64
 	for i := range counts {
@@ -64,28 +65,28 @@ func compositionRow(ordinal int, req compositionRequest, unknownMCP bool) domain
 			total += counts[i]
 		}
 	}
-	row := domain.UsageCompositionRequest{Ordinal: ordinal, Timestamp: req.timestamp, InputTokens: req.input, Unresolved: req.unresolved}
+	row := domain.UsageCompositionRequest{Ordinal: ordinal, Timestamp: req.Timestamp, InputTokens: req.Input, Unresolved: req.Unresolved}
 	for i, name := range compositionCategoryNames {
 		cat := domain.UsageCompositionCategory{Category: name}
 		switch {
 		case counts[i] < 0:
 			cat.Note = "unknown"
-		case i == catThinkingEncrypted:
+		case i == CategoryThinkingEncrypted:
 			cat.Note = "encrypted_hidden"
-		case i == catWorldState:
+		case i == CategoryWorldState:
 			cat.Note = "delivery_unverified"
 		}
 		if counts[i] >= 0 {
 			b := counts[i]
 			cat.Bytes = &b
 		}
-		if allocated(i) && req.input != nil && total > 0 {
-			t := *req.input * counts[i] / total
+		if allocated(i) && req.Input != nil && total > 0 {
+			t := *req.Input * counts[i] / total
 			cat.Tokens = &t
 		}
 		row.Categories = append(row.Categories, cat)
 	}
-	if req.input != nil && total > 0 {
+	if req.Input != nil && total > 0 {
 		var given int64
 		var order []int
 		for i := range counts {
@@ -94,17 +95,17 @@ func compositionRow(ordinal int, req compositionRequest, unknownMCP bool) domain
 				order = append(order, i)
 			}
 		}
-		rem := func(i int) int64 { return *req.input * counts[i] % total }
+		rem := func(i int) int64 { return *req.Input * counts[i] % total }
 		sort.SliceStable(order, func(a, b int) bool { return rem(order[a]) > rem(order[b]) })
-		for _, i := range order[:*req.input-given] {
+		for _, i := range order[:*req.Input-given] {
 			*row.Categories[i].Tokens++
 		}
 	}
 	return row
 }
 
-// eachLine streams JSONL without retaining earlier lines.
-func eachLine(r io.Reader, fn func([]byte)) error {
+// EachLine streams JSONL without retaining earlier lines.
+func EachLine(r io.Reader, fn func([]byte)) error {
 	br := bufio.NewReaderSize(r, 1<<20)
 	for {
 		line, err := br.ReadBytes('\n')
@@ -129,14 +130,16 @@ type compositionStore interface {
 // CompositionReader computes per-request composition at query time from the
 // provider's local file. It reads read-only and stores nothing.
 type CompositionReader struct {
-	store  compositionStore
-	locate func(context.Context, domain.AgentHarness, string) (string, error)
+	store     compositionStore
+	locate    func(context.Context, domain.AgentHarness, string) (string, error)
+	readCodex func(io.Reader) ([]CompositionRequest, error)
 }
 
 // NewCompositionReader returns a reader over registered usage sources;
-// locate finds a reviewer's unregistered file by native id.
-func NewCompositionReader(store compositionStore, locate func(context.Context, domain.AgentHarness, string) (string, error)) *CompositionReader {
-	return &CompositionReader{store: store, locate: locate}
+// locate finds a reviewer's unregistered file by native id, and readCodex
+// reads a rollout with the usage parser's request boundaries.
+func NewCompositionReader(store compositionStore, locate func(context.Context, domain.AgentHarness, string) (string, error), readCodex func(io.Reader) ([]CompositionRequest, error)) *CompositionReader {
+	return &CompositionReader{store: store, locate: locate, readCodex: readCodex}
 }
 
 // ErrCompositionReviewNotFound reports a review that is not this session's.
@@ -204,10 +207,10 @@ func (r *CompositionReader) Composition(ctx context.Context, id domain.SessionID
 			}
 		}
 	}
-	var reqs []compositionRequest
+	var reqs []CompositionRequest
 	for _, f := range files {
 		out.Source = string(f.kind)
-		got, ok := f.read()
+		got, ok := f.read(r.readCodex)
 		if !ok {
 			out.Reason = "source_read_failed"
 			return out, nil
@@ -222,7 +225,7 @@ func (r *CompositionReader) Composition(ctx context.Context, id domain.SessionID
 	}
 	out.Status, out.Reason = "ok", ""
 	for i, req := range reqs {
-		out.Requests = append(out.Requests, compositionRow(i+1, req, out.Source == string(domain.UsageSourceCodexRollout)))
+		out.Requests = append(out.Requests, CompositionRow(i+1, req, out.Source == string(domain.UsageSourceCodexRollout)))
 	}
 	return out, nil
 }
@@ -234,16 +237,19 @@ type compositionFile struct {
 
 // read reports a missing or unreadable file as not ok; the response says
 // source_read_failed instead of failing the request.
-func (f compositionFile) read() ([]compositionRequest, bool) {
+func (f compositionFile) read(readCodex func(io.Reader) ([]CompositionRequest, error)) ([]CompositionRequest, bool) {
+	read := readCodex
+	if f.kind == domain.UsageSourceClaudeMain {
+		read = readClaudeComposition
+	}
+	if read == nil {
+		return nil, false
+	}
 	file, err := os.Open(f.path)
 	if err != nil {
 		return nil, false
 	}
 	defer func() { _ = file.Close() }()
-	read := readCodexComposition
-	if f.kind == domain.UsageSourceClaudeMain {
-		read = readClaudeComposition
-	}
 	reqs, err := read(file)
 	return reqs, err == nil
 }

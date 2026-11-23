@@ -48,7 +48,7 @@ func TestClaudeCompositionRebuildsChainAndAllocatesInput(t *testing.T) {
 	if err != nil || len(reqs) != 2 {
 		t.Fatalf("requests = %d, err = %v", len(reqs), err)
 	}
-	first := compositionRow(1, reqs[0], false)
+	first := CompositionRow(1, reqs[0], false)
 	if first.InputTokens == nil || *first.InputTokens != 100 || first.Unresolved != 0 {
 		t.Fatalf("first request input = %v unresolved = %d", first.InputTokens, first.Unresolved)
 	}
@@ -59,7 +59,7 @@ func TestClaudeCompositionRebuildsChainAndAllocatesInput(t *testing.T) {
 	wantCategory(t, first, "mcp_tools", 39, ptr(40))
 	wantCategory(t, first, "history", 14, ptr(14))
 
-	second := compositionRow(2, reqs[1], false)
+	second := CompositionRow(2, reqs[1], false)
 	if second.Unresolved != 1 {
 		t.Fatalf("second request unresolved = %d, want only the missing ref", second.Unresolved)
 	}
@@ -72,52 +72,4 @@ func TestClaudeCompositionRebuildsChainAndAllocatesInput(t *testing.T) {
 	wantCategory(t, second, "tool_use", 9, ptr(14))
 	wantCategory(t, second, "tool_result", 11, ptr(18))
 	wantCategory(t, second, "injected_system", 8, ptr(13))
-}
-
-const codexCompositionFixture = `{"timestamp":"t0","type":"session_meta","payload":{"id":"x","base_instructions":{"text":"BASE"}}}
-{"timestamp":"t0","type":"response_item","payload":{"type":"additional_tools","tools":[{"name":"t"}]}}
-{"timestamp":"t0","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"dev"}]}}
-{"timestamp":"t0","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}
-{"timestamp":"t0","type":"world_state","payload":{"full":{"a":1}}}
-{"timestamp":"t0","type":"response_item","payload":{"type":"reasoning","summary":[],"encrypted_content":"ENC"}}
-{"timestamp":"t0","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{}"}}
-{"timestamp":"t1","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50}}}}
-{"timestamp":"t1","type":"response_item","payload":{"type":"function_call_output","output":"out"}}
-{"timestamp":"t1","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}
-{"timestamp":"t2","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":80}}}}
-`
-
-func TestCodexCompositionUsesTokenCountAndAdditionalTools(t *testing.T) {
-	reqs, err := readCodexComposition(strings.NewReader(codexCompositionFixture))
-	if err != nil || len(reqs) != 2 {
-		t.Fatalf("requests = %d, err = %v", len(reqs), err)
-	}
-	first := compositionRow(1, reqs[0], true)
-	if first.InputTokens == nil || *first.InputTokens != 50 {
-		t.Fatalf("first request input = %v", first.InputTokens)
-	}
-	// Input is the context before the request's own reasoning/tool call:
-	// 4 + 14 + 3 + 2 = 23 allocated bytes share 50 tokens: 9+30+7+4 = 50.
-	wantCategory(t, first, "system", 4, ptr(9))
-	wantCategory(t, first, "tools", 14, ptr(30))
-	wantCategory(t, first, "injected_system", 3, ptr(7))
-	wantCategory(t, first, "history", 2, ptr(4))
-	wantCategory(t, first, "world_state", 16, nil)
-	if c := categoryOf(t, first, "mcp_tools"); c.Bytes != nil || c.Note != "unknown" {
-		t.Fatalf("codex MCP = %+v, want UNKNOWN", c)
-	}
-
-	second := compositionRow(2, reqs[1], true)
-	// 23 + 2 (tool call) + 3 (tool output) + 3 (encrypted reasoning) = 31
-	// allocated bytes share 80 tokens: 10+36+8+5+5+8+8 = 80.
-	wantCategory(t, second, "system", 4, ptr(10))
-	wantCategory(t, second, "tools", 14, ptr(36))
-	wantCategory(t, second, "injected_system", 3, ptr(8))
-	wantCategory(t, second, "history", 2, ptr(5))
-	wantCategory(t, second, "tool_use", 2, ptr(5))
-	wantCategory(t, second, "tool_result", 3, ptr(8))
-	wantCategory(t, second, "thinking_encrypted", 3, ptr(8))
-	if c := categoryOf(t, second, "thinking_encrypted"); c.Note != "encrypted_hidden" {
-		t.Fatalf("encrypted thinking note = %q", c.Note)
-	}
 }

@@ -37,9 +37,9 @@ type claudeAPIRequest struct {
 // readClaudeComposition rebuilds each api-request's messages from its
 // base/keep/tail chain. Tail entries name api-request-blob records or
 // transcript messages by Claude Code's canonical message hash.
-func readClaudeComposition(r io.Reader) ([]compositionRequest, error) {
-	messages := map[string]compositionCounts{}
-	shapes := map[string]compositionCounts{}
+func readClaudeComposition(r io.Reader) ([]CompositionRequest, error) {
+	messages := map[string]CompositionCounts{}
+	shapes := map[string]CompositionCounts{}
 	usage := map[string]int64{}
 	requests := map[string]*claudeAPIRequest{}
 	var order []*claudeAPIRequest
@@ -47,10 +47,10 @@ func readClaudeComposition(r io.Reader) ([]compositionRequest, error) {
 	var run struct {
 		role, id string
 		blocks   []json.RawMessage
-		counts   compositionCounts
+		counts   CompositionCounts
 		active   bool
 	}
-	err := eachLine(r, func(raw []byte) {
+	err := EachLine(r, func(raw []byte) {
 		var line claudeCompositionLine
 		if json.Unmarshal(raw, &line) != nil {
 			return
@@ -100,7 +100,7 @@ func readClaudeComposition(r io.Reader) ([]compositionRequest, error) {
 			id := claudeMessageID(line.Message)
 			same := run.active && run.role == role && (role == "user" || (id != "" && run.id == id))
 			if !same {
-				run.role, run.id, run.blocks, run.counts, run.active = role, id, nil, compositionCounts{}, true
+				run.role, run.id, run.blocks, run.counts, run.active = role, id, nil, CompositionCounts{}, true
 			}
 			run.blocks = append(run.blocks, blocks...)
 			run.counts.add(claudeBlockCounts(role, blocks))
@@ -110,20 +110,20 @@ func readClaudeComposition(r io.Reader) ([]compositionRequest, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]compositionRequest, 0, len(order))
+	out := make([]CompositionRequest, 0, len(order))
 	for _, req := range order {
-		row := compositionRequest{timestamp: req.timestamp, unresolved: req.unresolved}
-		row.counts.add(shapes[req.shapeHash])
+		row := CompositionRequest{Timestamp: req.timestamp, Unresolved: req.unresolved}
+		row.Counts.add(shapes[req.shapeHash])
 		for _, hash := range req.hashes {
 			counts, ok := messages[hash]
 			if !ok {
-				row.unresolved++
+				row.Unresolved++
 				continue
 			}
-			row.counts.add(counts)
+			row.Counts.add(counts)
 		}
 		if input, ok := usage[req.id]; ok {
-			row.input = &input
+			row.Input = &input
 		}
 		out = append(out, row)
 	}
@@ -189,8 +189,8 @@ func claudeMessageHash(role string, blocks []json.RawMessage) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func claudeBlockCounts(role string, blocks []json.RawMessage) compositionCounts {
-	var c compositionCounts
+func claudeBlockCounts(role string, blocks []json.RawMessage) CompositionCounts {
+	var c CompositionCounts
 	for _, raw := range blocks {
 		var block struct {
 			Type     string          `json:"type"`
@@ -204,25 +204,25 @@ func claudeBlockCounts(role string, blocks []json.RawMessage) compositionCounts 
 		_ = json.Unmarshal(raw, &block)
 		switch {
 		case role == "system":
-			c[catInjectedSystem] += int64(len(block.Text))
+			c[CategoryInjectedSystem] += int64(len(block.Text))
 		case block.Type == "text":
-			c[catHistory] += int64(len(block.Text))
+			c[CategoryHistory] += int64(len(block.Text))
 		case block.Type == "tool_use":
-			c[catToolUse] += canonicalLen(block.Input)
+			c[CategoryToolUse] += canonicalLen(block.Input)
 		case block.Type == "tool_result":
-			c[catToolResult] += claudeResultBytes(block.Content)
+			c[CategoryToolResult] += claudeResultBytes(block.Content)
 		case block.Type == "thinking":
-			c[catThinking] += int64(len(block.Thinking))
+			c[CategoryThinking] += int64(len(block.Thinking))
 		case block.Type == "redacted_thinking":
-			c[catThinking] += int64(len(block.Data))
+			c[CategoryThinking] += int64(len(block.Data))
 		case block.Type == "tool_addition":
 			if strings.Contains(string(raw), `"mcp__`) {
-				c[catMCPTools] += canonicalLen(raw)
+				c[CategoryMCPTools] += canonicalLen(raw)
 			} else {
-				c[catTools] += canonicalLen(raw)
+				c[CategoryTools] += canonicalLen(raw)
 			}
 		default:
-			c[catHistory] += canonicalLen(raw)
+			c[CategoryHistory] += canonicalLen(raw)
 		}
 	}
 	return c
@@ -247,8 +247,8 @@ func claudeResultBytes(raw json.RawMessage) int64 {
 	return canonicalLen(raw)
 }
 
-func claudeShapeCounts(raw json.RawMessage) compositionCounts {
-	var c compositionCounts
+func claudeShapeCounts(raw json.RawMessage) CompositionCounts {
+	var c CompositionCounts
 	var shape struct {
 		System json.RawMessage   `json:"system"`
 		Tools  []json.RawMessage `json:"tools"`
@@ -256,16 +256,16 @@ func claudeShapeCounts(raw json.RawMessage) compositionCounts {
 	if json.Unmarshal(raw, &shape) != nil {
 		return c
 	}
-	c[catSystem] = claudeResultBytes(shape.System)
+	c[CategorySystem] = claudeResultBytes(shape.System)
 	for _, tool := range shape.Tools {
 		var named struct {
 			Name string `json:"name"`
 		}
 		_ = json.Unmarshal(tool, &named)
 		if strings.HasPrefix(named.Name, "mcp__") {
-			c[catMCPTools] += canonicalLen(tool)
+			c[CategoryMCPTools] += canonicalLen(tool)
 		} else {
-			c[catTools] += canonicalLen(tool)
+			c[CategoryTools] += canonicalLen(tool)
 		}
 	}
 	return c

@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 )
 
 type codexCompositionLine struct {
@@ -25,21 +28,19 @@ type codexCompositionPayload struct {
 	BaseInstructions any               `json:"base_instructions"`
 	Message          string            `json:"message"`
 	Replacement      []json.RawMessage `json:"replacement_history"`
-	Info             *struct {
-		Last *struct {
-			Input int64 `json:"input_tokens"`
-		} `json:"last_token_usage"`
-	} `json:"info"`
 }
 
-// readCodexComposition emits one request per token_count. A request's input
-// is the context as of its first model output item, so its own reply is not
-// counted as input.
-func readCodexComposition(r io.Reader) ([]compositionRequest, error) {
-	var state compositionCounts
-	var atOutput *compositionCounts
-	var out []compositionRequest
-	err := eachLine(r, func(raw []byte) {
+// ReadCodexComposition emits one request per token_count that the usage
+// parser records as a model usage event, so repeated quota updates and local
+// context estimates are not requests. A request's input is the context as of
+// its first model output item, so its own reply is not counted as input.
+func ReadCodexComposition(r io.Reader) ([]usagesvc.CompositionRequest, error) {
+	var state usagesvc.CompositionCounts
+	var atOutput *usagesvc.CompositionCounts
+	var out []usagesvc.CompositionRequest
+	var parser codexParserStateV1
+	var parsed parseResult
+	err := usagesvc.EachLine(r, func(raw []byte) {
 		var line codexCompositionLine
 		if json.Unmarshal(raw, &line) != nil {
 			return
@@ -50,14 +51,14 @@ func readCodexComposition(r io.Reader) ([]compositionRequest, error) {
 		}
 		switch line.Type {
 		case "session_meta":
-			state[catSystem] = textBytes(p.BaseInstructions)
+			state[usagesvc.CategorySystem] = textBytes(p.BaseInstructions)
 		case "world_state":
-			state[catWorldState] = int64(len(bytes.TrimSpace(line.Payload)))
+			state[usagesvc.CategoryWorldState] = int64(len(bytes.TrimSpace(line.Payload)))
 		case "compacted":
-			for _, i := range []int{catInjectedSystem, catHistory, catToolUse, catToolResult, catThinking, catThinkingEncrypted} {
+			for _, i := range []int{usagesvc.CategoryInjectedSystem, usagesvc.CategoryHistory, usagesvc.CategoryToolUse, usagesvc.CategoryToolResult, usagesvc.CategoryThinking, usagesvc.CategoryThinkingEncrypted} {
 				state[i] = 0
 			}
-			state[catHistory] += int64(len(p.Message))
+			state[usagesvc.CategoryHistory] += int64(len(p.Message))
 			for _, item := range p.Replacement {
 				var ip codexCompositionPayload
 				if json.Unmarshal(item, &ip) == nil {
@@ -71,15 +72,17 @@ func readCodexComposition(r io.Reader) ([]compositionRequest, error) {
 			}
 			codexItem(&state, p)
 		case "event_msg":
-			if p.Type != "token_count" || p.Info == nil || p.Info.Last == nil {
+			parsed.Events = parsed.Events[:0]
+			parseCodexEvent(domain.UsageSourceContext{}, codexEnvelope(line), &parser, &parsed)
+			if len(parsed.Events) == 0 || parsed.Events[0].Tokens.InputTokens == nil {
 				return
 			}
-			input := p.Info.Last.Input
+			input := *parsed.Events[0].Tokens.InputTokens
 			counts := state
 			if atOutput != nil {
 				counts = *atOutput
 			}
-			out = append(out, compositionRequest{timestamp: line.Timestamp, input: &input, counts: counts})
+			out = append(out, usagesvc.CompositionRequest{Timestamp: line.Timestamp, Input: &input, Counts: counts})
 			atOutput = nil
 		}
 	})
@@ -96,25 +99,25 @@ func codexModelOutput(p codexCompositionPayload) bool {
 	return false
 }
 
-func codexItem(state *compositionCounts, p codexCompositionPayload) {
+func codexItem(state *usagesvc.CompositionCounts, p codexCompositionPayload) {
 	switch p.Type {
 	case "message":
 		if p.Role == "developer" || p.Role == "system" {
-			state[catInjectedSystem] += max(textBytes(p.Content), 0)
+			state[usagesvc.CategoryInjectedSystem] += max(textBytes(p.Content), 0)
 		} else {
-			state[catHistory] += max(textBytes(p.Content), 0)
+			state[usagesvc.CategoryHistory] += max(textBytes(p.Content), 0)
 		}
 	case "function_call":
-		state[catToolUse] += int64(len(p.Arguments))
+		state[usagesvc.CategoryToolUse] += int64(len(p.Arguments))
 	case "custom_tool_call":
-		state[catToolUse] += int64(len(p.Input))
+		state[usagesvc.CategoryToolUse] += int64(len(p.Input))
 	case "function_call_output", "custom_tool_call_output":
-		state[catToolResult] += max(textBytes(p.Output), 0)
+		state[usagesvc.CategoryToolResult] += max(textBytes(p.Output), 0)
 	case "reasoning":
-		state[catThinking] += max(textBytes(p.Summary), 0) + max(textBytes(p.Content), 0)
-		state[catThinkingEncrypted] += int64(len(p.EncryptedContent))
+		state[usagesvc.CategoryThinking] += max(textBytes(p.Summary), 0) + max(textBytes(p.Content), 0)
+		state[usagesvc.CategoryThinkingEncrypted] += int64(len(p.EncryptedContent))
 	case "additional_tools":
-		state[catTools] = int64(len(bytes.TrimSpace(p.Tools)))
+		state[usagesvc.CategoryTools] = int64(len(bytes.TrimSpace(p.Tools)))
 	}
 }
 

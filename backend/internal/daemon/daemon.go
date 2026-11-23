@@ -1494,7 +1494,7 @@ func Run(buildVersion string) (retErr error) {
 	if usageCollector != nil {
 		locateNative = usageCollector.LocateNativeSource
 	}
-	compositionReader := usagesvc.NewCompositionReader(store, locateNative)
+	compositionReader := usagesvc.NewCompositionReader(store, locateNative, usagepipeline.ReadCodexComposition)
 	var usageHooks controllers.UsageHookRecorder = usageCollector
 	if usageHookQueue != nil {
 		usageHooks = usageHookQueue
