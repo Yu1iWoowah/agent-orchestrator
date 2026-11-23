@@ -23,24 +23,14 @@ var ErrUsagePending = errors.New("canonical delegation usage pending")
 
 // Prices are an immutable reviewed deployment snapshot. Unknown coverage or
 // model ceilings cannot be made safe by observing the answer's text length.
-type LongContextPrices struct {
-	ThresholdInputTokens  int64 `json:"thresholdInputTokens"`
-	InputPerMillion       int64 `json:"inputNanoUSDPerMillion"`
-	CachedInputPerMillion int64 `json:"cachedInputNanoUSDPerMillion"`
-	CacheWritePerMillion  int64 `json:"cacheWriteNanoUSDPerMillion"`
-	OutputPerMillion      int64 `json:"outputNanoUSDPerMillion"`
-}
-
 type Prices struct {
-	CacheWritePerMillion  *int64             `json:"cacheWriteNanoUSDPerMillion,omitempty"`
-	LongContext           *LongContextPrices `json:"longContext,omitempty"`
-	Version               string             `json:"version"`
-	Period                string             `json:"period"`
-	InputPerMillion       int64              `json:"inputNanoUSDPerMillion"`
-	CachedInputPerMillion int64              `json:"cachedInputNanoUSDPerMillion"`
-	OutputPerMillion      int64              `json:"outputNanoUSDPerMillion"`
-	LimitsCertified       bool               `json:"limitsCertified"`
-	BillableUsageCovered  bool               `json:"billableUsageCovered"`
+	Version               string `json:"version"`
+	Period                string `json:"period"`
+	InputPerMillion       int64  `json:"inputNanoUSDPerMillion"`
+	CachedInputPerMillion int64  `json:"cachedInputNanoUSDPerMillion"`
+	OutputPerMillion      int64  `json:"outputNanoUSDPerMillion"`
+	LimitsCertified       bool   `json:"limitsCertified"`
+	BillableUsageCovered  bool   `json:"billableUsageCovered"`
 }
 type Charges struct {
 	Input, CachedInput, Output, Total *int64
@@ -56,7 +46,6 @@ type ExternalSpend struct {
 }
 
 type budgetAttempt struct {
-	LabRunID       string
 	EverDispatched bool
 	Execution      Execution
 	Profile        Profile
@@ -70,7 +59,6 @@ type budgetAttempt struct {
 	SettledPeriod  string
 }
 type budgetState struct {
-	Grant    *LabGrant `json:"grant,omitempty"`
 	Version  int
 	Period   string
 	External map[string]map[string]ExternalSpend
@@ -175,9 +163,6 @@ func (b *Budget) withState(ctx context.Context, change func(*budgetState) error,
 }
 
 func validBudgetState(state budgetState) error {
-	if state.Grant != nil && !state.Grant.valid(state.Grant.OwnerRoot) {
-		return ErrBudgetBlocked
-	}
 	for period, providers := range state.External {
 		if _, err := time.Parse("2006-01", period); err != nil {
 			return ErrBudgetBlocked
@@ -189,9 +174,6 @@ func validBudgetState(state budgetState) error {
 		}
 	}
 	for key, a := range state.Attempts {
-		if a.LabRunID != "" && (state.Grant == nil || a.LabRunID != state.Grant.RunID || !state.Grant.bound(a.Execution.ProjectID, a.Execution.SessionID) || (a.State != "reserved" && a.State != "released" && !a.EverDispatched) || (a.State == "reserved" && a.EverDispatched)) {
-			return ErrBudgetBlocked
-		}
 		if _, err := time.Parse("2006-01", a.Profile.Prices.Period); err != nil {
 			return ErrBudgetBlocked
 		}
@@ -246,9 +228,6 @@ func atomicBudgetFile(ctx context.Context, path string, data []byte) error {
 // ApprovePeriod is an explicit host operation. It never clears open holds or
 // resets on a clock/month change, and never reinterprets earlier receipts.
 func (b *Budget) ApprovePeriod(ctx context.Context, period string, external map[string]ExternalSpend) error {
-	return b.approvePeriod(ctx, period, external, nil)
-}
-func (b *Budget) approvePeriod(ctx context.Context, period string, external map[string]ExternalSpend, grant *LabGrant) error {
 	if period != b.now().Format("2006-01") || len(external) != 2 {
 		return ErrBudgetBlocked
 	}
@@ -259,13 +238,6 @@ func (b *Budget) approvePeriod(ctx context.Context, period string, external map[
 		}
 	}
 	return b.update(ctx, func(s *budgetState) error {
-		if grant != nil {
-			merged, err := mergeLabGrant(s.Grant, grant)
-			if err != nil {
-				return ErrBudgetBlocked
-			}
-			s.Grant = merged
-		}
 		if s.Period != "" && period < s.Period {
 			return ErrBudgetBlocked
 		}
@@ -322,10 +294,6 @@ func worstCharge(p Profile) (int64, error) {
 		return 0, ErrBudgetBlocked
 	}
 	inputRate, outputRate := price.InputPerMillion, price.OutputPerMillion
-	if p.luna() {
-		inputRate = max(inputRate, price.CachedInputPerMillion, *price.CacheWritePerMillion, price.LongContext.InputPerMillion, price.LongContext.CachedInputPerMillion, price.LongContext.CacheWritePerMillion)
-		outputRate = max(outputRate, price.LongContext.OutputPerMillion)
-	}
 	input, err := priceTokens(p.ContextTokens, inputRate)
 	if err != nil {
 		return 0, err
@@ -337,10 +305,6 @@ func worstCharge(p Profile) (int64, error) {
 	total, err := addMoney(input, output)
 	if err != nil {
 		return 0, err
-	}
-	// Three input subsets can each round up independently.
-	if p.luna() {
-		return addMoney(total, 2)
 	}
 	// Splitting OpenAI input into two separately rounded charge components
 	// can cost one additional nano-USD over rounding their combined ceiling.
@@ -366,13 +330,8 @@ func (b *Budget) reserve(ctx context.Context, e Execution, p Profile, payload []
 		if _, ok := s.Attempts[key]; ok {
 			return ErrBudgetBlocked
 		}
-
-		runID := ""
-		if s.Grant != nil {
-			runID = s.Grant.RunID
-		}
-		s.Attempts[key] = budgetAttempt{LabRunID: runID, Execution: e, Profile: p, ProfileDigest: p.digest(), PayloadHash: textHash(string(payload)), ScopeDigest: scopeDigest, State: "reserved", Reserved: worst}
-		return checkBudgetCapacity(s, key, b.now(), b.OwnerRoot)
+		s.Attempts[key] = budgetAttempt{Execution: e, Profile: p, ProfileDigest: p.digest(), PayloadHash: textHash(string(payload)), ScopeDigest: scopeDigest, State: "reserved", Reserved: worst}
+		return checkBudgetCapacity(s, key)
 	})
 	return key, err
 }
@@ -386,7 +345,7 @@ func (b *Budget) transition(ctx context.Context, key, from, to string) error {
 			return ErrBudgetBlocked
 		}
 		if to == "dispatched" {
-			if err := checkBudgetCapacity(s, key, b.now(), b.OwnerRoot); err != nil {
+			if err := checkBudgetCapacity(s, key); err != nil {
 				return err
 			}
 		}
@@ -413,16 +372,6 @@ func (b *Budget) releaseUnsent(ctx context.Context, key string) error {
 func receiptCharges(a budgetAttempt, r Receipt) (Charges, error) {
 	p := a.Profile
 	price := p.Prices
-	if p.luna() {
-		if !p.valid() || r.RequestedServiceTier != "default" || r.ObservedServiceTier != "default" || r.ServiceTierStatus != "verified_default" || r.Usage.Input == nil || *r.Usage.Input > 922000 || r.Usage.CacheWriteInput == nil || r.Usage.CachedInput == nil {
-			return Charges{}, ErrBudgetBlocked
-		}
-		if *r.Usage.Input > price.LongContext.ThresholdInputTokens {
-			l := price.LongContext
-			price.InputPerMillion, price.CachedInputPerMillion, price.OutputPerMillion = l.InputPerMillion, l.CachedInputPerMillion, l.OutputPerMillion
-			price.CacheWritePerMillion = &l.CacheWritePerMillion
-		}
-	}
 	if r.UnknownReason != "" || r.Usage.Input == nil || r.Usage.Output == nil || !price.BillableUsageCovered {
 		return Charges{}, ErrBudgetBlocked
 	}
@@ -440,24 +389,7 @@ func receiptCharges(a budgetAttempt, r Receipt) (Charges, error) {
 			return Charges{}, ErrBudgetBlocked
 		}
 		ordinary := *r.Usage.Input - cached
-		writeCost := int64(0)
-		if p.luna() {
-			w := *r.Usage.CacheWriteInput
-			if w < 0 || w > ordinary {
-				return Charges{}, ErrBudgetBlocked
-			}
-			ordinary -= w
-			var err error
-			writeCost, err = priceTokens(w, *price.CacheWritePerMillion)
-			if err != nil {
-				return Charges{}, err
-			}
-		}
 		fresh, err := priceTokens(ordinary, price.InputPerMillion)
-		if err != nil {
-			return Charges{}, err
-		}
-		fresh, err = addMoney(fresh, writeCost)
 		if err != nil {
 			return Charges{}, err
 		}
@@ -516,23 +448,13 @@ func (b *budgetBridge) Do(ctx context.Context, r WireRequest) (WireResponse, err
 		return WireResponse{}, ErrBudgetBlocked
 	}
 	var body struct {
-		ReasoningEffort json.RawMessage                  `json:"reasoning_effort"`
-		ServiceTier     json.RawMessage                  `json:"service_tier"`
-		Model           string                           `json:"model"`
-		Max             int64                            `json:"max_completion_tokens"`
-		Messages        []struct{ Role, Content string } `json:"messages"`
+		Model    string                           `json:"model"`
+		Max      int64                            `json:"max_completion_tokens"`
+		Messages []struct{ Role, Content string } `json:"messages"`
 	}
 	d := json.NewDecoder(bytes.NewReader(r.Payload))
 	d.DisallowUnknownFields()
 	if d.Decode(&body) != nil || d.Decode(new(any)) != io.EOF || body.Model != b.profile.Model || body.Max != b.profile.OutputTokens || len(body.Messages) != 2 || body.Messages[0].Role != "system" || body.Messages[1].Role != "user" {
-		return WireResponse{}, ErrBudgetBlocked
-	}
-	if b.profile.luna() {
-		var effort, tier string
-		if json.Unmarshal(body.ReasoningEffort, &effort) != nil || json.Unmarshal(body.ServiceTier, &tier) != nil || effort != b.profile.ReasoningEffort || effort != "medium" || tier != "default" || tier != b.profile.ServiceTier {
-			return WireResponse{}, ErrBudgetBlocked
-		}
-	} else if len(body.ReasoningEffort) > 0 || len(body.ServiceTier) > 0 {
 		return WireResponse{}, ErrBudgetBlocked
 	}
 
@@ -562,7 +484,7 @@ func (b *budgetBridge) Do(ctx context.Context, r WireRequest) (WireResponse, err
 				if !ok || a.State != "reserved" || s.Period != b.budget.now().Format("2006-01") || a.Profile.Prices.Period != s.Period {
 					return ErrBudgetBlocked
 				}
-				if err := checkBudgetCapacity(s, key, b.budget.now(), b.budget.OwnerRoot); err != nil {
+				if err := checkBudgetCapacity(s, key); err != nil {
 					return err
 				}
 				a.EverDispatched = true
@@ -591,7 +513,6 @@ func (b *budgetBridge) Do(ctx context.Context, r WireRequest) (WireResponse, err
 		b.mu.Unlock()
 		return response, err
 	}
-	response.Capture = nil // the verbatim copy never reaches projection or PAL
 	return response, err
 }
 func (b *budgetBridge) Record(ctx context.Context, r Receipt) error {
@@ -701,7 +622,7 @@ func (b *Budget) ReplayReceipt(ctx context.Context, key string, canonical Record
 // checkBudgetCapacity runs under the budget file lock for reserve and final
 // dispatch. The current reservation is included exactly once; any other open
 // attempt freezes admission, and changed outside-gate knowledge is authoritative.
-func checkBudgetCapacity(s *budgetState, reservedKey string, now time.Time, root string) error {
+func checkBudgetCapacity(s *budgetState, reservedKey string) error {
 	totals := map[string]int64{}
 	for _, provider := range []string{"openai", "anthropic"} {
 		external, ok := s.External[s.Period][provider]
@@ -744,5 +665,5 @@ func checkBudgetCapacity(s *budgetState, reservedKey string, now time.Time, root
 	if err != nil || total > 630*nanoUSD {
 		return ErrBudgetBlocked
 	}
-	return checkLabCapacity(s, reservedKey, now, root)
+	return nil
 }

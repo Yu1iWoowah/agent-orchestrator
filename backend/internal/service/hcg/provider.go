@@ -17,11 +17,11 @@ import (
 	"github.com/aoagents/agent-orchestrator/components/hcg/reporting"
 )
 
-var labName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-var labRequestID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`)
-var errLabTransport = errors.New("fixed lab transport unavailable")
+var credentialName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+var providerRequestID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`)
+var errProviderTransport = errors.New("fixed provider transport unavailable")
 
-type labCredential struct {
+type providerCredential struct {
 	Provider  string `json:"provider"`
 	Name      string `json:"name"`
 	Version   string `json:"version"`
@@ -29,23 +29,24 @@ type labCredential struct {
 	Secret    string `json:"secret"`
 }
 
-type labHTTPProvider struct {
+type httpProvider struct {
 	root   string
 	client *http.Client
 }
 
-// NewLabHTTPProvider accepts trusted constructor dependencies, never HTTP or
+// NewHTTPProvider accepts trusted constructor dependencies, never HTTP or
 // model arguments. The daemon uses its fixed OS-user store and no override.
-func NewLabHTTPProvider(root string, transport http.RoundTripper) reporting.DelegationProvider {
+func NewHTTPProvider(root string, transport http.RoundTripper) reporting.DelegationProvider {
 	if transport == nil {
 		transport = &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 30 * time.Second, DisableKeepAlives: true}
 	}
-	return &labHTTPProvider{root: root, client: &http.Client{Transport: transport, Timeout: 120 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errLabTransport }}}
+	return &httpProvider{root: root, client: &http.Client{Transport: transport, Timeout: 120 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errProviderTransport }}}
 }
 
-// NewLabOwner is called only after the daemon has acquired this data root's
-// exclusive lock. Creating a dormant parent does not read any credential.
-func NewLabOwner(ctx context.Context, root string, store Store, ownsDataLock bool) *Service {
+// NewOwner is called only after the daemon has acquired this data root's
+// exclusive lock. Creating the provider does not read any credential; each
+// call reads the user-placed key under ~/.ao/credentials/hcg.
+func NewOwner(ctx context.Context, root string, store Store, ownsDataLock bool) *Service {
 	if !ownsDataLock {
 		return New(ctx, root, store)
 	}
@@ -53,29 +54,29 @@ func NewLabOwner(ctx context.Context, root string, store Store, ownsDataLock boo
 	if err != nil || !filepath.IsAbs(u.HomeDir) {
 		return New(ctx, root, store)
 	}
-	p := NewLabHTTPProvider(filepath.Join(u.HomeDir, ".ao", "credentials", "hcg-paid-lab"), nil)
+	p := NewHTTPProvider(filepath.Join(u.HomeDir, ".ao", "credentials", "hcg"), nil)
 	return NewWithDelegationProvider(ctx, root, store, p, nil)
 }
 
-func (p *labHTTPProvider) Call(ctx context.Context, r reporting.DelegationProviderRequest) (reporting.DelegationProviderResponse, error) {
+func (p *httpProvider) Call(ctx context.Context, r reporting.DelegationProviderRequest) (reporting.DelegationProviderResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	unsent := func() (reporting.DelegationProviderResponse, error) {
 		return reporting.DelegationProviderResponse{}, errors.Join(reporting.ErrDelegationNotSent, ctx.Err())
 	}
-	if ctx.Err() != nil || (r.BillingProvider != "openai" && r.BillingProvider != "anthropic") || r.Endpoint != "https://api."+r.BillingProvider+".com/v1/chat/completions" || r.CredentialRef.Provider != r.BillingProvider || !labName.MatchString(r.CredentialRef.Name) || !labName.MatchString(r.CredentialRef.Version) || !labName.MatchString(r.Workspace) || r.ProfileID == "" || r.ProfileRevision == "" || r.Model == "" || len(r.Payload) > 1<<20 {
+	if ctx.Err() != nil || r.BillingProvider != "openai" || r.Endpoint != "https://api.openai.com/v1/chat/completions" || r.CredentialRef.Provider != r.BillingProvider || !credentialName.MatchString(r.CredentialRef.Name) || !credentialName.MatchString(r.CredentialRef.Version) || !credentialName.MatchString(r.Workspace) || r.ProfileID == "" || r.ProfileRevision == "" || r.Model == "" || len(r.Payload) > 1<<20 {
 		return unsent()
 	}
 	var payload struct{ Model string }
 	if json.Unmarshal(r.Payload, &payload) != nil || payload.Model != r.Model {
 		return unsent()
 	}
-	raw, err := readLabVersion(ctx, p.root, r.CredentialRef)
+	raw, err := readCredential(ctx, p.root, r.CredentialRef)
 	if err != nil {
 		return unsent()
 	}
 	defer clear(raw)
-	var credential labCredential
+	var credential providerCredential
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&credential) != nil || decoder.Decode(new(any)) != io.EOF || credential.Provider != r.BillingProvider || credential.Name != r.CredentialRef.Name || credential.Version != r.CredentialRef.Version || credential.Workspace != r.Workspace || credential.Secret == "" || len(credential.Secret) > 4096 {
@@ -93,70 +94,53 @@ func (p *labHTTPProvider) Call(ctx context.Context, r reporting.DelegationProvid
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+credential.Secret)
 	defer request.Header.Del("Authorization")
-	if r.BillingProvider == "openai" {
-		request.Header.Set("OpenAI-Project", credential.Workspace)
-	}
-	// Anthropic API credentials are workspace-scoped; the version record pins
-	// that reviewed binding. No arbitrary caller header or workspace override.
+	request.Header.Set("OpenAI-Project", credential.Workspace)
 	response, err := p.client.Do(request)
 	if response != nil && response.Body != nil {
 		defer func() { _ = response.Body.Close() }()
 	}
 	if response == nil {
-		out := reporting.DelegationProviderResponse{Capture: &reporting.DelegationProviderCapture{Outcome: "no_response", Stage: "network", Code: "request_failed"}}
 		if ctx.Err() != nil {
-			out.Capture.Code = "cancelled"
-			return out, ctx.Err()
+			return reporting.DelegationProviderResponse{}, ctx.Err()
 		}
-		return out, errLabTransport
+		return reporting.DelegationProviderResponse{}, errProviderTransport
 	}
 	safeID := func(id string) string {
-		if !labRequestID.MatchString(id) || strings.Contains(id, credential.Secret) || strings.Contains(id, "HCG_CANARY_DO_NOT_SEND") {
+		if !providerRequestID.MatchString(id) || strings.Contains(id, credential.Secret) || strings.Contains(id, "HCG_CANARY_DO_NOT_SEND") {
 			return ""
 		}
 		return id
 	}
 	out := reporting.DelegationProviderResponse{Status: response.StatusCode, RequestID: safeID(response.Header.Get("x-request-id")), AlternateRequestID: safeID(response.Header.Get("request-id"))}
-	// Every received entity body, ≤1MiB, is kept verbatim for the attempt
-	// owner's private record, including non-200 bodies and credential echoes.
 	// Only a fully checked 200 body is ever forwarded in out.Body.
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
-	capture := &reporting.DelegationProviderCapture{Outcome: "response", Body: body, Complete: readErr == nil && len(body) <= 1<<20, ObservedAtLeast: int64(len(body))}
-	if len(body) > 1<<20 {
-		capture.Body = body[:1<<20]
-	}
-	if readErr != nil {
-		capture.Outcome = "read_failed"
-	}
-	out.Capture = capture
-	refuse := func(stage, code string, err error) (reporting.DelegationProviderResponse, error) {
-		capture.Stage, capture.Code = stage, code
+	refuse := func(_, _ string, err error) (reporting.DelegationProviderResponse, error) {
 		return out, err
 	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return refuse("network", "cancelled", ctx.Err())
 		}
-		return refuse("network", "request_failed", errLabTransport)
+		return refuse("network", "request_failed", errProviderTransport)
 	}
 	if response.StatusCode != http.StatusOK {
 		return refuse("http_status", "http_status_not_ok", nil) // Never forward a provider error body or arbitrary headers.
 	}
 	if readErr != nil {
-		return refuse("body_read", "read_failed", errLabTransport)
+		return refuse("body_read", "read_failed", errProviderTransport)
 	}
 	if len(body) > 1<<20 {
-		return refuse("body_size", "body_too_large", errLabTransport)
+		return refuse("body_size", "body_too_large", errProviderTransport)
 	}
 	if bytes.Contains(body, []byte(credential.Secret)) {
-		return refuse("credential_scan", "credential_echo", errLabTransport)
+		return refuse("credential_scan", "credential_echo", errProviderTransport)
 	}
 	var decoded any
-	if json.Unmarshal(body, &decoded) == nil && labEchoesCredential(decoded, credential.Secret) {
-		return refuse("credential_scan", "credential_echo", errLabTransport)
+	if json.Unmarshal(body, &decoded) == nil && echoesCredential(decoded, credential.Secret) {
+		return refuse("credential_scan", "credential_echo", errProviderTransport)
 	}
 	// The completion is JSON encoded inside the provider's JSON envelope.
-	// Scan its decoded strings here, before any text reaches the PAL child.
+	// Scan its decoded strings here, before any text reaches the verifier.
 	var completion struct {
 		Choices []struct {
 			Message struct{ Content string }
@@ -165,8 +149,8 @@ func (p *labHTTPProvider) Call(ctx context.Context, r reporting.DelegationProvid
 	if json.Unmarshal(body, &completion) == nil {
 		for _, choice := range completion.Choices {
 			var reply any
-			if json.Unmarshal([]byte(choice.Message.Content), &reply) == nil && labEchoesCredential(reply, credential.Secret) {
-				return refuse("credential_scan", "completion_credential_echo", errLabTransport)
+			if json.Unmarshal([]byte(choice.Message.Content), &reply) == nil && echoesCredential(reply, credential.Secret) {
+				return refuse("credential_scan", "completion_credential_echo", errProviderTransport)
 			}
 		}
 	}
@@ -174,19 +158,19 @@ func (p *labHTTPProvider) Call(ctx context.Context, r reporting.DelegationProvid
 	return out, nil
 }
 
-func labEchoesCredential(v any, secret string) bool {
+func echoesCredential(v any, secret string) bool {
 	switch x := v.(type) {
 	case string:
 		return strings.Contains(x, secret)
 	case []any:
 		for _, item := range x {
-			if labEchoesCredential(item, secret) {
+			if echoesCredential(item, secret) {
 				return true
 			}
 		}
 	case map[string]any:
 		for key, item := range x {
-			if strings.Contains(key, secret) || labEchoesCredential(item, secret) {
+			if strings.Contains(key, secret) || echoesCredential(item, secret) {
 				return true
 			}
 		}

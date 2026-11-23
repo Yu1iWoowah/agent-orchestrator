@@ -40,7 +40,7 @@ func (s *Service) delegationFacts(ctx context.Context, id domain.SessionID) (rep
 	if !ok {
 		return reporting.Identity{}, reporting.DelegationPolicySnapshot{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
-	i := s.identity(rec)
+	i := s.identity(ctx, rec)
 	project, ok, err := s.store.GetProject(ctx, string(rec.ProjectID))
 	if err != nil {
 		return i, reporting.DelegationPolicySnapshot{}, err
@@ -96,7 +96,7 @@ func (s *Service) DelegationProfiles(context.Context) ([]reporting.DelegationRes
 
 // RegisterDelegation registers an immutable approved descriptor.
 func (s *Service) RegisterDelegation(ctx context.Context, r reporting.DelegationRegistration) ([]reporting.DelegationResolvedProfile, error) {
-	if s.delegation == nil || s.validateLabOwner(ctx, r.Grant) != nil || s.delegation.Register(ctx, r) != nil {
+	if s.delegation == nil || s.delegation.Register(ctx, r) != nil {
 		return nil, delegationUnavailable()
 	}
 	return s.delegation.Profiles(), nil
@@ -108,11 +108,13 @@ func (s *Service) ReadDelegation(ctx context.Context, id domain.SessionID, r rep
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	if strings.TrimSpace(r.Question) == "" || len(r.Question) > 16<<10 || len(r.Paths) == 0 || len(r.Paths) > 16 || len(r.Focus) > 4096 || r.OutputLimit < 0 || r.OutputLimit > 65536 {
-		return reporting.DelegationReply{}, apierr.Invalid("INVALID_DELEGATION_REQUEST", "A bounded question and explicit relative paths are required", nil)
+		return reporting.DelegationReply{}, apierr.Invalid("INVALID_DELEGATION_REQUEST", "A bounded question and explicit file paths are required", nil)
 	}
+	// Relative paths read the worktree; absolute paths must fall inside one of
+	// the session's read-only roots, which the delegate scope enforces.
 	for _, path := range r.Paths {
-		if !filepath.IsLocal(path) || filepath.Clean(path) != path {
-			return reporting.DelegationReply{}, apierr.Invalid("INVALID_DELEGATION_PATH", "Paths must be explicit relative files", nil)
+		if !filepath.IsLocal(path) && !filepath.IsAbs(path) || filepath.Clean(path) != path {
+			return reporting.DelegationReply{}, apierr.Invalid("INVALID_DELEGATION_PATH", "Paths must be explicit files", nil)
 		}
 	}
 	rec, exists, err := s.store.GetSession(ctx, id)
@@ -125,7 +127,7 @@ func (s *Service) ReadDelegation(ctx context.Context, id domain.SessionID, r rep
 	if s.delegation == nil {
 		return reporting.DelegationReply{}, delegationUnavailable()
 	}
-	revision := s.delegation.PolicyRevision(s.identity(rec))
+	revision := s.delegation.PolicyRevision(s.identity(ctx, rec))
 	i, p, err := s.delegationFacts(ctx, id)
 	if err != nil {
 		return reporting.DelegationReply{}, err

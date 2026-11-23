@@ -5,16 +5,14 @@ import (
 	"encoding/json"
 
 	"github.com/aoagents/agent-orchestrator/components/hcg/internal/delegate"
-	"github.com/aoagents/agent-orchestrator/components/hcg/internal/integration"
 )
 
 // ErrDelegationNotSent is returned only when the trusted parent can prove no HTTP send.
 var ErrDelegationNotSent = delegate.ErrNotSent
 
-// DelegationProvider is the trusted fixed HTTP-provider seam. Without an
-// explicit operator run grant, even a configured lab parent stays unavailable.
-// Fixtures exercise this same caller; neither command/env nor model tool args
-// can replace the endpoint, provider or immutable deployment.
+// DelegationProvider is the trusted fixed HTTP-provider seam. Fixtures exercise
+// this same caller; neither command/env nor model tool args can replace the
+// endpoint, provider or immutable deployment.
 type DelegationProvider interface {
 	Call(context.Context, DelegationProviderRequest) (DelegationProviderResponse, error)
 }
@@ -27,18 +25,9 @@ type DelegationProviderResponse struct {
 	Status                        int
 	RequestID, AlternateRequestID string
 	Body                          []byte
-	// Capture is the parent's verbatim bounded entity body for the attempt
-	// owner's private record. Only Body may ever be forwarded toward PAL.
-	Capture *DelegationProviderCapture
 }
-
-// DelegationProviderCapture is passed through unchanged to the attempt owner.
-type DelegationProviderCapture = delegate.WireCapture
 type DelegationConsumer struct{ core *delegate.Coordinator }
 type DelegationRevision struct{ value delegate.PolicyRevision }
-type PreparedDelegationLaunch struct {
-	value delegate.PreparedDelegationLaunch
-}
 
 type fixedDelegationProvider struct {
 	provider   DelegationProvider
@@ -48,7 +37,7 @@ type fixedDelegationProvider struct {
 func (p fixedDelegationProvider) Do(ctx context.Context, r delegate.WireRequest) (delegate.WireResponse, error) {
 	d := p.deployment
 	response, err := p.provider.Call(ctx, DelegationProviderRequest{BillingProvider: r.Provider, ProfileID: d.Profile.ID, ProfileRevision: d.Profile.Revision, Model: r.Model, Endpoint: r.Endpoint, Workspace: d.Workspace, CredentialRef: DelegationCredentialReference(d.CredentialRef), Payload: append([]byte(nil), r.Payload...)})
-	return delegate.WireResponse{Status: response.Status, Headers: map[string]string{"x-request-id": response.RequestID, "request-id": response.AlternateRequestID}, Body: response.Body, Capture: response.Capture}, err
+	return delegate.WireResponse{Status: response.Status, Headers: map[string]string{"x-request-id": response.RequestID, "request-id": response.AlternateRequestID}, Body: response.Body}, err
 }
 
 // NewDelegation has no arbitrary executable/environment hooks. Its provider and
@@ -75,7 +64,7 @@ func (c *DelegationConsumer) ProjectPolicyChanged(project string, p DelegationPo
 	}
 }
 func (c *DelegationConsumer) PolicyRevision(id Identity) DelegationRevision {
-	return DelegationRevision{c.core.PolicyRevision(integration.Identity(id))}
+	return DelegationRevision{c.core.PolicyRevision(delegate.Identity(id))}
 }
 func (c *DelegationConsumer) Register(ctx context.Context, r DelegationRegistration) error {
 	var in delegate.Registration
@@ -93,26 +82,19 @@ func (c *DelegationConsumer) Get(id Identity, p DelegationPolicySnapshot) Delega
 	var in delegate.PolicySnapshot
 	_ = delegationWire(p, &in)
 	var out DelegationView
-	_ = delegationWire(c.core.Get(integration.Identity(id), in), &out)
+	_ = delegationWire(c.core.Get(delegate.Identity(id), in), &out)
 	return out
 }
 func (c *DelegationConsumer) SetOverride(ctx context.Context, id Identity, enabled *bool) error {
-	return c.core.SetOverride(ctx, integration.Identity(id), enabled)
+	return c.core.SetOverride(ctx, delegate.Identity(id), enabled)
 }
 func (c *DelegationConsumer) EmergencyStop(ctx context.Context, enabled bool) error {
 	return c.core.EmergencyStop(ctx, enabled)
 }
-func (c *DelegationConsumer) CaptureLaunch(id Identity, fresh bool, configured bool) (PreparedDelegationLaunch, bool) {
-	snapshot, ok := c.core.CaptureLaunch(integration.Identity(id), fresh, configured)
-	return PreparedDelegationLaunch{snapshot}, ok
-}
-func (c *DelegationConsumer) StoreLaunch(ctx context.Context, p PreparedDelegationLaunch, id Identity) error {
-	return c.core.StoreLaunch(ctx, p.value, integration.Identity(id))
-}
 func (c *DelegationConsumer) Read(ctx context.Context, id Identity, p DelegationPolicySnapshot, r DelegationRequest, revision DelegationRevision) DelegationReply {
 	var in delegate.PolicySnapshot
 	_ = delegationWire(p, &in)
-	result := c.core.Read(ctx, integration.Identity(id), in, delegate.Request{Question: r.Question, Paths: append([]string(nil), r.Paths...), Focus: r.Focus, OutputLimit: r.OutputLimit}, revision.value)
+	result := c.core.Read(ctx, delegate.Identity(id), in, delegate.Request{Question: r.Question, Paths: append([]string(nil), r.Paths...), Focus: r.Focus, OutputLimit: r.OutputLimit}, revision.value)
 	var out DelegationReply
 	if delegationWire(result, &out) != nil {
 		out = DelegationReply{Schema: "hcg.delegate-read/1", Status: "unavailable", Reason: "integration_unavailable"}
@@ -121,26 +103,11 @@ func (c *DelegationConsumer) Read(ctx context.Context, id Identity, p Delegation
 }
 
 func (c *DelegationConsumer) MountRequested(id Identity) bool {
-	return c.core.MountRequested(integration.Identity(id))
+	return c.core.MountRequested(delegate.Identity(id))
 }
 
 // RecoverDelegationReceipts retries only internal startup receipt projections.
 // It cannot import caller-provided counters or issue another provider request.
 func (c *DelegationConsumer) RecoverDelegationReceipts(ctx context.Context) error {
 	return c.core.RecoverReceipts(ctx)
-}
-
-func (c *DelegationConsumer) LabGrant() *DelegationLabGrant {
-	g := c.core.LabGrant()
-	if g == nil {
-		return nil
-	}
-	var out DelegationLabGrant
-	if delegationWire(g, &out) != nil {
-		return nil
-	}
-	return &out
-}
-func CheckDelegationOwnerStartup(ctx context.Context, root string) error {
-	return delegate.CheckLabStartup(ctx, root)
 }

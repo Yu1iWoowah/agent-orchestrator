@@ -86,8 +86,6 @@ type Service struct {
 	onAccountChanged        func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged  func(domain.SessionID, string, ports.CodexCapacityObservation)
 
-	hcgReporting ports.HCGReportingLaunchObserver // guarded by mu
-
 	findMu         sync.Mutex
 	findCache      map[string]cachedFind
 	recheckAccount func(domain.SessionID, domain.AgentHarness)
@@ -1641,8 +1639,6 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		}
 		s.mu.Unlock()
 	}()
-
-	s.notifyHCGReporting(cfg, liveReconnect)
 
 	return controller, nil
 }

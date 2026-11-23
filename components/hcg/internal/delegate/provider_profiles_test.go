@@ -3,7 +3,7 @@ package delegate
 import "testing"
 
 func TestProfileRequiresExplicitModelCap(t *testing.T) {
-	valid := Profile{ID: "anthropic-fixture", Revision: "r1", BillingProvider: "anthropic", Model: "fixture-model", ContextTokens: 200000, MaxOutputTokens: 16384, OutputTokens: 128}
+	valid := Profile{ID: "openai-fixture", Revision: "r1", BillingProvider: "openai", Model: "fixture-model", ContextTokens: 200000, MaxOutputTokens: 16384, OutputTokens: 128}
 	if !valid.valid() {
 		t.Fatal("fixture profile rejected")
 	}
@@ -18,9 +18,5 @@ func TestProfileRequiresExplicitModelCap(t *testing.T) {
 	updated.OutputTokens++
 	if valid.digest() == updated.digest() {
 		t.Fatal("profile mutation kept digest")
-	}
-	child := valid.childConfig()
-	if _, ok := child["revision"]; ok {
-		t.Fatal("host descriptor leaked into PAL")
 	}
 }

@@ -14,17 +14,14 @@ type Inputs struct {
 // Identity is constructed by AO from its owned session records. HTTP callers
 // must never supply source paths or native ownership.
 type Identity struct {
-	DataRoot             string
-	ProjectID            string
-	SessionID            string
-	Role                 string
-	Mode                 string
-	Harness              string
-	Worktree             string
-	ArtifactDir          string
-	NativeID             string
-	LaunchID             string
-	ControllerGeneration string
+	DataRoot  string
+	ProjectID string
+	SessionID string
+	Role      string
+	Mode      string
+	Harness   string
+	Worktree  string
+	ReadRoots []string
 }
 
 type DelegationProfileRef struct {
@@ -49,44 +46,18 @@ type DelegationCredentialReference struct {
 	Version  string `json:"version"`
 }
 
-type DelegationInputManifest struct {
-	ProjectID string                   `json:"projectId"`
-	Name      string                   `json:"name"`
-	Revision  string                   `json:"revision"`
-	Files     []DelegationApprovedFile `json:"files"`
-}
-
-type DelegationInstallation struct {
-	Source          string `json:"source"`
-	Venv            string `json:"venv"`
-	Commit          string `json:"commit"`
-	SourceDigest    string `json:"sourceDigest"`
-	RuntimeDigest   string `json:"runtimeDigest"`
-	PythonDigest    string `json:"pythonDigest"`
-	ConfigDigest    string `json:"configDigest"`
-	LockDigest      string `json:"lockDigest"`
-	PythonVersion   string `json:"pythonVersion"`
-	AdapterVersion  string `json:"adapterVersion"`
-	TemplateVersion string `json:"templateVersion"`
-}
-
 type DelegationDeployment struct {
 	Profile       DelegationProfile             `json:"profile"`
 	CredentialRef DelegationCredentialReference `json:"credentialRef"`
 	Workspace     string                        `json:"workspace"`
-	Installation  DelegationInstallation        `json:"installation"`
-	Inputs        []DelegationInputManifest     `json:"inputs"`
 }
 
 type DelegationRegistration struct {
-	Grant         *DelegationLabGrant                `json:"grant"`
 	Deployment    DelegationDeployment               `json:"deployment"`
 	ExternalSpend map[string]DelegationExternalSpend `json:"externalSpend"`
 }
 
 type DelegationResolvedProfile struct {
-	RunID           string `json:"runId"`
-	OwnerRoot       string `json:"ownerRoot"`
 	ID              string `json:"id"`
 	Revision        string `json:"revision"`
 	BillingProvider string `json:"billing_provider"`
@@ -99,9 +70,6 @@ type DelegationResolvedProfile struct {
 }
 
 type DelegationView struct {
-	RunID                      string                     `json:"runId"`
-	OwnerRoot                  string                     `json:"ownerRoot"`
-	MountConfigured            bool                       `json:"mountConfigured"`
 	ProjectID                  string                     `json:"projectId"`
 	SessionID                  string                     `json:"sessionId"`
 	Inputs                     Inputs                     `json:"inputs"`
@@ -121,30 +89,16 @@ type DelegationView struct {
 	ProjectPolicyRevision      string                     `json:"projectPolicyRevision"`
 	HostProfileCurrentRevision string                     `json:"hostProfileCurrentRevision"`
 	ProfileEligibility         string                     `json:"profileEligibility"`
-	MountKnown                 bool                       `json:"mountKnown"`
-	MountEnabled               bool                       `json:"mountEnabled"`
-	MountProfile               *DelegationProfileRef      `json:"mountProfile"`
-	ManifestRevision           uint64                     `json:"manifestRevision"`
-}
-
-type DelegationLongContextPrices struct {
-	ThresholdInputTokens  int64 `json:"thresholdInputTokens"`
-	InputPerMillion       int64 `json:"inputNanoUSDPerMillion"`
-	CachedInputPerMillion int64 `json:"cachedInputNanoUSDPerMillion"`
-	CacheWritePerMillion  int64 `json:"cacheWriteNanoUSDPerMillion"`
-	OutputPerMillion      int64 `json:"outputNanoUSDPerMillion"`
 }
 
 type DelegationPrices struct {
-	CacheWritePerMillion  *int64                       `json:"cacheWriteNanoUSDPerMillion,omitempty"`
-	LongContext           *DelegationLongContextPrices `json:"longContext,omitempty"`
-	Version               string                       `json:"version"`
-	Period                string                       `json:"period"`
-	InputPerMillion       int64                        `json:"inputNanoUSDPerMillion"`
-	CachedInputPerMillion int64                        `json:"cachedInputNanoUSDPerMillion"`
-	OutputPerMillion      int64                        `json:"outputNanoUSDPerMillion"`
-	LimitsCertified       bool                         `json:"limitsCertified"`
-	BillableUsageCovered  bool                         `json:"billableUsageCovered"`
+	Version               string `json:"version"`
+	Period                string `json:"period"`
+	InputPerMillion       int64  `json:"inputNanoUSDPerMillion"`
+	CachedInputPerMillion int64  `json:"cachedInputNanoUSDPerMillion"`
+	OutputPerMillion      int64  `json:"outputNanoUSDPerMillion"`
+	LimitsCertified       bool   `json:"limitsCertified"`
+	BillableUsageCovered  bool   `json:"billableUsageCovered"`
 }
 
 type DelegationExternalSpend struct {
@@ -154,8 +108,6 @@ type DelegationExternalSpend struct {
 }
 
 type DelegationProfile struct {
-	ReasoningEffort string           `json:"reasoningEffort,omitempty"`
-	ServiceTier     string           `json:"serviceTier,omitempty"`
 	Prices          DelegationPrices `json:"prices"`
 	ID              string           `json:"id"`
 	Revision        string           `json:"revision"`
@@ -236,33 +188,9 @@ type DelegationEvidence struct {
 	Verification  string    `json:"verification"`
 }
 
-type DelegationApprovedFile struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-}
 type DelegationRequest struct {
 	Question    string   `json:"question"`
 	Paths       []string `json:"paths"`
 	Focus       string   `json:"focus,omitempty"`
 	OutputLimit int      `json:"output_limit,omitempty"`
-}
-
-type DelegationLabSession struct {
-	ProjectID string `json:"projectId"`
-	SessionID string `json:"sessionId"`
-}
-
-// DelegationLabGrant is operator-only registration data, never a model tool argument.
-// One immutable run owns this root; only its explicit session list may grow.
-type DelegationLabGrant struct {
-	RunID               string                          `json:"runId"`
-	OwnerRoot           string                          `json:"ownerRoot"`
-	CanonicalOwner      DelegationLabSession            `json:"canonicalOwner"`
-	StartsAt            time.Time                       `json:"startsAt"`
-	ExpiresAt           time.Time                       `json:"expiresAt"`
-	Profiles            map[string]DelegationProfileRef `json:"profiles"`
-	Bindings            []DelegationLabSession          `json:"bindings"`
-	ProviderCapNanos    map[string]int64                `json:"providerCapNanos"`
-	TotalCapNanos       int64                           `json:"totalCapNanos"`
-	AttemptsPerProvider int                             `json:"attemptsPerProvider"`
 }

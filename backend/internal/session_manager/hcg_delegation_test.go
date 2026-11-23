@@ -8,12 +8,12 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-type delegationMountObserver struct{ notices []ports.HCGReportingLaunch }
+type delegationMountObserver struct{ mounts []ports.HCGDelegationMount }
 
-func (o *delegationMountObserver) ReportingLaunchReady(n ports.HCGReportingLaunch) {
-	o.notices = append(o.notices, n)
+func (o *delegationMountObserver) DelegationMountRequested(m ports.HCGDelegationMount) bool {
+	o.mounts = append(o.mounts, m)
+	return true
 }
-func (*delegationMountObserver) DelegationMountRequested(ports.HCGDelegationMount) bool { return true }
 
 func TestHCGDelegationChatMountFreshAndRestore(t *testing.T) {
 	launcher := &recordingLauncher{}
@@ -21,7 +21,7 @@ func TestHCGDelegationChatMountFreshAndRestore(t *testing.T) {
 	mgr.dataDir = t.TempDir()
 	executable := filepath.Join(t.TempDir(), "ao")
 	mgr.executable = func() (string, error) { return executable, nil }
-	mgr.hcgReporting = &delegationMountObserver{}
+	mgr.hcgDelegation = &delegationMountObserver{}
 	rec, _, _, err := mgr.Spawn(t.Context(), ports.SpawnConfig{ProjectID: chatTestProject, Kind: domain.KindWorker, Harness: domain.HarnessCodex, RequestedMode: domain.SessionModeChat})
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestHCGDelegationTUIMountSuccessAndRestore(t *testing.T) {
 	ws.path = t.TempDir()
 	mgr.dataDir = t.TempDir()
 	observer := &delegationMountObserver{}
-	mgr.hcgReporting = observer
+	mgr.hcgDelegation = observer
 	rec, _, _, err := mgr.Spawn(t.Context(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessCodex})
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestHCGDelegationTUIMountSuccessAndRestore(t *testing.T) {
 	if _, err := mgr.RestoreWithMode(t.Context(), rec.ID); err != nil {
 		t.Fatal(err)
 	}
-	if len(observer.notices) != 2 || !observer.notices[0].DelegationConfigured || !observer.notices[1].DelegationConfigured {
-		t.Fatalf("actual mount not recorded: %+v", observer.notices)
+	if len(observer.mounts) != 2 || observer.mounts[0].Mode != domain.SessionModeTUI || observer.mounts[1].Mode != domain.SessionModeTUI {
+		t.Fatalf("mount not resolved on spawn and restore: %+v", observer.mounts)
 	}
 }
