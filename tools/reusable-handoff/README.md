@@ -33,7 +33,7 @@ cd "$AO_DATA_DIR/artifacts/$AO_SESSION_ID/handoff" && \
 
 新主控依序做下面三步（使用者 2026-11-23 manual-handoff-trim-1＝three）。任何一步失敗，就向使用者回報失敗的步驟與錯誤。
 
-1. 用 `cp -a --update=none` 把舊主控 artifact 複製到自己的 artifact。
+1. 用 `cp -a` 把舊主控 artifact 複製到自己的 artifact。
 2. 讀交接文件，向使用者回報已接手與現況；以自己的身分把交接文件 §A 更新為由自己接手（`--expected-hash <讀到的 sha256>`）。寫入成功就表示已拿到共用資料夾的 lease；被拒就回報使用者。
 3. 依交接文件親自通知存活 worker。
 
