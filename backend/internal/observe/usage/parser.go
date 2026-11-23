@@ -733,7 +733,9 @@ func parseCodexEvent(source domain.UsageSourceContext, envelope codexEnvelope, s
 			state.Baseline = total
 			return
 		}
-		if !codexVectorMatchesDelta(last, input, cached, cacheWrite, output, reasoning, reportedTotal) {
+		// Quota updates can replay the previous last usage without increasing totals.
+		if delta != (codexTokenVector{}) &&
+			!codexVectorMatchesDelta(last, input, cached, cacheWrite, output, reasoning, reportedTotal) {
 			result.Cursor.AnomalyCount++
 			result.Cursor.LastErrorCode = domain.UsageErrorNonMonotonicCumulativeUsage
 			selected = last
