@@ -1,8 +1,10 @@
+import { memo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../api/schema";
 import { apiClient } from "../lib/api-client";
 import { SettingsSection } from "./settings/SettingsSection";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 
 type Composition = components["schemas"]["UsageCompositionResponse"];
 type Category = components["schemas"]["UsageCompositionCategory"];
@@ -10,8 +12,9 @@ type Category = components["schemas"]["UsageCompositionCategory"];
 const number = (value: number | null | undefined) => (typeof value === "number" ? value.toLocaleString() : "–");
 
 // Shows each model request's exact input and its split by context category,
-// exactly as the daemon computed it at query time.
-export function SessionCompositionPanel({ sessionId }: { sessionId: string }) {
+// exactly as the daemon computed it at query time. Memoized so the memory
+// window's periodic resampling does not redraw a long request table.
+export const SessionCompositionPanel = memo(function SessionCompositionPanel({ sessionId }: { sessionId: string }) {
 	const { t } = useTranslation();
 	const query = useQuery({
 		queryKey: ["session-composition", sessionId],
@@ -24,7 +27,8 @@ export function SessionCompositionPanel({ sessionId }: { sessionId: string }) {
 		},
 		retry: 1,
 	});
-	const data = query.data;
+	// A failed refetch keeps the previous data; show only the error then.
+	const data = query.isError ? undefined : query.data;
 	const header = data?.requests[0]?.categories ?? [];
 	const notes = [...new Map(header.filter((cat) => cat.note).map((cat) => [cat.category, cat] as const)).values()];
 	return (
@@ -36,34 +40,34 @@ export function SessionCompositionPanel({ sessionId }: { sessionId: string }) {
 				{data?.status === "ok" ? (
 					<>
 						<p>{t("composition.method")}</p>
-						<div className="overflow-x-auto">
-							<table className="w-full text-left text-xs" aria-label={t("composition.title")}>
-								<thead>
-									<tr className="border-b border-border">
-										<th className="py-2 pr-2 font-medium">{t("composition.request")}</th>
-										<th className="px-2 text-right font-medium">{t("composition.input")}</th>
+						<div className="max-h-80 overflow-y-auto">
+							<Table className="text-xs" aria-label={t("composition.title")}>
+								<TableHeader>
+									<TableRow>
+										<TableHead>{t("composition.request")}</TableHead>
+										<TableHead className="text-right">{t("composition.input")}</TableHead>
 										{header.map((cat) => (
-											<th className="px-2 text-right font-medium" key={cat.category}>
+											<TableHead className="text-right" key={cat.category}>
 												{t(`composition.category.${cat.category}`)}
-											</th>
+											</TableHead>
 										))}
-									</tr>
-								</thead>
-								<tbody>
+									</TableRow>
+								</TableHeader>
+								<TableBody>
 									{data.requests.map((req) => (
-										<tr className="border-b border-border last:border-0" key={req.ordinal}>
-											<th className="py-2 pr-2 font-normal tabular-nums">{req.ordinal}</th>
-											<td className="px-2 text-right tabular-nums text-foreground">
+										<TableRow key={req.ordinal}>
+											<TableCell className="tabular-nums">{req.ordinal}</TableCell>
+											<TableCell className="text-right tabular-nums text-foreground">
 												{number(req.inputTokens)}
 												{req.unresolved ? <div>{t("composition.unresolved", { value: req.unresolved })}</div> : null}
-											</td>
+											</TableCell>
 											{req.categories.map((cat) => (
 												<CategoryCell cat={cat} key={cat.category} />
 											))}
-										</tr>
+										</TableRow>
 									))}
-								</tbody>
-							</table>
+								</TableBody>
+							</Table>
 						</div>
 						{notes.length > 0 ? (
 							<ul className="space-y-1">
@@ -79,14 +83,14 @@ export function SessionCompositionPanel({ sessionId }: { sessionId: string }) {
 			</div>
 		</SettingsSection>
 	);
-}
+});
 
 function CategoryCell({ cat }: { cat: Category }) {
 	const { t } = useTranslation();
 	return (
-		<td className="px-2 text-right tabular-nums">
+		<TableCell className="text-right tabular-nums">
 			<div className="text-foreground">{number(cat.tokens)}</div>
 			<div>{cat.bytes == null ? t("composition.note.unknown") : t("composition.bytes", { value: number(cat.bytes) })}</div>
-		</td>
+		</TableCell>
 	);
 }
