@@ -541,7 +541,7 @@ func (c *Controller) settleLegacyDelivery(ctx context.Context, a domain.ChatDeli
 // from an earlier boot. A different attached epoch alone only proves the old
 // host process is gone: in the same boot a killed host's provider runs in its
 // own process group and may still be changing the workspace, so that stays
-// unconfirmed. Only a previous boot proves the provider and its tools ended.
+// unconfirmed here. The adapter sweep uses the saved process scope instead.
 func (c *Controller) goneHostEpoch(a domain.ChatDeliveryAttempt) bool {
 	reporter, ok := c.conv.(ports.ChatDeliveryEpochReporter)
 	judge, judged := c.conv.(ports.ChatDeliveryEpochJudge)
@@ -568,7 +568,7 @@ func (c *Controller) settleGoneHostDelivery(ctx context.Context, a domain.ChatDe
 	}
 	c.deliveryReceiptMu.Lock()
 	defer c.deliveryReceiptMu.Unlock()
-	journal, ok := c.store.(chatDeliveryJournal)
+	journal, ok := c.store.(interruptedDeliveryStore)
 	if !ok {
 		return false, ports.ErrChatDeliveryUnverified
 	}
@@ -580,27 +580,10 @@ func (c *Controller) settleGoneHostDelivery(ctx context.Context, a domain.ChatDe
 	if err != nil || a.ExecutionSettled || a.Disposition != domain.ChatDeliveryUnknown && a.Disposition != domain.ChatDeliveryReserved || !c.goneHostEpoch(a) {
 		return false, err
 	}
-	old := a.Receipt
-	r := domain.ChatDeliveryReceipt{AttemptID: a.ID, Disposition: domain.ChatDeliveryUnknown, Source: "incomplete", ExecutionSettled: true, ObservedAt: c.now(),
-		ProviderEpoch: old.ProviderEpoch, ProviderRequestID: old.ProviderRequestID, ProviderTurnID: old.ProviderTurnID}
-	code := "CHAT_DELIVERY_HOST_GONE_SETTLED"
-	for _, id := range a.TurnIDs {
-		turn, err := c.store.TurnByID(ctx, id)
-		if err != nil {
-			return false, err
-		}
-		if turn.State != domain.TurnStateCompleted {
-			code = "CHAT_DELIVERY_HOST_GONE_INTERRUPTED"
-		}
-	}
-	a.Version++
-	a.UpdatedAt = laterChatTime(c.now(), a.UpdatedAt)
-	a.Disposition, a.Receipt, a.ExecutionSettled, a.EvidenceLevel = domain.ChatDeliveryUnknown, &r, true, 0
-	a.NextCheckAt, a.BlockedSince, a.ErrorCode = nil, nil, code
-	if _, err := journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current)); err != nil {
+	if err := journal.SettleInterruptedUnknownDelivery(ctx, a, ownerForSettings(current), laterChatTime(c.now(), a.UpdatedAt)); err != nil {
 		return false, err
 	}
-	c.releasePendingDelivery(a.ID)
+	c.releaseInterruptedDeliveryHold(ctx, a)
 	return true, nil
 }
 

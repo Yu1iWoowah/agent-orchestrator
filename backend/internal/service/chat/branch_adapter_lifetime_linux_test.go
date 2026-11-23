@@ -114,8 +114,8 @@ func testEditedBranchAdapterSettlement(t *testing.T, exitBeforePublish bool) {
 	}
 	sweep := func() error {
 		return persistenthost.ReconcileExitedAdapters(ctx, dataDir, h.svc.AdapterGenerationStopped,
-			func(ctx context.Context, id domain.SessionID, conversation, branch, generation string) error {
-				return h.st.SettleExitedChatAdapter(ctx, id, conversation, branch, generation, h.now())
+			func(ctx context.Context, id domain.SessionID, conversation, branch, generation string, _ bool) (bool, error) {
+				return true, h.st.SettleExitedChatAdapter(ctx, id, conversation, branch, generation, h.now())
 			})
 	}
 	var record string

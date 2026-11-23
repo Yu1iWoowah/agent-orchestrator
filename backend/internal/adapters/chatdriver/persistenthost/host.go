@@ -994,10 +994,8 @@ func Run(ctx context.Context, cfg Config) error {
 		Address:              listener.Addr().String(), Token: token, PID: os.Getpid(), StartedAt: time.Now().UTC(),
 		BootID: currentBootID(),
 	}
-	if cfg.Protocol == ProtocolACP {
-		if err := recordAdapterIdentity(cfg.DataDir, d, child.Process.Pid); err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, "chat adapter lifetime evidence unavailable")
-		}
+	if err := recordAdapterIdentity(cfg.DataDir, d, child.Process.Pid); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "chat adapter lifetime evidence unavailable")
 	}
 	if err := writeDescriptor(cfg.DataDir, d); err != nil {
 		_ = killProviderProcess(context.WithoutCancel(ctx), child)

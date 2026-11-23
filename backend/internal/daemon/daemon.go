@@ -1718,9 +1718,7 @@ func Run(buildVersion string) (retErr error) {
 	var replacementReconcileDone <-chan struct{}
 	var retryPreviousBootDeliveries atomic.Bool
 	reconcileExitedAdapters := func(ctx context.Context) {
-		err := persistenthost.ReconcileExitedAdapters(ctx, cfg.DataDir, chatSvc.AdapterGenerationStopped, func(ctx context.Context, id domain.SessionID, conversation, branch, generation string) error {
-			return store.SettleExitedChatAdapter(ctx, id, conversation, branch, generation, time.Now().UTC())
-		})
+		err := persistenthost.ReconcileExitedAdapters(ctx, cfg.DataDir, chatSvc.AdapterGenerationStopped, chatSvc.ReconcileExitedAdapter)
 		if err != nil && ctx.Err() == nil {
 			log.Warn("reconcile exited chat adapter failed")
 		}
