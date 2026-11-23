@@ -1,7 +1,9 @@
 package sessionmanager
 
 import (
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -19,7 +21,18 @@ func TestHCGDelegationChatMountFreshAndRestore(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, _ := newChatManager(launcher)
 	mgr.dataDir = t.TempDir()
-	executable := filepath.Join(t.TempDir(), "ao")
+	ext := ""
+	if runtime.GOOS == "windows" {
+		ext = ".exe"
+	}
+	binDir := t.TempDir()
+	executable := filepath.Join(binDir, "ao"+ext)
+	helper := filepath.Join(binDir, "ao-mcp"+ext)
+	for _, binary := range []string{executable, helper} {
+		if err := os.WriteFile(binary, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	mgr.executable = func() (string, error) { return executable, nil }
 	mgr.hcgDelegation = &delegationMountObserver{}
 	rec, _, _, err := mgr.Spawn(t.Context(), ports.SpawnConfig{ProjectID: chatTestProject, Kind: domain.KindWorker, Harness: domain.HarnessCodex, RequestedMode: domain.SessionModeChat})
@@ -40,7 +53,14 @@ func TestHCGDelegationChatMountFreshAndRestore(t *testing.T) {
 		if len(start.MCPServers) != 2 || start.MCPServers[0].Name != "ao" || start.MCPServers[1].Name != "hcg" {
 			t.Fatalf("MCP identity: %+v", start.MCPServers)
 		}
+		ao := start.MCPServers[0]
+		if ao.Command != helper || len(ao.Args) != 0 {
+			t.Fatalf("ao MCP command = %q %v, want %q with no args", ao.Command, ao.Args, helper)
+		}
 		hcg := start.MCPServers[1]
+		if hcg.Command != executable {
+			t.Fatalf("HCG MCP command = %q, want daemon executable %q", hcg.Command, executable)
+		}
 		if len(hcg.Args) != 3 || hcg.Args[0] != "usage" || hcg.Args[1] != "delegation" || hcg.Args[2] != "mcp" || hcg.Env[EnvSessionID] != string(rec.ID) {
 			t.Fatalf("fixed HCG config=%+v", hcg)
 		}
