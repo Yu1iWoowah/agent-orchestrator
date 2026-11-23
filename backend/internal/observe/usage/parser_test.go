@@ -394,16 +394,25 @@ func TestParseCodexSessionMetaProviderAppliesOnlyToSubsequentEvents(t *testing.T
 
 func TestParseCodexReferenceUsageReconcilesLastAndCumulativeTotals(t *testing.T) {
 	source := usageSource(domain.UsageSourceCodexRollout)
+	firstUsage := codexTokenVector{
+		InputTokens:           16568,
+		CachedInputTokens:     4480,
+		OutputTokens:          638,
+		ReasoningOutputTokens: 148,
+		TotalTokens:           17206,
+	}
 	records := []jsonlRecord{
 		{Data: []byte(`{"type":"turn_context","payload":{"model":"gpt-5.5"}}`)},
-		{Data: codexTokenLineWithLast("2026-08-20T10:00:00Z", codexTokenVector{InputTokens: 16568, CachedInputTokens: 4480, OutputTokens: 638, ReasoningOutputTokens: 148, TotalTokens: 17206}, codexTokenVector{InputTokens: 16568, CachedInputTokens: 4480, OutputTokens: 638, ReasoningOutputTokens: 148, TotalTokens: 17206})},
+		{Data: codexTokenLineWithLast("2026-08-20T10:00:00Z", firstUsage, firstUsage)},
+		// A quota update can repeat both vectors at a different timestamp.
+		{Data: codexTokenLineWithLast("2026-08-20T10:00:30Z", firstUsage, firstUsage)},
 		{Data: codexTokenLineWithLast("2026-08-20T10:01:00Z", codexTokenVector{InputTokens: 22673, CachedInputTokens: 4480, OutputTokens: 1895, ReasoningOutputTokens: 516, TotalTokens: 24568}, codexTokenVector{InputTokens: 39241, CachedInputTokens: 8960, OutputTokens: 2533, ReasoningOutputTokens: 664, TotalTokens: 41774})},
 		{Data: codexTokenLineWithLast("2026-08-20T10:02:00Z", codexTokenVector{InputTokens: 24325, CachedInputTokens: 21888, OutputTokens: 2525, ReasoningOutputTokens: 516, TotalTokens: 26850}, codexTokenVector{InputTokens: 63566, CachedInputTokens: 30848, OutputTokens: 5058, ReasoningOutputTokens: 1180, TotalTokens: 68624})},
 	}
 
 	result := parseRecords(source, records, 1000, time.Unix(1700000000, 0).UTC())
 	if len(result.Events) != 3 || result.Cursor.AnomalyCount != 0 {
-		t.Fatalf("result = %+v, want three reconciled events", result)
+		t.Fatalf("events = %d, anomalies = %d, want 3 events and 0 anomalies", len(result.Events), result.Cursor.AnomalyCount)
 	}
 	assertCanonicalEventTotals(t, result.Events, 63566, 30848, 32718, 5058)
 	// last_token_usage is the per-event vector, so the reasoning and cache-write
