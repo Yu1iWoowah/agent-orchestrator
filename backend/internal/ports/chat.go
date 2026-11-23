@@ -326,8 +326,7 @@ type ChatStartConfig struct {
 	// PrepareEnv rotates launch-only credentials. Persistent drivers defer it
 	// until they know a new provider process is required; live adoption must keep
 	// the verifier for the bearer already held by the surviving process.
-	PrepareEnv     func(context.Context) (map[string]string, error)
-	RCAEnvironment RCAClaudeEnvironment
+	PrepareEnv func(context.Context) (map[string]string, error)
 	// AcquireForkSource locks a current-context source immediately before the
 	// provider copies it. Fork drivers release it before loading the child.
 	AcquireForkSource func(context.Context) (copyCtx context.Context, release func(), err error)
@@ -387,8 +386,7 @@ type ChatResumeConfig struct {
 	WorkspacePath  string
 	Env            map[string]string
 	// See ChatStartConfig.PrepareEnv.
-	PrepareEnv     func(context.Context) (map[string]string, error)
-	RCAEnvironment RCAClaudeEnvironment
+	PrepareEnv func(context.Context) (map[string]string, error)
 	// Model is optional; empty keeps the provider conversation's current model.
 	Model string
 	// Effort is optional; empty keeps the provider conversation's current effort.

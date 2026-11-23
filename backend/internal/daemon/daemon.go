@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 
 	"regexp"
 	"strings"
@@ -95,7 +94,6 @@ import (
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	projectdocssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/projectdocuments"
 	questionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/questions"
-	rcasvc "github.com/aoagents/agent-orchestrator/backend/internal/service/rca"
 	reportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/report"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
 	settingssvc "github.com/aoagents/agent-orchestrator/backend/internal/service/settings"
@@ -392,10 +390,6 @@ func Run(buildVersion string) (retErr error) {
 	}
 	hcgReporting := hcgsvc.NewLabOwner(context.Background(), cfg.DataDir, store, dataDirLock != nil)
 	defer hcgReporting.Close()
-	rcaRoots, _ := usagesvc.DefaultSourceRoots(context.Background(), cfg.DataDir, cfg.StateDir)
-	rcaService := rcasvc.New(context.Background(), cfg.DataDir, store, usagesvc.NewEventsReader(store), rcaRoots)
-	defer rcaService.Close()
-	rcaService.SetClaudeLaunchEndpoint("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/api/v1/rca/otlp/v1/logs")
 	settingsGrantEnv := agentsettings.NewGrantEnvironment(store, settingsGrantAuthority, time.Now)
 	if _, err := store.RequeueClaimedReports(context.Background()); err != nil {
 		return fmt.Errorf("recover report delivery claims: %w", err)
@@ -683,7 +677,6 @@ func Run(buildVersion string) (retErr error) {
 		},
 	})
 	chatSvc.SetHCGReportingObserver(hcgReporting)
-	chatSvc.SetRCAClaudeLaunchControl(rcaService)
 	chatSvc.SetRenderCheck(renderViaDesktop(browserBroker, "__render-check"))
 	chatSvc.SetRenderMeasure(renderViaDesktop(browserBroker, "__render-measure"))
 
@@ -998,7 +991,7 @@ func Run(buildVersion string) (retErr error) {
 	if githubRepos != nil {
 		sessionSvc.SetGitHubRepositoryResolver(githubRepos)
 	}
-	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Milestones: installMilestones(cfg), Logger: log, GitHubRepos: githubRepos, WithProjectGate: sessionSvc.WithOrchestratorProjectGate, DelegationPolicyChanged: hcgReporting.DelegationProjectPolicyChanged, RCAPolicyChanged: rcaService.ProjectPolicyChanged})
+	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Milestones: installMilestones(cfg), Logger: log, GitHubRepos: githubRepos, WithProjectGate: sessionSvc.WithOrchestratorProjectGate, DelegationPolicyChanged: hcgReporting.DelegationProjectPolicyChanged})
 	go projectSvc.WarmCanonicalRepos(ctx)
 	reportSessions, ok := sessMgr.(reportSemanticSession)
 	if !ok {
@@ -1560,7 +1553,6 @@ func Run(buildVersion string) (retErr error) {
 		UsageLimitSetting:  store,
 		UsagePrices:        usagePrices(usagePricing),
 		UsageEvents:        usagesvc.NewEventsReader(store),
-		RCA:                rcaService,
 		HCGDelegation:      hcgReporting,
 		SessionMemory:      memoryReader,
 		SessionSteps:       lcStack.LCM,

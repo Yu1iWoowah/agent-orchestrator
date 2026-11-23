@@ -64,16 +64,10 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	api := newAPIWithLogger(cfg, deps, log)
 
 	r.Use(middleware.RequestID)
-	var rejectRaw func(string, string)
-	if inline, ok := deps.RCA.(controllers.RCAInlineService); ok {
-		rejectRaw = inline.RejectClaude
-	}
-	r.Use(rcaRawTransportGuardWithReject(rejectRaw))
 	r.Use(caller.Middleware)
 	r.Use(settingsIdentityMiddleware)
 	r.Use(requestLogger(log, deps.Telemetry))
 	r.Use(recoverTelemetry(log, deps.Telemetry))
-	r.Use(rcaOriginMiddleware(cfg.AllowedOrigins))
 	// Credential routes retain their exact renderer-only boundary even for
 	// authenticated LAN callers. Check before CORS can answer a preflight.
 	r.Use(rendererOriginMiddleware(cfg.AllowedOrigins))

@@ -58,7 +58,6 @@ type APIDeps struct {
 	UsageHooks        controllers.UsageHookRecorder
 	UsageSummary      controllers.UsageSummaryService
 	UsageEvents       controllers.UsageEventsService
-	RCA               controllers.RCAService
 	HCGDelegation     controllers.HCGDelegationService
 
 	UsageReport        controllers.UsageReportService
@@ -432,7 +431,6 @@ func (a *API) Register(root chi.Router) {
 			a.desktop.Register(r)
 			a.appDiagnostics.Register(r)
 			a.usage.Register(r)
-			controllers.RCAController{Svc: a.deps.RCA}.Register(r)
 			mountHCGDelegation(r, a.deps.HCGDelegation)
 			mountGuardianObservation(r, a.deps.GuardianObservability)
 			a.prs.Register(r)

@@ -54,7 +54,6 @@ import {
 	settingsDialogHeaderClass,
 } from "./ui/dialog";
 import { SettingsSection } from "./settings/SettingsSection";
-import { SessionCompositionPanel } from "./SessionCompositionPanel";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 // Stable identity for the loading state: `data ?? []` would hand useMemo a
@@ -686,11 +685,6 @@ function SessionRow({
 	session: WorkspaceSession;
 }) {
 	const { t } = useTranslation();
-	const [compositionOpen, setCompositionOpen] = useState(false);
-	const canAnalyze = session.workspaceId === "agent-orchestrator" && !session.hostId && (
-   (session.provider === "codex" && !isOrchestratorSession(session)) ||
-   (session.provider === "claude-code" && session.mode === "chat" && (session.kind == null || session.kind === "worker" || session.kind === "orchestrator"))
- );
 	const working = session.activity?.state === "active";
 	const recent = reading.activity?.recent ?? [];
 	const canExpand = reading.processes.length > 0 || recent.length > 0;
@@ -714,20 +708,6 @@ function SessionRow({
 						<div className="min-w-0">
 							<div className="truncate text-sm font-medium text-settings-label" title={session.title}>{session.title}</div>
 							<StatusLine current={reading.activity?.current} processes={reading.processes.length} session={session} working={working} />
-							{canAnalyze ? (
-								<Button
-									aria-expanded={compositionOpen}
-									size="sm"
-									variant="ghost"
-									onKeyDown={(event) => event.stopPropagation()}
-									onClick={(event) => {
-										event.stopPropagation();
-										setCompositionOpen((open) => !open);
-									}}
-								>
-									{t("rca.title")}
-								</Button>
-							) : null}
 						</div>
 					</div>
 				</td>
@@ -743,13 +723,6 @@ function SessionRow({
 				<MemoryCell bytes={reading.rssBytes} tone={chip} />
 				<ShareCell bytes={reading.rssBytes} maxBytes={maxBytes} tone={chip} />
 			</tr>
-			{canAnalyze && compositionOpen ? (
-				<tr>
-					<td className="p-3" colSpan={columnCount}>
-						<SessionCompositionPanel key={session.id} sessionId={session.id} />
-					</td>
-				</tr>
-			) : null}
 			{isExpanded ? <ProcessRows maxBytes={maxBytes} processes={reading.processes} /> : null}
 			{isExpanded && recent.length > 0 ? <RecentSteps steps={recent} /> : null}
 			{isExpanded ? <SpacerRow /> : null}

@@ -93,7 +93,6 @@ type Service struct {
 	withProjectGate func(context.Context, domain.ProjectID, func(context.Context) error) error
 
 	delegationPolicyChanged func(domain.ProjectID, domain.HCGDelegationPolicySnapshot)
-	rcaPolicyChanged        func(domain.ProjectID, domain.RCAPolicySnapshot)
 	milestones              ports.InstallMilestones
 	githubRepos             ports.GitHubRepositoryResolver
 	// addMu serialises the whole body of Add. Workspace registration performs
@@ -128,7 +127,6 @@ type Deps struct {
 	WithProjectGate func(context.Context, domain.ProjectID, func(context.Context) error) error
 
 	DelegationPolicyChanged func(domain.ProjectID, domain.HCGDelegationPolicySnapshot)
-	RCAPolicyChanged        func(domain.ProjectID, domain.RCAPolicySnapshot)
 	// GitHubRepos resolves a github.com origin to its current owner/name so
 	// Get can report CanonicalRepo after a rename. Left nil, it is omitted.
 	GitHubRepos ports.GitHubRepositoryResolver
@@ -155,7 +153,6 @@ func NewWithDeps(d Deps) *Service {
 		withProjectGate: d.WithProjectGate,
 
 		delegationPolicyChanged: d.DelegationPolicyChanged,
-		rcaPolicyChanged:        d.RCAPolicyChanged,
 		milestones:              d.Milestones,
 		githubRepos:             d.GitHubRepos,
 	}
@@ -955,9 +952,6 @@ func (m *Service) commitProjectRegistration(row domain.ProjectRecord, write func
 	if err := write(); err != nil {
 		return err
 	}
-	if m.rcaPolicyChanged != nil {
-		m.rcaPolicyChanged(domain.ProjectID(row.ID), row.Config.RCAPolicySnapshot())
-	}
 	if m.delegationPolicyChanged != nil {
 		m.delegationPolicyChanged(domain.ProjectID(row.ID), row.Config.DelegationPolicySnapshot())
 	}
@@ -967,9 +961,6 @@ func (m *Service) commitProjectRegistration(row domain.ProjectRecord, write func
 func (m *Service) notifyReportingPolicyChanged(id domain.ProjectID, before, after domain.ProjectConfig) {
 	if m.delegationPolicyChanged != nil && !reflect.DeepEqual(before.DelegationPolicySnapshot(), after.DelegationPolicySnapshot()) {
 		m.delegationPolicyChanged(id, after.DelegationPolicySnapshot())
-	}
-	if m.rcaPolicyChanged != nil && !reflect.DeepEqual(before.RCAPolicySnapshot(), after.RCAPolicySnapshot()) {
-		m.rcaPolicyChanged(id, after.RCAPolicySnapshot())
 	}
 }
 

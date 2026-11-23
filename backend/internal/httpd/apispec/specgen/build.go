@@ -120,9 +120,7 @@ func Build() ([]byte, error) {
 		for _, param := range op.pathParams {
 			oc.AddReqStructure(param)
 		}
-		if op.reqContentType != "" {
-			oc.AddReqStructure(op.reqBody, openapi.WithContentType(op.reqContentType), func(cu *openapi.ContentUnit) { cu.Format = "binary" }, openapi.WithCustomize(markRequestBodyRequired))
-		} else if op.reqBody != nil {
+		if op.reqBody != nil {
 			// AddReqStructure leaves requestBody.required absent, which
 			// OpenAPI reads as optional. Most of these bodies are mandatory, so
 			// force it — otherwise validators/generators treat the body as
@@ -180,22 +178,6 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"DomainChatExcerptTurnMessage":                         "ChatExcerptTurnMessage",
 	"ControllersConversationFindResponse":                  "ConversationFindResponse",
 	"ChatFindOccurrence":                                   "ConversationFindOccurrence",
-	"ControllersRCACompositionResponse":                    "RCACompositionResponse",
-	"ControllersRCAPolicyResponse":                         "RCAPolicyResponse",
-	"ControllersRCAEnabledRequest":                         "RCAEnabledRequest",
-	"ControllersRCAStopResponse":                           "RCAStopResponse",
-	"ControllersRCAPurgeResponse":                          "RCAPurgeResponse",
-	"DomainRCABucket":                                      "RCABucket",
-	"DomainRCARecordedTurn":                                "RCARecordedTurn",
-	"DomainRCARecordedSnapshot":                            "RCARecordedSnapshot",
-	"DomainRCAClaudeInline":                                "RCAClaudeInline",
-	"DomainRCAClaudeAttempt":                               "RCAClaudeAttempt",
-	"DomainRCARecordedState":                               "RCARecordedState",
-	"DomainRCAPolicyView":                                  "RCAPolicyView",
-	"DomainRCACanonicalEvent":                              "RCACanonicalEvent",
-	"DomainRCACanonicalPage":                               "RCACanonicalPage",
-	"DomainRCABaseline":                                    "RCABaseline",
-	"DomainRCAConfig":                                      "RCAConfig",
 	"ControllersHCGDelegationResponse":                     "HCGDelegationResponse",
 	"ControllersHCGDelegationReadRequest":                  "HCGDelegationReadRequest",
 	"ControllersHCGDelegationReadResponse":                 "HCGDelegationReadResponse",
@@ -1110,7 +1092,6 @@ type operation struct {
 	rawReqBody                string // content type of a required raw-bytes body, in place of reqBody
 	// optionalReqBody declares the body without marking it required, for the
 	// handlers that accept an empty body as a meaningful default.
-	reqContentType  string
 	optionalReqBody bool
 	resps           []respUnit
 	contentTypes    map[int]string // optional non-JSON response content types by status
@@ -1603,15 +1584,6 @@ func usageOperations() []operation {
 		{method: http.MethodPut, path: "/api/v1/hcg-delegation/profiles", id: "registerHCGDelegationProfile", tag: "usage", summary: "Fixed delegation; native primary loopback only", reqBody: controllers.HCGDelegationRegistrationRequest{}, resps: []respUnit{{http.StatusOK, controllers.HCGDelegationProfilesResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
 		{method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/hcg-delegation/read", id: "readHCGDelegation", tag: "usage", summary: "Fixed delegation; native primary loopback only", pathParams: []any{controllers.SessionIDParam{}}, reqBody: controllers.HCGDelegationReadRequest{}, resps: []respUnit{{http.StatusOK, controllers.HCGDelegationReadResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
 
-		{method: http.MethodPost, path: "/api/v1/rca/otlp/v1/logs", id: "ingestRCAOTLPLogs", tag: "usage", summary: "Native primary HTTP/1 only; known length identity OTLP protobuf; empty ACK means numeric handoff, not durable storage", pathParams: []any{controllers.RCAOTLPHeader{}}, reqBody: "", reqContentType: "application/x-protobuf", resps: []respUnit{{http.StatusOK, nil}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusMethodNotAllowed, envelope.APIError{}}, {http.StatusLengthRequired, envelope.APIError{}}, {http.StatusRequestEntityTooLarge, envelope.APIError{}}, {http.StatusUnsupportedMediaType, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodGet, path: "/api/v1/usage/sessions/{sessionId}/composition", id: "getSessionComposition", tag: "usage",
-			summary:    "Query recorded-content estimates and current canonical usage; analyze explicitly starts a selected-worker snapshot",
-			pathParams: []any{controllers.SessionIDParam{}, controllers.RCACompositionQuery{}},
-			resps:      []respUnit{{http.StatusOK, controllers.RCACompositionResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodPut, path: "/api/v1/sessions/{sessionId}/rca/override", id: "setSessionRCAOverride", tag: "usage", summary: "Set recorded-content session override", pathParams: []any{controllers.SessionIDParam{}}, reqBody: controllers.RCAEnabledRequest{}, resps: []respUnit{{http.StatusOK, controllers.RCAPolicyResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodDelete, path: "/api/v1/sessions/{sessionId}/rca/override", id: "clearSessionRCAOverride", tag: "usage", summary: "Clear override and inherit recorded-content policy", pathParams: []any{controllers.SessionIDParam{}}, resps: []respUnit{{http.StatusOK, controllers.RCAPolicyResponse{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodPut, path: "/api/v1/rca/emergency-stop", id: "setRCAEmergencyStop", tag: "usage", summary: "Set host recorded-content stop without changing opt-ins", reqBody: controllers.RCAEnabledRequest{}, resps: []respUnit{{http.StatusOK, controllers.RCAStopResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
-		{method: http.MethodDelete, path: "/api/v1/usage/sessions/{sessionId}/composition", id: "purgeSessionComposition", tag: "usage", summary: "Purge recorded-content numbers and scopes; preserve canonical/native data", pathParams: []any{controllers.SessionIDParam{}}, resps: []respUnit{{http.StatusOK, controllers.RCAPurgeResponse{}}, {http.StatusForbidden, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}}},
 		{method: http.MethodGet, path: "/api/v1/usage/sessions/{sessionId}/events", id: "listSessionUsageEvents", tag: "usage",
 			summary:    "Read numeric model request events; throughId bounds insertions, not repairs or metadata changes",
 			pathParams: []any{controllers.SessionIDParam{}, controllers.UsageEventsQuery{}},
