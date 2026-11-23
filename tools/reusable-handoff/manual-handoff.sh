@@ -11,12 +11,10 @@ PROJECT=${AO_PROJECT_ID:?須在舊主控 session 內執行}
 DATA=${AO_DATA_DIR:?須在舊主控 session 內執行}
 
 SPAWN_ARGS=(--approval-mode bypass-permissions)
-APPROVED=()
 while [ $# -gt 0 ]; do
   case $1 in
     --agent | --account | --model | --effort | --approval-mode)
       SPAWN_ARGS+=("$1" "${2:?$1 需要值}")
-      [ "$1" = --approval-mode ] || APPROVED+=("${1#--}=$2")
       shift 2 ;;
     *) echo "未知參數：$1" >&2; exit 2 ;;
   esac
@@ -31,11 +29,10 @@ trap stop ERR
 AO=(env -u AO_SESSION_ID -u AO_PROJECT_ID ao)
 
 PROMPT=$(cat <<EOF
-你是接手 $OLD 的新主控（手動換主控）。依序做下面四步；任何一步失敗，就向使用者回報失敗的步驟與錯誤並停止，不重試、不做後面的步驟。
+你是接手 $OLD 的新主控（手動換主控）。依序做下面三步；任何一步失敗，就向使用者回報失敗的步驟與錯誤。
 1. 複製舊主控 artifact：cp -a --update=none "$DATA/artifacts/$OLD/." "$DATA/artifacts/\$AO_SESSION_ID/"。
-2. 記錄設定：harness 取 ao session get "\$AO_SESSION_ID" --json 的 session.harness；帳號、model、effort 依你看得到的來源照實記錄。讀不到的記 UNKNOWN。腳本傳入值：${APPROVED[*]:-（無）}，只供記錄。這一步不比對，也不因此停。
-3. 用 ao project documents read handoff/orchestrator-handoff.md --project $PROJECT 讀交接文件，向使用者回報接手、現況、步驟 2 記下的四個值與腳本傳入值；再寫含這些值的接手收據 handoff/receipt-$OLD-<你的 session id>.md（ao project documents write … --project $PROJECT --expected-hash missing）。寫入成功即代表你持有共用資料夾 lease，寫入被拒算失敗。
-4. 依交接文件，以你自己的身分向存活 worker 送 FYI，告知你已接手。
+2. 用 ao project documents read handoff/orchestrator-handoff.md --project $PROJECT 讀交接文件，向使用者回報已接手與現況；把交接文件 §A 更新為由你接手（ao project documents write … --project $PROJECT --expected-hash <讀到的 sha256>）。寫入成功即持有共用資料夾 lease；被拒就回報使用者。
+3. 依交接文件，以你自己的身分向存活 worker 送 FYI，告知你已接手。
 EOF
 )
 
