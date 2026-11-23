@@ -6214,6 +6214,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/usage/sessions/{sessionId}/composition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Per-request context composition read from the provider's local file at query time; review selects the session's reviewer (not AO canonical usage) */
+        get: operations["getSessionUsageComposition"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/usage/sessions/{sessionId}/events": {
         parameters: {
             query?: never;
@@ -12324,6 +12341,32 @@ export interface components {
             sessionId: string;
             sources: components["schemas"]["UsageSourceView"][];
             state: string;
+        };
+        UsageCompositionCategory: {
+            bytes: null | number;
+            /** @enum {string} */
+            category: "system" | "tools" | "mcp_tools" | "injected_system" | "history" | "tool_use" | "tool_result" | "thinking" | "thinking_encrypted" | "world_state";
+            /** @enum {string} */
+            note?: "" | "unknown" | "encrypted_hidden" | "delivery_unverified";
+            tokens: null | number;
+        };
+        UsageCompositionRequest: {
+            categories: components["schemas"]["UsageCompositionCategory"][];
+            inputTokens: null | number;
+            ordinal: number;
+            timestamp?: string;
+            unresolved?: number;
+        };
+        UsageCompositionResponse: {
+            notCanonical?: boolean;
+            /** @enum {string} */
+            reason?: "" | "no_source" | "no_request_records" | "source_read_failed";
+            requests: components["schemas"]["UsageCompositionRequest"][];
+            reviewId?: string;
+            sessionId: string;
+            source: string;
+            /** @enum {string} */
+            status: "ok" | "unknown";
         };
         UsageEventView: {
             /** Format: int64 */
@@ -37348,6 +37391,58 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListCompactSessionUsageResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionUsageComposition: {
+        parameters: {
+            query?: {
+                review?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageCompositionResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Internal Server Error */

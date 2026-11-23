@@ -58,6 +58,7 @@ type APIDeps struct {
 	UsageHooks        controllers.UsageHookRecorder
 	UsageSummary      controllers.UsageSummaryService
 	UsageEvents       controllers.UsageEventsService
+	UsageComposition  controllers.UsageCompositionService
 	HCGDelegation     controllers.HCGDelegationService
 
 	UsageReport        controllers.UsageReportService
@@ -266,7 +267,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		},
 		automations:    &controllers.AutomationsController{Svc: deps.Automations},
 		desktop:        &controllers.DesktopWorkspaceController{Svc: deps.DesktopWorkspaces},
-		usage:          &controllers.UsageController{Svc: deps.UsageSummary, Events: deps.UsageEvents, Log: loggerOrDefault(log), Memory: deps.SessionMemory, Steps: deps.SessionSteps, Pressure: memoryPressure(deps.SessionMemory), Report: deps.UsageReport, LimitHistory: deps.UsageLimitHistory, LimitHistorySetting: deps.UsageLimitSetting, Prices: deps.UsagePrices},
+		usage:          &controllers.UsageController{Svc: deps.UsageSummary, Events: deps.UsageEvents, Composition: deps.UsageComposition, Log: loggerOrDefault(log), Memory: deps.SessionMemory, Steps: deps.SessionSteps, Pressure: memoryPressure(deps.SessionMemory), Report: deps.UsageReport, LimitHistory: deps.UsageLimitHistory, LimitHistorySetting: deps.UsageLimitSetting, Prices: deps.UsagePrices},
 		prs:            &controllers.PRsController{Svc: deps.PRs},
 		reviews:        &controllers.ReviewsController{Svc: deps.Reviews},
 		notifications:  &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},

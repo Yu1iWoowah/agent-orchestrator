@@ -20007,6 +20007,50 @@ paths:
       summary: List compact token and estimated cost usage for session cards
       tags:
       - usage
+  /api/v1/usage/sessions/{sessionId}/composition:
+    get:
+      operationId: getSessionUsageComposition
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - in: query
+        name: review
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageCompositionResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Per-request context composition read from the provider's local file
+        at query time; review selects the session's reviewer (not AO canonical usage)
+      tags:
+      - usage
   /api/v1/usage/sessions/{sessionId}/events:
     get:
       operationId: listSessionUsageEvents
@@ -36030,6 +36074,94 @@ components:
       - state
       - lastErrorCode
       - sources
+      type: object
+    UsageCompositionCategory:
+      properties:
+        bytes:
+          type:
+          - "null"
+          - integer
+        category:
+          enum:
+          - system
+          - tools
+          - mcp_tools
+          - injected_system
+          - history
+          - tool_use
+          - tool_result
+          - thinking
+          - thinking_encrypted
+          - world_state
+          type: string
+        note:
+          enum:
+          - ""
+          - unknown
+          - encrypted_hidden
+          - delivery_unverified
+          type: string
+        tokens:
+          type:
+          - "null"
+          - integer
+      required:
+      - category
+      - bytes
+      - tokens
+      type: object
+    UsageCompositionRequest:
+      properties:
+        categories:
+          items:
+            $ref: '#/components/schemas/UsageCompositionCategory'
+          type: array
+        inputTokens:
+          type:
+          - "null"
+          - integer
+        ordinal:
+          type: integer
+        timestamp:
+          type: string
+        unresolved:
+          type: integer
+      required:
+      - ordinal
+      - inputTokens
+      - categories
+      type: object
+    UsageCompositionResponse:
+      properties:
+        notCanonical:
+          type: boolean
+        reason:
+          enum:
+          - ""
+          - no_source
+          - no_request_records
+          - source_read_failed
+          type: string
+        requests:
+          items:
+            $ref: '#/components/schemas/UsageCompositionRequest'
+          type: array
+        reviewId:
+          type: string
+        sessionId:
+          type: string
+        source:
+          type: string
+        status:
+          enum:
+          - ok
+          - unknown
+          type: string
+      required:
+      - sessionId
+      - source
+      - status
+      - requests
       type: object
     UsageEventView:
       properties:
