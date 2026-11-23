@@ -150,7 +150,6 @@ func TestProjectConfigMirrorsDomainJSONFields(t *testing.T) {
 		{agentConfig{}, domain.AgentConfig{}},
 		{roleOverride{}, domain.RoleOverride{}},
 		{hcgReportingConfig{}, domain.HCGReportingConfig{}},
-		{rcaConfig{}, domain.RCAConfig{}},
 		{reviewerConfig{}, domain.ReviewerConfig{}},
 		{trackerIntakeConfig{}, domain.TrackerIntakeConfig{}},
 		{containerReapConfig{}, domain.ContainerReapConfig{}},

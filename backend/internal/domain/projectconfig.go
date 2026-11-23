@@ -18,7 +18,6 @@ import (
 // yet exist (tracker/SCM per-project config) are intentionally absent and land in
 // focused follow-up PRs alongside the code that reads them.
 type ProjectConfig struct {
-	RCA                   RCAConfig                   `json:"rca,omitempty,omitzero"`
 	HCGDelegation         HCGDelegationConfig         `json:"hcgDelegation,omitempty,omitzero"`
 	HCGReporting          HCGReportingConfig          `json:"hcgReporting,omitempty,omitzero"`
 	GuardianObservability GuardianObservabilityConfig `json:"guardianObservability,omitempty,omitzero"`
@@ -184,32 +183,11 @@ type RoleOverride struct {
 	AgentAccountID string              `json:"agentAccountId,omitempty"`
 	Harness        AgentHarness        `json:"agent,omitempty"`
 	AgentConfig    AgentConfig         `json:"agentConfig,omitempty"`
-	RCA            RCAConfig           `json:"rca,omitempty,omitzero"`
 }
 
 // HCGReportingConfig uses nil for inheritance; false is an explicit opt-out.
 type HCGReportingConfig struct {
 	Enabled *bool `json:"enabled,omitempty"`
-}
-
-// RCAConfig is opt-in recorded-content policy; nil inherits and false revokes.
-type RCAConfig struct {
-	Enabled *bool `json:"enabled,omitempty"`
-}
-
-// RCAPolicySnapshot holds only the named project and role RCA parents.
-type RCAPolicySnapshot struct{ Project, Worker, Orchestrator *bool }
-
-// RCAPolicySnapshot returns detached RCA policy inputs.
-func (c ProjectConfig) RCAPolicySnapshot() RCAPolicySnapshot {
-	copyBool := func(v *bool) *bool {
-		if v == nil {
-			return nil
-		}
-		b := *v
-		return &b
-	}
-	return RCAPolicySnapshot{Project: copyBool(c.RCA.Enabled), Worker: copyBool(c.Worker.RCA.Enabled), Orchestrator: copyBool(c.Orchestrator.RCA.Enabled)}
 }
 
 // HCGReportingPolicySnapshot excludes every unrelated setting and credential.
