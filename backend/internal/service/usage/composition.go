@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sort"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -46,7 +47,8 @@ type compositionRequest struct {
 	counts     compositionCounts
 }
 
-// compositionRow allocates the exact input by byte share. World state and
+// compositionRow allocates the exact input by byte share with the largest
+// remainder method, so allocated tokens sum to the input. World state and
 // UNKNOWN categories keep their bytes but get no tokens.
 func compositionRow(ordinal int, req compositionRequest, unknownMCP bool) domain.UsageCompositionRequest {
 	counts := req.counts
@@ -82,6 +84,21 @@ func compositionRow(ordinal int, req compositionRequest, unknownMCP bool) domain
 			cat.Tokens = &t
 		}
 		row.Categories = append(row.Categories, cat)
+	}
+	if req.input != nil && total > 0 {
+		var given int64
+		var order []int
+		for i := range counts {
+			if allocated(i) {
+				given += *row.Categories[i].Tokens
+				order = append(order, i)
+			}
+		}
+		rem := func(i int) int64 { return *req.input * counts[i] % total }
+		sort.SliceStable(order, func(a, b int) bool { return rem(order[a]) > rem(order[b]) })
+		for _, i := range order[:*req.input-given] {
+			*row.Categories[i].Tokens++
+		}
 	}
 	return row
 }
@@ -164,10 +181,22 @@ func (r *CompositionReader) Composition(ctx context.Context, id domain.SessionID
 			if err != nil {
 				return out, err
 			}
+			var codex []domain.UsageSourceRecord
 			for _, source := range sources {
-				if source.SubagentID == "" && (source.Kind == domain.UsageSourceClaudeMain || source.Kind == domain.UsageSourceCodexRollout) {
-					files = append(files, compositionFile{kind: source.Kind, path: source.ArtifactPath})
+				if source.SubagentID != "" {
+					continue
 				}
+				switch source.Kind {
+				case domain.UsageSourceClaudeMain:
+					files = append(files, compositionFile{kind: source.Kind, path: source.ArtifactPath})
+				case domain.UsageSourceCodexRollout:
+					codex = append(codex, source)
+				}
+			}
+			// A relocated rollout keeps its replaced generation; read only the
+			// latest generation per native session, as the collector does.
+			for _, source := range latestCodexSourcesByNativeSession(codex) {
+				files = append(files, compositionFile{kind: source.Kind, path: source.ArtifactPath})
 			}
 		}
 	}

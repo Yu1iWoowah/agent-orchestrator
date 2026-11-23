@@ -3050,9 +3050,15 @@ func (c *Collector) discoverPath(ctx context.Context, harness domain.AgentHarnes
 }
 
 // LocateNativeSource finds an unregistered root transcript or rollout by
-// native id with the same discovery the collector uses for sessions.
+// native id with the same discovery and root validation the collector uses
+// for sessions, and returns the resolved path.
 func (c *Collector) LocateNativeSource(ctx context.Context, harness domain.AgentHarness, nativeID string) (string, error) {
-	return c.discoverPath(ctx, harness, nativeID, "", "")
+	path, err := c.discoverPath(ctx, harness, nativeID, "", "")
+	if err != nil || path == "" {
+		return "", err
+	}
+	resolved, _, err := c.validateSourceLocation(ctx, harness, "", path)
+	return resolved, err
 }
 
 func qwenUsageFilename(name string) bool {

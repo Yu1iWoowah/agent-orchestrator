@@ -52,21 +52,26 @@ func TestClaudeCompositionRebuildsChainAndAllocatesInput(t *testing.T) {
 	if first.InputTokens == nil || *first.InputTokens != 100 || first.Unresolved != 0 {
 		t.Fatalf("first request input = %v unresolved = %d", first.InputTokens, first.Unresolved)
 	}
-	// 12 + 33 + 39 + 14 = 98 allocated bytes share 100 input tokens.
+	// 12 + 33 + 39 + 14 = 98 allocated bytes share 100 input tokens; the
+	// largest remainders take the 2 leftover tokens, so 12+34+40+14 = 100.
 	wantCategory(t, first, "system", 12, ptr(12))
-	wantCategory(t, first, "tools", 33, ptr(33))
-	wantCategory(t, first, "mcp_tools", 39, ptr(39))
+	wantCategory(t, first, "tools", 33, ptr(34))
+	wantCategory(t, first, "mcp_tools", 39, ptr(40))
 	wantCategory(t, first, "history", 14, ptr(14))
 
 	second := compositionRow(2, reqs[1], false)
 	if second.Unresolved != 1 {
 		t.Fatalf("second request unresolved = %d, want only the missing ref", second.Unresolved)
 	}
-	// 98 + 9 + 11 + 8 = 126 allocated bytes share 200 input tokens.
+	// 98 + 9 + 11 + 8 = 126 allocated bytes share 200 input tokens:
+	// 19+52+62+22+14+18+13 = 200.
+	wantCategory(t, second, "system", 12, ptr(19))
+	wantCategory(t, second, "tools", 33, ptr(52))
+	wantCategory(t, second, "mcp_tools", 39, ptr(62))
 	wantCategory(t, second, "history", 14, ptr(22))
 	wantCategory(t, second, "tool_use", 9, ptr(14))
-	wantCategory(t, second, "tool_result", 11, ptr(17))
-	wantCategory(t, second, "injected_system", 8, ptr(12))
+	wantCategory(t, second, "tool_result", 11, ptr(18))
+	wantCategory(t, second, "injected_system", 8, ptr(13))
 }
 
 const codexCompositionFixture = `{"timestamp":"t0","type":"session_meta","payload":{"id":"x","base_instructions":{"text":"BASE"}}}
@@ -92,10 +97,10 @@ func TestCodexCompositionUsesTokenCountAndAdditionalTools(t *testing.T) {
 		t.Fatalf("first request input = %v", first.InputTokens)
 	}
 	// Input is the context before the request's own reasoning/tool call:
-	// 4 + 14 + 3 + 2 = 23 allocated bytes share 50 tokens.
-	wantCategory(t, first, "system", 4, ptr(8))
+	// 4 + 14 + 3 + 2 = 23 allocated bytes share 50 tokens: 9+30+7+4 = 50.
+	wantCategory(t, first, "system", 4, ptr(9))
 	wantCategory(t, first, "tools", 14, ptr(30))
-	wantCategory(t, first, "injected_system", 3, ptr(6))
+	wantCategory(t, first, "injected_system", 3, ptr(7))
 	wantCategory(t, first, "history", 2, ptr(4))
 	wantCategory(t, first, "world_state", 16, nil)
 	if c := categoryOf(t, first, "mcp_tools"); c.Bytes != nil || c.Note != "unknown" {
@@ -104,10 +109,14 @@ func TestCodexCompositionUsesTokenCountAndAdditionalTools(t *testing.T) {
 
 	second := compositionRow(2, reqs[1], true)
 	// 23 + 2 (tool call) + 3 (tool output) + 3 (encrypted reasoning) = 31
-	// allocated bytes share 80 tokens.
+	// allocated bytes share 80 tokens: 10+36+8+5+5+8+8 = 80.
+	wantCategory(t, second, "system", 4, ptr(10))
+	wantCategory(t, second, "tools", 14, ptr(36))
+	wantCategory(t, second, "injected_system", 3, ptr(8))
+	wantCategory(t, second, "history", 2, ptr(5))
 	wantCategory(t, second, "tool_use", 2, ptr(5))
-	wantCategory(t, second, "tool_result", 3, ptr(7))
-	wantCategory(t, second, "thinking_encrypted", 3, ptr(7))
+	wantCategory(t, second, "tool_result", 3, ptr(8))
+	wantCategory(t, second, "thinking_encrypted", 3, ptr(8))
 	if c := categoryOf(t, second, "thinking_encrypted"); c.Note != "encrypted_hidden" {
 		t.Fatalf("encrypted thinking note = %q", c.Note)
 	}
