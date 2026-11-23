@@ -4565,7 +4565,7 @@ func sessionOperations() []operation {
 		{
 			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/resume-agent", id: "getResumeAgentStatus", tag: "sessions",
 			summary:    "Report the session's latest resume-agent request since the daemon started",
-			pathParams: []any{controllers.SessionIDParam{}},
+			pathParams: []any{controllers.SessionIDParam{}, controllers.ResumeAgentStatusQuery{}},
 			resps: []respUnit{
 				{http.StatusOK, controllers.ResumeAgentStatusResponse{}},
 				{http.StatusNotFound, envelope.APIError{}},

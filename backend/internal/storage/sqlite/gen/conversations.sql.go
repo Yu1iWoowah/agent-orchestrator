@@ -4629,8 +4629,10 @@ const selectConversationUserMessageByTurn = `-- name: SelectConversationUserMess
 SELECT conversation_messages.id, conversation_messages.conversation_id, conversation_messages.turn_id, conversation_messages.sequence, conversation_messages.revision, conversation_messages.role, conversation_messages.origin, conversation_messages.text, conversation_messages.streaming, conversation_messages.provider_item_id, conversation_messages.client_message_id, conversation_messages.created_at, conversation_messages.updated_at, conversation_messages.delivery_content_json, conversation_messages.branch_id, conversation_messages.client_payload_hash, conversation_messages.sender_session_id, conversation_messages.sender_project_id, conversation_messages.sender_display_name, conversation_messages.continuation, conversation_messages.authored_by_user
 FROM conversation_messages
 JOIN conversation_turns ON conversation_turns.id = conversation_messages.turn_id
-WHERE conversation_messages.conversation_id = ?
-  AND conversation_turns.provider_turn_id = ?
+WHERE conversation_messages.conversation_id = ?1
+  AND conversation_turns.conversation_id = ?1
+  AND conversation_turns.provider_turn_id = ?2
+  AND conversation_turns.provider_turn_id <> ''
   AND conversation_messages.role = 'user'
 LIMIT 1
 `
@@ -4643,6 +4645,8 @@ type SelectConversationUserMessageByTurnParams struct {
 // A native history import has the provider turn identity but not AO's turn id.
 // Looking through the turn also detects a message AO wrote before dispatch, which
 // prevents a Chat -> TUI -> Chat cycle from rendering the same prompt twice.
+// Constrain both sides so SQLite can find the provider turn first, then use the
+// message turn index instead of scanning a conversation's messages per replayed turn.
 func (q *Queries) SelectConversationUserMessageByTurn(ctx context.Context, arg SelectConversationUserMessageByTurnParams) (ConversationMessage, error) {
 	row := q.db.QueryRowContext(ctx, selectConversationUserMessageByTurn, arg.ConversationID, arg.ProviderTurnID)
 	var i ConversationMessage

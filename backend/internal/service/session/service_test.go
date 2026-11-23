@@ -4289,7 +4289,7 @@ func TestResumeAgentMapsManagerModeToServiceView(t *testing.T) {
 	if _, err := svc.StartResumeAgent(context.Background(), "mer-1", false); err != nil {
 		t.Fatalf("StartResumeAgent: %v", err)
 	}
-	got, err := svc.ResumeAgentStatus(context.Background(), "mer-1")
+	got, err := svc.ResumeAgentStatus(context.Background(), "mer-1", false)
 	if err != nil {
 		t.Fatalf("ResumeAgentStatus: %v", err)
 	}
@@ -4305,7 +4305,7 @@ func resumeAgentFailure(t *testing.T, svc *Service, id domain.SessionID) error {
 	if _, err := svc.StartResumeAgent(context.Background(), id, false); err != nil {
 		t.Fatalf("StartResumeAgent: %v", err)
 	}
-	status, err := svc.ResumeAgentStatus(context.Background(), id)
+	status, err := svc.ResumeAgentStatus(context.Background(), id, false)
 	if err != nil {
 		t.Fatalf("ResumeAgentStatus: %v", err)
 	}
@@ -4324,7 +4324,7 @@ func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
 	ctx := context.Background()
 	var apiErr *apierr.Error
 
-	if _, err := svc.ResumeAgentStatus(ctx, "mer-1"); !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindNotFound || apiErr.Code != "AGENT_RESUME_NOT_FOUND" {
+	if _, err := svc.ResumeAgentStatus(ctx, "mer-1", false); !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindNotFound || apiErr.Code != "AGENT_RESUME_NOT_FOUND" {
 		t.Fatalf("status before any resume = %v, want AGENT_RESUME_NOT_FOUND", err)
 	}
 	// A refusal answerable inline records nothing.
@@ -4332,7 +4332,7 @@ func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
 	if _, err := svc.StartResumeAgent(ctx, "mer-1", false); !errors.As(err, &apiErr) || apiErr.Code != "AGENT_NOT_EXITED" {
 		t.Fatalf("refused start = %v, want AGENT_NOT_EXITED", err)
 	}
-	if _, err := svc.ResumeAgentStatus(ctx, "mer-1"); !errors.As(err, &apiErr) || apiErr.Code != "AGENT_RESUME_NOT_FOUND" {
+	if _, err := svc.ResumeAgentStatus(ctx, "mer-1", false); !errors.As(err, &apiErr) || apiErr.Code != "AGENT_RESUME_NOT_FOUND" {
 		t.Fatalf("status after a refusal = %v, want AGENT_RESUME_NOT_FOUND", err)
 	}
 	fc.resumeCheckErr = nil
@@ -4340,7 +4340,7 @@ func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
 	if _, err := svc.StartResumeAgent(ctx, "mer-1", false); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if got, err := svc.ResumeAgentStatus(ctx, "mer-1"); err != nil || got.State != ResumeAgentRunning || got.Mode != "" || got.FinishedAt != nil {
+	if got, err := svc.ResumeAgentStatus(ctx, "mer-1", true); err != nil || got.State != ResumeAgentRunning || got.Mode != "" || got.FinishedAt != nil || got.Session != nil {
 		t.Fatalf("running status = %+v, %v", got, err)
 	}
 	if _, err := svc.StartResumeAgent(ctx, "mer-1", false); !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindConflict || apiErr.Code != "AGENT_RESUME_IN_PROGRESS" {
@@ -4351,7 +4351,7 @@ func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
 	close(fc.resumeHold)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		got, err := svc.ResumeAgentStatus(ctx, "mer-1")
+		got, err := svc.ResumeAgentStatus(ctx, "mer-1", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4369,7 +4369,7 @@ func TestStartResumeAgentKeepsTheLatestRequestInMemory(t *testing.T) {
 	if _, err := svc.StartResumeAgent(ctx, "mer-1", false); !errors.As(err, &apiErr) || apiErr.Code != "SESSION_TERMINATED" {
 		t.Fatalf("refused start = %v, want SESSION_TERMINATED", err)
 	}
-	if got, err := svc.ResumeAgentStatus(ctx, "mer-1"); err != nil || got.State != ResumeAgentSucceeded {
+	if got, err := svc.ResumeAgentStatus(ctx, "mer-1", false); err != nil || got.State != ResumeAgentSucceeded {
 		t.Fatalf("status after a later refusal = %+v, %v", got, err)
 	}
 }
@@ -4435,7 +4435,7 @@ func TestStartResumeAgentCarriesExplicitRequestPastAutomaticAdmissionRefusal(t *
 			case <-ctx.Done():
 				t.Fatal("automatic admission did not return")
 			}
-			status, err := svc.ResumeAgentStatus(ctx, rec.ID)
+			status, err := svc.ResumeAgentStatus(ctx, rec.ID, false)
 			if err != nil || status.State != tc.want || status.FinishedAt == nil || status.Session.ID != rec.ID {
 				t.Fatalf("explicit state = %s, finished = %v, session = %s, err = %v, want %s",
 					status.State, status.FinishedAt, status.Session.ID, err, tc.want)
@@ -4574,7 +4574,7 @@ func TestStartResumeAgentCarriesExplicitRequestPastAutomaticExitRefusal(t *testi
 	if err := manager.WaitBackgroundWorkers(ctx); err != nil {
 		t.Fatal(err)
 	}
-	status, err := svc.ResumeAgentStatus(ctx, rec.ID)
+	status, err := svc.ResumeAgentStatus(ctx, rec.ID, false)
 	if err != nil || status.State != ResumeAgentSucceeded || status.Session.ID != rec.ID ||
 		status.Session.ChatExplicitlyExited() || status.Session.Activity.State != domain.ActivityIdle ||
 		status.Mode != RestoreModeViewNative || chat.starts.Load() != 1 {
@@ -4592,7 +4592,7 @@ func TestStartResumeAgentCarriesExplicitRequestPastAutomaticExitRefusal(t *testi
 	if err := manager.WaitBackgroundWorkers(ctx); err != nil {
 		t.Fatal(err)
 	}
-	status, err = svc.ResumeAgentStatus(ctx, rec.ID)
+	status, err = svc.ResumeAgentStatus(ctx, rec.ID, false)
 	if err != nil || status.State != ResumeAgentFailed || !status.Session.ChatExplicitlyExited() ||
 		status.Session.Metadata.ControllerGeneration != "failed-generation" {
 		t.Fatalf("failed resume lost its exit: state = %s, generation = %q, failure = %v, err = %v",

@@ -449,12 +449,15 @@ func (f *fakeSessionService) StartResumeAgent(_ context.Context, id domain.Sessi
 	return s, nil
 }
 
-func (f *fakeSessionService) ResumeAgentStatus(_ context.Context, id domain.SessionID) (sessionsvc.ResumeAgentStatus, error) {
+func (f *fakeSessionService) ResumeAgentStatus(_ context.Context, id domain.SessionID, poll bool) (sessionsvc.ResumeAgentStatus, error) {
 	status, ok := f.resumeStatus[id]
 	if !ok {
 		return sessionsvc.ResumeAgentStatus{}, apierr.NotFound("AGENT_RESUME_NOT_FOUND", "No resume of this agent is recorded since the daemon started")
 	}
-	status.Session = f.sessions[id]
+	if !poll || status.State == sessionsvc.ResumeAgentSucceeded {
+		sess := f.sessions[id]
+		status.Session = &sess
+	}
 	return status, nil
 }
 
@@ -1312,20 +1315,36 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	}
 	resumeFinished := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
-		status sessionsvc.ResumeAgentStatus
-		want   string
+		status            sessionsvc.ResumeAgentStatus
+		want              string
+		wantPolledSession bool
 	}{
-		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentRunning}, `"state":"running"`},
-		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentSucceeded, Mode: sessionsvc.RestoreModeViewNative, FinishedAt: &resumeFinished}, `"resumeMode":"native","finishedAt":"2026-11-14T12:00:00Z"`},
+		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentRunning}, `"state":"running"`, false},
+		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentSucceeded, Mode: sessionsvc.RestoreModeViewNative, FinishedAt: &resumeFinished}, `"resumeMode":"native","finishedAt":"2026-11-14T12:00:00Z"`, true},
 		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentFailed, Err: apierr.Conflict("AGENT_RESUME_FAILED", "AO could not restart the agent", map[string]any{"step": "runtime"})},
-			`"error":{"status":409,"code":"AGENT_RESUME_FAILED","message":"AO could not restart the agent","details":{"step":"runtime"}}`},
+			`"error":{"status":409,"code":"AGENT_RESUME_FAILED","message":"AO could not restart the agent","details":{"step":"runtime"}}`, false},
 		{sessionsvc.ResumeAgentStatus{State: sessionsvc.ResumeAgentFailed, Err: context.DeadlineExceeded},
-			`"error":{"status":503,"code":"SERVICE_UNAVAILABLE"`},
+			`"error":{"status":503,"code":"SERVICE_UNAVAILABLE"`, false},
 	} {
 		svc.resumeStatus["ao-2"] = tc.status
-		body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-2/resume-agent", "")
-		if status != http.StatusOK || !strings.Contains(string(body), tc.want) || !strings.Contains(string(body), `"sessionId":"ao-2"`) {
-			t.Fatalf("resume status = %d %s, want %s", status, body, tc.want)
+		for _, query := range []string{"?poll=true", ""} {
+			body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-2/resume-agent"+query, "")
+			if status != http.StatusOK || !strings.Contains(string(body), tc.want) || !strings.Contains(string(body), `"sessionId":"ao-2"`) {
+				t.Fatalf("resume status %q = %d %s, want %s", query, status, body, tc.want)
+			}
+			var response map[string]json.RawMessage
+			mustJSON(t, body, &response)
+			rawSession, present := response["session"]
+			if want := query == "" || tc.wantPolledSession; present != want {
+				t.Fatalf("resume status %q (%s) has session = %t, want %t", query, tc.status.State, present, want)
+			}
+			if present {
+				var session controllers.SessionView
+				mustJSON(t, rawSession, &session)
+				if session.ID != "ao-2" {
+					t.Fatalf("resume status %q (%s) session.id = %q, want ao-2", query, tc.status.State, session.ID)
+				}
+			}
 		}
 	}
 

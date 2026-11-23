@@ -894,7 +894,7 @@ func (c *commandContext) resumeSessionAgent(ctx context.Context, cmd *cobra.Comm
 	if err := c.postJSON(ctx, path, struct{}{}, &resumeAgentResponse{}); err != nil {
 		return err
 	}
-	res, err := c.waitResumeAgent(ctx, id, path)
+	res, err := c.waitResumeAgent(ctx, id, path+"?poll=true")
 	if err != nil {
 		return err
 	}
