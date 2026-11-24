@@ -66,6 +66,52 @@ func TestManagedSettingsCancelCannotCancelLocalIntent(t *testing.T) {
 	}
 }
 
+func TestManagedSettingsReadOwnSnapshot(t *testing.T) {
+	c, st, rec := controlFixture(t)
+	ctx := t.Context()
+	now := c.now()
+	clock := func() time.Time { return now }
+	actor, err := st.CreateSession(ctx, domain.SessionRecord{
+		ProjectID: rec.ProjectID, Kind: domain.KindOrchestrator,
+		Harness: domain.HarnessCodex, Mode: domain.SessionModeTUI,
+		Metadata:  domain.SessionMetadata{RuntimeLaunchID: "actor-launch", Model: "orchestrator-model", Effort: "high"},
+		CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := NewStoredGrantAuthority(ctx, st, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := now.Add(time.Hour)
+	grant, err := signer.Issue(actor.ID, domain.AgentSettingsAuthority{
+		ProjectID: actor.ProjectID, ActorHarness: actor.Harness, ActorMode: actor.Mode,
+		ActorGeneration: actor.Metadata.RuntimeLaunchID, IssuedAt: now.Unix(), ExpiresAt: expiresAt.Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.authorizer = NewAuthorizer(st, signer, clock)
+	caller := Caller{SessionID: actor.ID, Grant: grant}
+	snapshot, err := c.ReadForCaller(ctx, caller, actor.ID)
+	if err != nil {
+		t.Fatalf("read own settings: %v", err)
+	}
+	if snapshot.SessionID != actor.ID || snapshot.Settings.Model != "orchestrator-model" || snapshot.Settings.Effort != "high" {
+		t.Fatalf("unexpected committed settings: %+v", snapshot.SessionAgentSettings)
+	}
+	effort := domain.AgentEffortSelection("low")
+	change := Change{ExpectedRevision: &snapshot.Revision, IdempotencyKey: "self-change", ApplyMode: domain.AgentSettingsRestart, Settings: domain.AgentSettingsPatch{Effort: &effort}}
+	if _, err := c.Change(ctx, caller, actor.ID, change); !hasCode(err, "AGENT_SETTINGS_TARGET_DENIED") {
+		t.Fatalf("change own settings: want AGENT_SETTINGS_TARGET_DENIED, got %v", err)
+	}
+	now = expiresAt
+	if _, err := c.ReadForCaller(ctx, caller, actor.ID); !hasCode(err, "AGENT_SETTINGS_GRANT_EXPIRED") {
+		t.Fatalf("read own settings with expired grant: want AGENT_SETTINGS_GRANT_EXPIRED, got %v", err)
+	}
+}
+
 func controlFixture(t *testing.T) (*Control, *sqlite.Store, domain.SessionRecord) {
 	t.Helper()
 	ctx := t.Context()
