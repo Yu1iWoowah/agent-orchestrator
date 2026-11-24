@@ -217,14 +217,12 @@ func logDeliveryJournalFailure(log *slog.Logger, id domain.SessionID, attempt st
 		if errors.As(decode.Cause, &typeError) {
 			attrs = append(attrs, "field", typeError.Field)
 		}
-	case stage == listSessionsJournalStage:
-		attrs = append(attrs, "error_type", telemetrymeta.ErrorType(cause))
+	default:
+		attrs = append(attrs, "error_type", fmt.Sprintf("%T", cause), "error_kind", telemetrymeta.ErrorType(cause))
 		var coded interface{ Code() int }
 		if errors.As(cause, &coded) {
 			attrs = append(attrs, "sqlite_code", coded.Code())
 		}
-	default:
-		attrs = append(attrs, "error", cause)
 	}
 	log.Warn("chat delivery journal unavailable", attrs...)
 }
