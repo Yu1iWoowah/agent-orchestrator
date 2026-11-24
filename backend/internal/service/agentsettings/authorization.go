@@ -30,7 +30,7 @@ type AuthorityStore interface {
 	GetProject(context.Context, string) (domain.ProjectRecord, bool, error)
 }
 
-// Authorizer confines settings-purpose grants to same-project workers.
+// Authorizer scopes settings-purpose grants to the current orchestrator owner.
 type Authorizer struct {
 	store  AuthorityStore
 	grants *GrantAuthority
@@ -48,6 +48,10 @@ func NewAuthorizer(store AuthorityStore, grants *GrantAuthority, now func() time
 // Authorize authenticates a transport caller. Policy is checked separately so
 // revoking a selection does not prevent reading or cancelling its queued intent.
 func (a *Authorizer) Authorize(ctx context.Context, caller Caller, target domain.SessionRecord) (Authorization, error) {
+	return a.authorize(ctx, caller, target, false)
+}
+
+func (a *Authorizer) authorize(ctx context.Context, caller Caller, target domain.SessionRecord, allowSelfRead bool) (Authorization, error) {
 	if caller.SessionID == "" && caller.Grant == "" {
 		return Authorization{Actor: domain.AgentSettingsActor{Kind: domain.AgentSettingsActorLocal}}, nil
 	}
@@ -60,7 +64,7 @@ func (a *Authorizer) Authorize(ctx context.Context, caller Caller, target domain
 		return Authorization{}, apierr.Forbidden(code, "A current settings-purpose grant is required")
 	}
 	accepted := Authorization{Actor: domain.AgentSettingsActor{Kind: domain.AgentSettingsActorOrchestrator, SessionID: id}, Authority: scope}
-	if err := a.Revalidate(ctx, accepted, target); err != nil {
+	if err := a.revalidate(ctx, accepted, target, allowSelfRead); err != nil {
 		return Authorization{}, err
 	}
 	return accepted, nil
@@ -69,6 +73,10 @@ func (a *Authorizer) Authorize(ctx context.Context, caller Caller, target domain
 // Revalidate checks accepted scope again before apply. This is not an entry
 // point for untrusted callers; only Authorize may construct accepted scope.
 func (a *Authorizer) Revalidate(ctx context.Context, accepted Authorization, target domain.SessionRecord) error {
+	return a.revalidate(ctx, accepted, target, false)
+}
+
+func (a *Authorizer) revalidate(ctx context.Context, accepted Authorization, target domain.SessionRecord, allowSelfRead bool) error {
 	if accepted.Actor.Kind == domain.AgentSettingsActorLocal && accepted.Actor.SessionID == "" && accepted.Authority == (domain.AgentSettingsAuthority{}) {
 		return nil
 	}
@@ -93,6 +101,9 @@ func (a *Authorizer) Revalidate(ctx context.Context, accepted Authorization, tar
 		if other.ProjectID == rec.ProjectID && other.Kind == domain.KindOrchestrator && !other.IsTerminated && other.ID != rec.ID {
 			return apierr.Forbidden("AGENT_SETTINGS_ACTOR_DENIED", "The orchestrator owner is ambiguous")
 		}
+	}
+	if allowSelfRead && target.ID == rec.ID {
+		return nil
 	}
 	if target.ID == rec.ID || target.Kind != domain.KindWorker || target.ProjectID != rec.ProjectID || target.ProjectID == "" {
 		return apierr.Forbidden("AGENT_SETTINGS_TARGET_DENIED", "Managed settings target must be another worker in the same project")
