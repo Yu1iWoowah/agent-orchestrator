@@ -20,43 +20,60 @@ var ErrNativeHomeUnavailable = errors.New("cannot determine the native conversat
 
 type nativeKey struct{ home, id string }
 
+type nativeLock[L any] struct {
+	lock L
+	refs int
+}
+
 // NativeGuard serializes AO operations with durable side compaction registration.
 // Its callbacks must not acquire side or controller locks.
 type NativeGuard struct {
 	store ports.SideCompactionStore
 	mu    sync.Mutex
-	keys  map[nativeKey]*sync.Mutex
-	homes map[string]*sync.RWMutex
+	keys  map[nativeKey]*nativeLock[sync.Mutex]
+	homes map[string]*nativeLock[sync.RWMutex]
 }
 
 // NewNativeGuard creates the daemon-wide native operation guard.
 func NewNativeGuard(store ports.SideCompactionStore) *NativeGuard {
-	return &NativeGuard{store: store, keys: map[nativeKey]*sync.Mutex{}, homes: map[string]*sync.RWMutex{}}
+	return &NativeGuard{
+		store: store,
+		keys:  make(map[nativeKey]*nativeLock[sync.Mutex]),
+		homes: make(map[string]*nativeLock[sync.RWMutex]),
+	}
 }
 
-func (g *NativeGuard) homeLock(home string) *sync.RWMutex {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	lock := g.homes[home]
-	if lock == nil {
-		lock = &sync.RWMutex{}
-		g.homes[home] = lock
+// Retain the entry before waiting on its lock and release it after unlocking.
+func retainNativeLock[K comparable, L any](mu *sync.Mutex, entries map[K]*nativeLock[L], key K) (*L, func()) {
+	mu.Lock()
+	entry := entries[key]
+	if entry == nil {
+		entry = &nativeLock[L]{}
+		entries[key] = entry
 	}
-	return lock
+	entry.refs++
+	mu.Unlock()
+	return &entry.lock, func() {
+		mu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(entries, key)
+		}
+		mu.Unlock()
+	}
 }
+
 func (g *NativeGuard) lock(home, id string) func() {
-	homeLock := g.homeLock(home)
-	g.mu.Lock()
-	key := nativeKey{home, id}
-	keyLock := g.keys[key]
-	if keyLock == nil {
-		keyLock = &sync.Mutex{}
-		g.keys[key] = keyLock
-	}
-	g.mu.Unlock()
+	homeLock, releaseHome := retainNativeLock(&g.mu, g.homes, home)
+	keyLock, releaseKey := retainNativeLock(&g.mu, g.keys, nativeKey{home, id})
 	homeLock.RLock()
 	keyLock.Lock()
-	return func() { keyLock.Unlock(); homeLock.RUnlock() }
+	return func() {
+		keyLock.Unlock()
+		homeLock.RUnlock()
+		releaseKey()
+		releaseHome()
+	}
 }
 
 // Run guards an existing native ID at the driver/conversation boundary.
@@ -118,8 +135,8 @@ func (g *NativeGuard) DeleteHome(ctx context.Context, home string, call func() e
 	if err != nil {
 		return err
 	}
-	home = canonical
-	lock := g.homeLock(home)
+	lock, release := retainNativeLock(&g.mu, g.homes, canonical)
+	defer release()
 	lock.Lock()
 	defer lock.Unlock()
 	rows, err := g.store.SideCompactions(ctx, true)
@@ -127,7 +144,7 @@ func (g *NativeGuard) DeleteHome(ctx context.Context, home string, call func() e
 		return err
 	}
 	for _, row := range rows {
-		if row.NativeHome == home {
+		if row.NativeHome == canonical {
 			return fmt.Errorf("%w: side %s", ErrNativeConversationProtected, row.SideID)
 		}
 	}
