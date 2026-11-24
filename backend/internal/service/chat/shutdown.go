@@ -143,10 +143,10 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 	preserver, preserves := c.conv.(ports.ChatProviderPreserver)
 	preserves = preserves && preserver.PreservesProviderOnClose()
 	for i, r := range receipts {
-		if r.AttemptID != attempts[i].ID {
+		if r.AttemptID != keys[i].AttemptID {
 			return c.blocked("delivery_receipt_missing", nil)
 		}
-		saved, err := c.recordDeliveryReceipt(ctx, r)
+		saved, err := c.commitDeliveryLookupReceipt(ctx, keys[i], r)
 		if err != nil {
 			return c.blocked("delivery_journal_unavailable", err)
 		}

@@ -41,6 +41,7 @@ type deliveryRecord struct {
 	Receipt       domain.ChatDeliveryReceipt `json:"receipt"`
 	Method        string                     `json:"method"`
 	NativeTurn    string                     `json:"nativeTurn,omitempty"`
+	abandoned     bool
 }
 
 type deliveryJournal struct {
@@ -433,13 +434,25 @@ func (j *deliveryJournal) settleStalledPromptError(id, params json.RawMessage) e
 	return j.append(record)
 }
 
+// Abandoning a prompt ends progress attribution but leaves its native request
+// available to observe a late response.
+func (j *deliveryJournal) abandonACPAttempt(id string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if attempt, ok := j.requests[id]; ok {
+		record := j.records[attempt]
+		record.abandoned = true
+		j.records[attempt] = record
+	}
+}
+
 // ACP notifications lack a request ID. Multiple active prompts are ambiguous;
 // a completed/error request never borrows another prompt's session broadcasts.
 func (j *deliveryJournal) activeACPAttempt(session string) string {
 	active := ""
 	for _, attempt := range j.requests {
 		record := j.records[attempt]
-		if record.Method == "session/prompt" && record.NativeSession == session && !record.Receipt.ExecutionSettled {
+		if record.Method == "session/prompt" && record.NativeSession == session && !record.Receipt.ExecutionSettled && !record.abandoned {
 			if active != "" {
 				return ""
 			}
