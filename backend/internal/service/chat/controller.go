@@ -87,7 +87,7 @@ type Store interface {
 	BindTurnToProvider(ctx context.Context, turnID, providerTurnID string, now time.Time) error
 	RequeueUnsentTurn(ctx context.Context, conversationID, turnID, providerTurnID string, followers []string) error
 	SettleTurn(ctx context.Context, conversationID, providerTurnID string, state domain.TurnState, errMessage string, now time.Time) error
-	SettleTurnWithFailureCode(ctx context.Context, conversationID, providerTurnID string, state domain.TurnState, errMessage string, failureCode domain.ConversationFailureCode, usageLimitResetsAt time.Time, now time.Time) error
+	SettleTurnWithFailureCode(ctx context.Context, conversationID, providerTurnID string, state domain.TurnState, errMessage string, failureCode domain.ConversationFailureCode, historical bool, usageLimitResetsAt time.Time, now time.Time) error
 	SettleTurnByID(ctx context.Context, turnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleOrphanedTurns(ctx context.Context, session domain.SessionID, now time.Time) error
 	SettleUnboundRunningTurn(ctx context.Context, conversationID string, session domain.SessionID, turnID string, now time.Time) error
@@ -4072,7 +4072,7 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent, historica
 			failureCode = domain.ConversationFailureAuthRequired
 		}
 		if err := c.store.SettleTurnWithFailureCode(
-			ctx, c.conversation.ID, event.ProviderTurnID, state, message, failureCode, event.UsageLimitResetsAt, now); err != nil {
+			ctx, c.conversation.ID, event.ProviderTurnID, state, message, failureCode, historical, event.UsageLimitResetsAt, now); err != nil {
 			return err
 		}
 		if event.ProviderConversationID == "" || event.ProviderConversationID == c.conv.ProviderConversationID() {

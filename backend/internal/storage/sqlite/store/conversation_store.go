@@ -1739,7 +1739,7 @@ func (s *Store) SettleTurn(
 	errMessage string,
 	now time.Time,
 ) error {
-	return s.SettleTurnWithFailureCode(ctx, conversationID, providerTurnID, state, errMessage, "", time.Time{}, now)
+	return s.SettleTurnWithFailureCode(ctx, conversationID, providerTurnID, state, errMessage, "", false, time.Time{}, now)
 }
 
 // SettleTurnWithFailureCode retains a provider-classified cause beside the raw
@@ -1750,6 +1750,7 @@ func (s *Store) SettleTurnWithFailureCode(
 	state domain.TurnState,
 	errMessage string,
 	failureCode domain.ConversationFailureCode,
+	historical bool,
 	usageLimitResetsAt time.Time,
 	now time.Time,
 ) error {
@@ -1775,6 +1776,10 @@ func (s *Store) SettleTurnWithFailureCode(
 	state = domain.SettledTurnStateKeepingFailure(turn.State, turn.ErrorMessage, state, errMessage)
 	if errMessage == "" && turn.State == state {
 		errMessage = turn.ErrorMessage
+	}
+	// History can include the error text without its provider classification.
+	if historical && state == domain.TurnStateFailed && turn.State == state && failureCode == "" {
+		failureCode = domain.ConversationFailureCode(turn.FailureCode)
 	}
 
 	return settleConversationTurn(ctx, q, turn, state, errMessage, failureCode, usageLimitResetsAt, now)
