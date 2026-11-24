@@ -170,7 +170,12 @@ func claudeInputTokens(raw json.RawMessage) (int64, bool) {
 	if json.Unmarshal(raw, &msg) != nil || msg.Usage == nil {
 		return 0, false
 	}
-	return msg.Usage.Input + msg.Usage.CacheCreate + msg.Usage.CacheRead, true
+	total, err := checkedUsageAdd("Claude input tokens", msg.Usage.Input, msg.Usage.CacheCreate)
+	if err != nil {
+		return 0, false
+	}
+	total, err = checkedUsageAdd("Claude input tokens", total, msg.Usage.CacheRead)
+	return total, err == nil
 }
 
 func claudeMessageHash(role string, blocks []json.RawMessage) string {
