@@ -428,25 +428,36 @@ func (c *Controller) queryDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 		}
 		return a, ports.ErrChatDeliveryUnverified
 	}
-	if receipt.Disposition == domain.ChatDeliveryUnknown && receipt.ExecutionSettled &&
-		(key.ProviderEpoch == "" || key.ProviderRequestID == "") {
-		// The daemon may have disconnected before it recorded the native keys.
-		// Only the attached host can supply them for an exact second lookup.
-		reporter, ok := c.conv.(ports.ChatDeliveryEpochReporter)
-		if !ok || receipt.AttemptID != key.AttemptID ||
-			receipt.ProviderEpoch == "" || receipt.ProviderEpoch != reporter.OutboundProviderEpoch() ||
-			receipt.ProviderRequestID == "" ||
-			key.ProviderEpoch != "" && key.ProviderEpoch != receipt.ProviderEpoch ||
-			key.ProviderRequestID != "" && key.ProviderRequestID != receipt.ProviderRequestID {
-			return a, ports.ErrChatDeliveryUnverified
-		}
-		key.ProviderEpoch, key.ProviderRequestID = receipt.ProviderEpoch, receipt.ProviderRequestID
+	filled, err := c.fillDeliveryLookup(&key, receipt)
+	if err != nil {
+		return a, err
+	}
+	if filled {
 		receipt, err = observer.QueryDeliveryAttempt(queryCtx, key)
 		if err != nil {
 			return a, ports.ErrChatDeliveryUnverified
 		}
 	}
 	return c.commitDeliveryLookupReceipt(ctx, key, receipt)
+}
+
+// After a daemon disconnect, only the attached host can supply missing native
+// keys for an exact second lookup of a settled unknown receipt.
+func (c *Controller) fillDeliveryLookup(key *ports.ChatDeliveryLookup, receipt domain.ChatDeliveryReceipt) (bool, error) {
+	if receipt.Disposition != domain.ChatDeliveryUnknown || !receipt.ExecutionSettled ||
+		(key.ProviderEpoch != "" && key.ProviderRequestID != "") {
+		return false, nil
+	}
+	reporter, ok := c.conv.(ports.ChatDeliveryEpochReporter)
+	if !ok || receipt.AttemptID != key.AttemptID ||
+		receipt.ProviderEpoch == "" || receipt.ProviderEpoch != reporter.OutboundProviderEpoch() ||
+		receipt.ProviderRequestID == "" ||
+		key.ProviderEpoch != "" && key.ProviderEpoch != receipt.ProviderEpoch ||
+		key.ProviderRequestID != "" && key.ProviderRequestID != receipt.ProviderRequestID {
+		return false, ports.ErrChatDeliveryUnverified
+	}
+	key.ProviderEpoch, key.ProviderRequestID = receipt.ProviderEpoch, receipt.ProviderRequestID
+	return true, nil
 }
 
 func (c *Controller) commitDeliveryLookupReceipt(ctx context.Context, key ports.ChatDeliveryLookup, receipt domain.ChatDeliveryReceipt) (domain.ChatDeliveryAttempt, error) {

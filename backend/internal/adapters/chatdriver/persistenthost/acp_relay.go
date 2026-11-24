@@ -750,9 +750,6 @@ func (r *acpRelay) failStalledPrompt(
 			return acpClientFrames{}, err
 		}
 		r.abandonedPrompts[providerID] = struct{}{}
-		if r.delivery != nil {
-			r.delivery.abandonACPAttempt(providerID)
-		}
 		client = append(client, completion...)
 	}
 	return acpClientFrames{client: client}, nil

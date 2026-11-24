@@ -115,37 +115,37 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 	}
 	// An attempt from a host that no longer exists can never be answered by
 	// the attached one: settle it first instead of failing the flush on it.
-	attempts := make([]domain.ChatDeliveryAttempt, 0, len(pending))
+	keys := make([]ports.ChatDeliveryLookup, 0, len(pending))
 	for _, a := range pending {
 		settled, err := c.settleGoneHostDelivery(ctx, a)
 		if err != nil {
 			return c.blocked("delivery_journal_unavailable", err)
 		}
 		if !settled {
-			attempts = append(attempts, a)
+			keys = append(keys, deliveryLookup(a))
 		}
 	}
-	keys := make([]ports.ChatDeliveryLookup, 0, len(attempts))
-	for _, a := range attempts {
-		keys = append(keys, deliveryLookup(a))
-	}
-	receipts, err := c.flushOutbound(ctx, observer, keys, notify)
+	receipts, err := c.flushDeliveryReceipts(ctx, observer, keys, notify)
 	if err != nil {
-		c.warnFlushNotSettled(err, keys)
+		return err
 	}
-	if err != nil {
-		reason, _ := flushReason(err)
-		return c.blocked(reason, err)
+	keysFilled := false
+	for i, r := range receipts {
+		filled, err := c.fillDeliveryLookup(&keys[i], r)
+		if err != nil {
+			return c.blocked("delivery_journal_unavailable", err)
+		}
+		keysFilled = keysFilled || filled
 	}
-	if len(receipts) != len(keys) {
-		return c.blocked("delivery_receipt_missing", nil)
+	if keysFilled {
+		receipts, err = c.flushDeliveryReceipts(ctx, observer, keys, false)
+		if err != nil {
+			return err
+		}
 	}
 	preserver, preserves := c.conv.(ports.ChatProviderPreserver)
 	preserves = preserves && preserver.PreservesProviderOnClose()
 	for i, r := range receipts {
-		if r.AttemptID != keys[i].AttemptID {
-			return c.blocked("delivery_receipt_missing", nil)
-		}
 		saved, err := c.commitDeliveryLookupReceipt(ctx, keys[i], r)
 		if err != nil {
 			return c.blocked("delivery_journal_unavailable", err)
@@ -155,7 +155,7 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 			return c.blocked("delivery_not_settled", nil)
 		}
 	}
-	if len(attempts) == 0 {
+	if len(keys) == 0 {
 		c.mu.Lock()
 		nativeInFlight = c.pendingTurnID != "" || c.state == ports.ChatControllerBusy
 		c.mu.Unlock()
@@ -164,6 +164,24 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 		}
 	}
 	return nil
+}
+
+func (c *Controller) flushDeliveryReceipts(ctx context.Context, observer ports.ChatDeliveryObserver, keys []ports.ChatDeliveryLookup, notify bool) ([]domain.ChatDeliveryReceipt, error) {
+	receipts, err := c.flushOutbound(ctx, observer, keys, notify)
+	if err != nil {
+		c.warnFlushNotSettled(err, keys)
+		reason, _ := flushReason(err)
+		return nil, c.blocked(reason, err)
+	}
+	if len(receipts) != len(keys) {
+		return nil, c.blocked("delivery_receipt_missing", nil)
+	}
+	for i, key := range keys {
+		if receipts[i].AttemptID != key.AttemptID {
+			return nil, c.blocked("delivery_receipt_missing", nil)
+		}
+	}
+	return receipts, nil
 }
 
 // blocked names this session and a fixed reason for a refused settlement.
