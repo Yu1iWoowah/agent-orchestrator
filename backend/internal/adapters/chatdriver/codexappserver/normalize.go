@@ -1148,14 +1148,14 @@ func commandSummary(command string) string {
 	return truncateLabel(cmd)
 }
 
-// truncateLabel caps a one-line label. 120 characters is about where a timeline
+// truncateLabel caps a one-line label. 120 bytes is about where a timeline
 // row stops being scannable.
 func truncateLabel(value string) string {
 	const limit = 120
 	if len(value) <= limit {
 		return value
 	}
-	return value[:limit] + "…"
+	return commanddetail.Head(value, limit) + "…"
 }
 
 // activityDetail is the provider-neutral payload AO persists for an activity.
