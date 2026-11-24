@@ -118,7 +118,7 @@ func (c *Controller) bindDeliveryPrepared(ctx context.Context, a domain.ChatDeli
 }
 
 func (c *Controller) recordDeliveryReceipt(ctx context.Context, r domain.ChatDeliveryReceipt) (domain.ChatDeliveryAttempt, error) {
-	// Unknown settlement requires a correlated query in queryDelivery.
+	// Unknown settlement requires a correlated host lookup.
 	if r.Disposition == domain.ChatDeliveryUnknown && r.ExecutionSettled {
 		return domain.ChatDeliveryAttempt{}, ports.ErrChatDeliveryUnverified
 	}
@@ -428,11 +428,45 @@ func (c *Controller) queryDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 		}
 		return a, ports.ErrChatDeliveryUnverified
 	}
+	filled, err := c.fillDeliveryLookup(&key, receipt)
+	if err != nil {
+		return a, err
+	}
+	if filled {
+		receipt, err = observer.QueryDeliveryAttempt(queryCtx, key)
+		if err != nil {
+			return a, ports.ErrChatDeliveryUnverified
+		}
+	}
+	return c.commitDeliveryLookupReceipt(ctx, key, receipt)
+}
+
+// After a daemon disconnect, only the attached host can supply missing native
+// keys for an exact second lookup of a settled unknown receipt.
+func (c *Controller) fillDeliveryLookup(key *ports.ChatDeliveryLookup, receipt domain.ChatDeliveryReceipt) (bool, error) {
+	if receipt.Disposition != domain.ChatDeliveryUnknown || !receipt.ExecutionSettled ||
+		(key.ProviderEpoch != "" && key.ProviderRequestID != "") {
+		return false, nil
+	}
+	reporter, ok := c.conv.(ports.ChatDeliveryEpochReporter)
+	if !ok || receipt.AttemptID != key.AttemptID ||
+		receipt.ProviderEpoch == "" || receipt.ProviderEpoch != reporter.OutboundProviderEpoch() ||
+		receipt.ProviderRequestID == "" ||
+		key.ProviderEpoch != "" && key.ProviderEpoch != receipt.ProviderEpoch ||
+		key.ProviderRequestID != "" && key.ProviderRequestID != receipt.ProviderRequestID {
+		return false, ports.ErrChatDeliveryUnverified
+	}
+	key.ProviderEpoch, key.ProviderRequestID = receipt.ProviderEpoch, receipt.ProviderRequestID
+	return true, nil
+}
+
+func (c *Controller) commitDeliveryLookupReceipt(ctx context.Context, key ports.ChatDeliveryLookup, receipt domain.ChatDeliveryReceipt) (domain.ChatDeliveryAttempt, error) {
 	if receipt.AttemptID != key.AttemptID ||
+		key.ProviderEpoch != "" && key.ProviderEpoch != receipt.ProviderEpoch ||
+		key.ProviderRequestID != "" && key.ProviderRequestID != receipt.ProviderRequestID ||
 		receipt.Disposition == domain.ChatDeliveryUnknown && receipt.ExecutionSettled &&
-			(key.ProviderEpoch == "" || key.ProviderEpoch != receipt.ProviderEpoch ||
-				key.ProviderRequestID == "" || key.ProviderRequestID != receipt.ProviderRequestID) {
-		return a, ports.ErrChatDeliveryUnverified
+			(key.ProviderEpoch == "" || key.ProviderRequestID == "") {
+		return domain.ChatDeliveryAttempt{}, ports.ErrChatDeliveryUnverified
 	}
 	return c.commitDeliveryReceipt(ctx, receipt)
 }
