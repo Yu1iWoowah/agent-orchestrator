@@ -175,6 +175,33 @@ func TestImportedIdleHistoryDoesNotRestartUntilResume(t *testing.T) {
 	}
 }
 
+func TestAdoptedCodexImportResumesWithApprovalWhenPermissionsAreMissing(t *testing.T) {
+	launcher := &recordingLauncher{}
+	m, st, _ := newChatManager(launcher)
+	project := st.projects[string(chatTestProject)]
+	project.Config.AgentConfig.Permissions = ports.PermissionModeBypassPermissions
+	st.projects[string(chatTestProject)] = project
+
+	rec := domain.SessionRecord{ID: "mer-1", ProjectID: chatTestProject, Kind: domain.KindWorker, Harness: domain.HarnessCodex, Mode: domain.SessionModeChat, Activity: domain.Activity{State: domain.ActivityIdle}}
+	rec.Metadata = domain.SessionMetadata{
+		WorkspacePath:          "/already-copied",
+		Branch:                 "ao/import",
+		ProviderConversationID: "thread-1",
+		ImportSource:           &domain.SessionImportSource{NativeID: "thread-1", ConfigDir: "/original-provider-home", Adopted: true},
+	}
+	st.sessions[rec.ID] = rec
+
+	if _, err := m.ResumeAgentWithMode(t.Context(), rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(launcher.started) != 1 {
+		t.Fatalf("Chat starts = %d, want 1", len(launcher.started))
+	}
+	if got := launcher.started[0].Permissions; got != ports.PermissionModeAcceptEdits {
+		t.Fatalf("Chat resume permissions = %q, want %q", got, ports.PermissionModeAcceptEdits)
+	}
+}
+
 func TestImportPreservesNestedWorktreePointers(t *testing.T) {
 	root := t.TempDir()
 	source, destination := filepath.Join(root, "source"), filepath.Join(root, "ao")

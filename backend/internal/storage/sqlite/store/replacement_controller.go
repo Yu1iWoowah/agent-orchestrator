@@ -97,7 +97,7 @@ func (s *Store) CommitChatControllerReady(ctx context.Context, ready domain.Sess
 		if err := q.ClearSessionChatExplicitExit(ctx, ready.ID); err != nil {
 			return err
 		}
-		if err := q.UpdateSession(ctx, recordToUpdate(ready)); err != nil {
+		if err := updateSessionRow(ctx, q, ready); err != nil {
 			return err
 		}
 		return s.bindReplacementSuccessorController(ctx, q, rowToRecord(row), ready, true)

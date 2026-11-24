@@ -351,26 +351,6 @@ func (s *Store) SetProjectPermissions(ctx context.Context, id string, permission
 		if !row.ArchivedAt.IsZero() {
 			return nil
 		}
-		worker := row.Config.AgentConfig.Permissions
-		if row.Config.Worker.AgentConfig.Permissions != "" {
-			worker = row.Config.Worker.AgentConfig.Permissions
-		}
-		orchestrator := row.Config.AgentConfig.Permissions
-		if row.Config.Orchestrator.AgentConfig.Permissions != "" {
-			orchestrator = row.Config.Orchestrator.AgentConfig.Permissions
-		}
-		if worker == "" {
-			worker = domain.PermissionModeDefault
-		}
-		if orchestrator == "" {
-			orchestrator = domain.PermissionModeDefault
-		}
-		for kind, mode := range map[domain.SessionKind]domain.PermissionMode{domain.KindWorker: worker, domain.KindOrchestrator: orchestrator} {
-			if err := q.PinProjectSessionPermissions(ctx, gen.PinProjectSessionPermissionsParams{ProjectID: optionalProjectID(domain.ProjectID(id)), Kind: kind, Permissions: string(mode)}); err != nil {
-				return err
-			}
-		}
-
 		row.Config.AgentConfig.Permissions = permissions
 		row.Config.Worker.AgentConfig.Permissions = ""
 		row.Config.Orchestrator.AgentConfig.Permissions = ""

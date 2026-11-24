@@ -31,10 +31,11 @@ WHERE id = sqlc.arg(id) AND is_terminated = 0
     AND json_extract(NULLIF(import_source, ''), '$.adopted') = 0
     AND (workspace_path = '' OR workspace_path = sqlc.arg(workspace_path));
 
--- Adoption is the one import fact a full session write records; the rest move
--- only through SetSessionImportWorkspace, so an older snapshot cannot undo them.
+-- A full session write may record adoption and its starting permission policy.
+-- The other import facts move only through SetSessionImportWorkspace.
 -- name: AdoptSessionImport :exec
-UPDATE sessions SET import_source = sqlc.arg(import_source)
+UPDATE sessions SET import_source = sqlc.arg(import_source),
+    session_permissions = COALESCE(NULLIF(session_permissions, ''), sqlc.arg(session_permissions))
 WHERE id = sqlc.arg(id) AND json_extract(NULLIF(import_source, ''), '$.adopted') = 0;
 
 -- name: ListSessionImportArchive :many

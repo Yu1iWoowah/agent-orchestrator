@@ -916,12 +916,10 @@ type chatPermissionModeLister interface {
 	PermissionModes(ctx context.Context, harness domain.AgentHarness) ([]ports.PermissionMode, error)
 }
 
-// importedChatPermissions is the permission mode an imported chat opens in. An
-// import never chose one, so it would inherit the project default, which some
-// harnesses cannot run: Pi cannot ask for approval, so it only runs bypassing
-// permissions. The project default is kept when the harness accepts it;
-// otherwise the strictest mode the harness accepts is used, as a new chat on
-// that harness would offer.
+// importedChatPermissions keeps a saved permission mode. An import without a
+// saved choice uses the requested default when supported by the harness,
+// otherwise the strictest supported mode. The first AO launch requests the
+// project default, while an already adopted import requests the harness default.
 func (m *Manager) importedChatPermissions(ctx context.Context, rec domain.SessionRecord, configured ports.PermissionMode) ports.PermissionMode {
 	if rec.Metadata.ImportSource == nil || rec.Metadata.Permissions != "" {
 		return configured

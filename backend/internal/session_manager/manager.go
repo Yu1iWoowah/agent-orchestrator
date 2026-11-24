@@ -2738,20 +2738,29 @@ func (m *Manager) sessionLaunchOptions(ctx context.Context, id domain.SessionID)
 }
 
 func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) ports.AgentConfig {
-	merged := effectiveAgentConfig(rec.Harness, rec.Kind, cfg)
-	// Model and effort are durable session choices for every harness. Empty
-	// values mean provider defaults, not today's project or role defaults.
-	merged.Model = rec.Metadata.Model
+	restored := ports.AgentConfig{
+		Model:       rec.Metadata.Model,
+		Effort:      rec.Metadata.Effort,
+		FastMode:    rec.Metadata.FastMode,
+		Permissions: rec.Metadata.Permissions,
+	}
 	// Mode-list adapters persist their native choice in the same Model field.
 	if modelcatalog.Base(string(rec.Harness)).SelectionMode == ports.ModelSelectionModeList {
-		merged.Mode = rec.Metadata.Model
+		restored.Mode = rec.Metadata.Model
 	}
-	merged.Effort = rec.Metadata.Effort
-	merged.FastMode = rec.Metadata.FastMode
-	if rec.Metadata.Permissions != "" {
-		merged.Permissions = rec.Metadata.Permissions
+	if restored.Permissions == "" {
+		switch {
+		case rec.NeedsImportResume():
+			// The first AO launch of an import chooses its starting policy.
+			restored.Permissions = effectiveAgentConfig(rec.Harness, rec.Kind, cfg).Permissions
+		case rec.Harness == domain.HarnessCodex:
+			// Codex's default bypasses approvals and sandboxing.
+			restored.Permissions = ports.PermissionModeAcceptEdits
+		default:
+			restored.Permissions = ports.PermissionModeDefault
+		}
 	}
-	return merged
+	return restored
 }
 
 // EffectiveSpawnAgentConfig merges project, role, and per-start tuning for
@@ -4642,6 +4651,9 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		adopted := *updated.Metadata.ImportSource
 		adopted.Adopted = true
 		updated.Metadata.ImportSource = &adopted
+		if rec.Metadata.Permissions == "" {
+			updated.Metadata.Permissions = ports.NormalizePermissionMode(agentConfig.Permissions)
+		}
 		if err := m.store.UpdateSession(ctx, updated); err != nil {
 			m.destroySpawnRuntimeAfterFailure(ctx, handle)
 			return RestoreResult{}, relaunchFailed("adopt import", err)

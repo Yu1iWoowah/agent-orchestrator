@@ -1918,6 +1918,9 @@ func sameActivity(a, b domain.Activity) bool {
 
 func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	if in.ImportSource != nil {
+		if base.ImportSource != nil && !base.ImportSource.Adopted && in.ImportSource.Adopted {
+			base.Permissions = in.Permissions
+		}
 		source := *in.ImportSource
 		base.ImportSource = &source
 	}

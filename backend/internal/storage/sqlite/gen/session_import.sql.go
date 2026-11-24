@@ -13,19 +13,21 @@ import (
 )
 
 const adoptSessionImport = `-- name: AdoptSessionImport :exec
-UPDATE sessions SET import_source = ?1
-WHERE id = ?2 AND json_extract(NULLIF(import_source, ''), '$.adopted') = 0
+UPDATE sessions SET import_source = ?1,
+    session_permissions = COALESCE(NULLIF(session_permissions, ''), ?2)
+WHERE id = ?3 AND json_extract(NULLIF(import_source, ''), '$.adopted') = 0
 `
 
 type AdoptSessionImportParams struct {
-	ImportSource string
-	ID           domain.SessionID
+	ImportSource       string
+	SessionPermissions string
+	ID                 domain.SessionID
 }
 
-// Adoption is the one import fact a full session write records; the rest move
-// only through SetSessionImportWorkspace, so an older snapshot cannot undo them.
+// A full session write may record adoption and its starting permission policy.
+// The other import facts move only through SetSessionImportWorkspace.
 func (q *Queries) AdoptSessionImport(ctx context.Context, arg AdoptSessionImportParams) error {
-	_, err := q.db.ExecContext(ctx, adoptSessionImport, arg.ImportSource, arg.ID)
+	_, err := q.db.ExecContext(ctx, adoptSessionImport, arg.ImportSource, arg.SessionPermissions, arg.ID)
 	return err
 }
 

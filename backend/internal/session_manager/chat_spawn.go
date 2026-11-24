@@ -725,6 +725,9 @@ func (m *Manager) resumeChatController(
 						return ChatControllerCommit{}, err
 					}
 					adopted.HistoryThrough = through
+					if metadata.Permissions == "" {
+						metadata.Permissions = ports.NormalizePermissionMode(agentConfig.Permissions)
+					}
 				}
 				adopted.Adopted = true
 				metadata.ImportSource = &adopted

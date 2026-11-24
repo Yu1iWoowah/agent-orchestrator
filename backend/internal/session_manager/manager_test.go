@@ -5119,7 +5119,7 @@ func TestRestore_WorkspaceProjectRestoresChildrenAndRecordsInventory(t *testing.
 	}
 }
 
-func TestRestore_AppliesProjectAgentMode(t *testing.T) {
+func TestRestore_DoesNotInheritProjectAgentMode(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: domain.ProjectConfig{AgentConfig: domain.AgentConfig{Model: "changed-model", Effort: "low", Mode: "restore-mode"}}}
 	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "b", AgentSessionID: "agent-x"})
@@ -5130,8 +5130,8 @@ func TestRestore_AppliesProjectAgentMode(t *testing.T) {
 	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
 		t.Fatal(err)
 	}
-	if agent.lastConfig.Mode != "restore-mode" || agent.lastConfig.Model != "" || agent.lastConfig.Effort != "" {
-		t.Fatalf("restore config = %+v, want project mode with provider-default model and effort", agent.lastConfig)
+	if agent.lastConfig.Mode != "" || agent.lastConfig.Model != "" || agent.lastConfig.Effort != "" {
+		t.Fatalf("restore config = %+v, want provider-default mode, model, and effort", agent.lastConfig)
 	}
 }
 
@@ -6174,31 +6174,40 @@ func TestSpawn_ForwardsResolvedAgentConfigPermissions(t *testing.T) {
 	}
 }
 
-func TestRestore_ForwardsResolvedAgentConfigPermissions(t *testing.T) {
-	st := newFakeStore()
-	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: domain.ProjectConfig{
-		AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeBypassPermissions},
-	}}
-	st.sessions["mer-1"] = domain.SessionRecord{
-		ID:           "mer-1",
-		ProjectID:    "mer",
-		Kind:         domain.KindWorker,
-		IsTerminated: true,
-		Metadata:     domain.SessionMetadata{Branch: "ao/mer-1", WorkspacePath: "/tmp/ws", AgentSessionID: "native-1"},
-	}
-	agent := &recordingAgent{}
-	m := New(Deps{Runtime: &fakeRuntime{}, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: func(string) (string, error) { return "/bin/true", nil }})
+func TestRestore_UsesPermissionFallbackForLegacySession(t *testing.T) {
+	for _, tc := range []struct {
+		harness domain.AgentHarness
+		want    domain.PermissionMode
+	}{
+		{domain.HarnessClaudeCode, domain.PermissionModeDefault},
+		{domain.HarnessCodex, domain.PermissionModeAcceptEdits},
+	} {
+		t.Run(string(tc.harness), func(t *testing.T) {
+			st := newFakeStore()
+			st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: domain.ProjectConfig{
+				AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeBypassPermissions},
+			}}
+			st.sessions["mer-1"] = domain.SessionRecord{
+				ID:           "mer-1",
+				ProjectID:    "mer",
+				Kind:         domain.KindWorker,
+				Harness:      tc.harness,
+				IsTerminated: true,
+				Metadata:     domain.SessionMetadata{Branch: "ao/mer-1", WorkspacePath: "/tmp/ws", AgentSessionID: "native-1"},
+			}
+			agent := &recordingAgent{}
+			m := New(Deps{Runtime: &fakeRuntime{}, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: func(string) (string, error) { return "/bin/true", nil }})
 
-	_, err := m.RestoreWithMode(ctx, "mer-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if agent.lastRestore.Config.Permissions != domain.PermissionModeBypassPermissions {
-		t.Fatalf("restore config permissions = %q, want bypass", agent.lastRestore.Config.Permissions)
-	}
-	if agent.lastRestore.Permissions != domain.PermissionModeBypassPermissions {
-		t.Fatalf("restore permissions = %q, want bypass", agent.lastRestore.Permissions)
+			if _, err := m.RestoreWithMode(t.Context(), "mer-1"); err != nil {
+				t.Fatal(err)
+			}
+			if got := agent.lastRestore.Config.Permissions; got != tc.want {
+				t.Fatalf("restore config permissions = %q, want %q", got, tc.want)
+			}
+			if got := agent.lastRestore.Permissions; got != tc.want {
+				t.Fatalf("restore permissions = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
