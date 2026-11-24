@@ -710,6 +710,10 @@ func (c *Controller) monitorDeliveries() {
 			ctx, cancel := c.deadlineContext(context.Background(), 10*time.Second)
 			attempts, err := journal.PendingChatDeliveries(ctx, c.sessionID)
 			cancel()
+			if c.deliveryMonitorStopping() {
+				c.deliveryCheckMu.Unlock()
+				return
+			}
 			var earliest time.Time
 			if err != nil {
 				if !journalReadFailed {
