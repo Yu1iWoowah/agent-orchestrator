@@ -470,13 +470,17 @@ func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) err
 }
 
 // updateSessionRow writes the general session state plus, once, an import's
-// adoption. Other import facts change only through SetSessionImportWorkspace.
+// adoption and starting permissions.
 func updateSessionRow(ctx context.Context, q *gen.Queries, rec domain.SessionRecord) error {
 	if err := q.UpdateSession(ctx, recordToUpdate(rec)); err != nil {
 		return err
 	}
 	if source := rec.Metadata.ImportSource; source != nil && source.Adopted {
-		return q.AdoptSessionImport(ctx, gen.AdoptSessionImportParams{ID: rec.ID, ImportSource: marshalImportSource(source)})
+		return q.AdoptSessionImport(ctx, gen.AdoptSessionImportParams{
+			ID:                 rec.ID,
+			ImportSource:       marshalImportSource(source),
+			SessionPermissions: string(rec.Metadata.Permissions),
+		})
 	}
 	return nil
 }

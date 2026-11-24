@@ -5119,7 +5119,7 @@ func TestRestore_WorkspaceProjectRestoresChildrenAndRecordsInventory(t *testing.
 	}
 }
 
-func TestRestore_AppliesProjectAgentMode(t *testing.T) {
+func TestRestore_DoesNotInheritProjectAgentMode(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: domain.ProjectConfig{AgentConfig: domain.AgentConfig{Model: "changed-model", Effort: "low", Mode: "restore-mode"}}}
 	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "b", AgentSessionID: "agent-x"})
@@ -5130,8 +5130,8 @@ func TestRestore_AppliesProjectAgentMode(t *testing.T) {
 	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
 		t.Fatal(err)
 	}
-	if agent.lastConfig.Mode != "restore-mode" || agent.lastConfig.Model != "" || agent.lastConfig.Effort != "" {
-		t.Fatalf("restore config = %+v, want project mode with provider-default model and effort", agent.lastConfig)
+	if agent.lastConfig.Mode != "" || agent.lastConfig.Model != "" || agent.lastConfig.Effort != "" {
+		t.Fatalf("restore config = %+v, want provider-default mode, model, and effort", agent.lastConfig)
 	}
 }
 
@@ -6174,7 +6174,7 @@ func TestSpawn_ForwardsResolvedAgentConfigPermissions(t *testing.T) {
 	}
 }
 
-func TestRestore_ForwardsResolvedAgentConfigPermissions(t *testing.T) {
+func TestRestore_UsesDefaultPermissionsForLegacySession(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: domain.ProjectConfig{
 		AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeBypassPermissions},
@@ -6194,11 +6194,11 @@ func TestRestore_ForwardsResolvedAgentConfigPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if agent.lastRestore.Config.Permissions != domain.PermissionModeBypassPermissions {
-		t.Fatalf("restore config permissions = %q, want bypass", agent.lastRestore.Config.Permissions)
+	if agent.lastRestore.Config.Permissions != domain.PermissionModeDefault {
+		t.Fatalf("restore config permissions = %q, want default", agent.lastRestore.Config.Permissions)
 	}
-	if agent.lastRestore.Permissions != domain.PermissionModeBypassPermissions {
-		t.Fatalf("restore permissions = %q, want bypass", agent.lastRestore.Permissions)
+	if agent.lastRestore.Permissions != domain.PermissionModeDefault {
+		t.Fatalf("restore permissions = %q, want default", agent.lastRestore.Permissions)
 	}
 }
 
