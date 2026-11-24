@@ -34,6 +34,24 @@ jobs:
           go-version: "1.27.4"
           cache: false
 
+      - name: Download Go modules
+        shell: bash
+        run: |
+          download_modules() {
+            # The E2E suite builds ./cmd/ao without the e2e tag.
+            go list -deps -test ./internal/filefingerprint ./internal/adapters/agent/claudecode ./cmd/ao >/dev/null &&
+              go list -deps -test -tags e2e ./internal/cli/... >/dev/null
+          }
+
+          for delay in 2 4; do
+            if download_modules; then
+              exit 0
+            fi
+            echo "Go module download failed; retrying in ${delay}s"
+            sleep "$delay"
+          done
+          download_modules
+
       - name: Native transcript publication policy
         run: go test -count=1 ./internal/filefingerprint && go test -count=1 -run '^TestNative(StabilityMissingChangeTimeFailsClosed|TranscriptPlatformStabilityPolicy)$' ./internal/adapters/agent/claudecode
 

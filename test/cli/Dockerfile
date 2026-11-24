@@ -17,7 +17,13 @@ WORKDIR /src
 # Cache modules first.
 COPY backend/go.mod backend/go.sum ./backend/
 COPY components/hcg/go.mod components/hcg/go.sum ./components/hcg/
-RUN cd backend && go mod download
+RUN cd backend \
+ && for delay in 2 4; do \
+      if go mod download; then exit 0; fi; \
+      echo "Go module download failed; retrying in ${delay}s"; \
+      sleep "$delay"; \
+    done \
+ && go mod download
 
 COPY backend ./backend
 COPY components/hcg ./components/hcg
