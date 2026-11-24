@@ -33,11 +33,12 @@ func spawnDetached(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("spawn detached chat host: %w", err)
 	}
 	// Setsid detaches the host from our session, but it remains our child until
-	// Wait reaps it. Release alone leaves a zombie after each hibernation.
+	// Wait reaps it. Record its identity first so the PID cannot be reused.
+	recordErr := recordSpawn(cfg.DataDir, cfg.SessionID, cmd.Process.Pid)
 	go func() { _ = cmd.Wait() }()
-	if err := recordSpawn(cfg.DataDir, cfg.SessionID, cmd.Process.Pid); err != nil {
+	if recordErr != nil {
 		_ = cmd.Process.Kill()
-		return fmt.Errorf("record detached chat host: %w", err)
+		return fmt.Errorf("record detached chat host: %w", recordErr)
 	}
 	return nil
 }

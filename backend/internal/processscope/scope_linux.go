@@ -83,6 +83,12 @@ func birth(pid int) (string, error) {
 	return stat.birth, err
 }
 
+// StartTicks returns the kernel process start time in ticks since boot, or "" if unavailable.
+func StartTicks(pid int) string {
+	ticks, _ := birth(pid)
+	return ticks
+}
+
 // AdapterExited proves that the original adapter process ended. Its tools may
 // still be alive, so this must not be used for delivery custody or lock reuse.
 func AdapterExited(scope *Scope) bool {
