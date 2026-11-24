@@ -372,7 +372,7 @@ func (c *Controller) retryDeliveryAcks() time.Time {
 	ctx, cancel := c.deadlineContext(context.Background(), 5*time.Second)
 	defer cancel()
 	for _, key := range pending {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || c.deliveryMonitorStopping() {
 			break
 		}
 		err := acknowledger.AcknowledgeDeliveryAttempt(ctx, key)
@@ -418,6 +418,9 @@ func (c *Controller) queryDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 	queryCtx, cancel := c.deadlineContext(ctx, 10*time.Second)
 	defer cancel()
 	key := deliveryLookup(a)
+	if c.deliveryMonitorStopping() {
+		return a, context.Canceled
+	}
 	receipt, err := observer.QueryDeliveryAttempt(queryCtx, key)
 	if err != nil {
 		if errors.Is(context.Cause(queryCtx), context.DeadlineExceeded) {
@@ -433,6 +436,9 @@ func (c *Controller) queryDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 		return a, err
 	}
 	if filled {
+		if c.deliveryMonitorStopping() {
+			return a, context.Canceled
+		}
 		receipt, err = observer.QueryDeliveryAttempt(queryCtx, key)
 		if err != nil {
 			return a, ports.ErrChatDeliveryUnverified
@@ -651,8 +657,17 @@ func (c *Controller) startDeliveryMonitor() {
 	c.deliveryMonitorStarted = true
 	c.deliveryImmediate = false
 	c.deliveryWake = make(chan struct{}, 1)
+	c.deliveryMonitor.Go(c.monitorDeliveries)
 	c.mu.Unlock()
-	go c.monitorDeliveries()
+}
+
+func (c *Controller) deliveryMonitorStopping() bool {
+	select {
+	case <-c.deliveryMonitorStop:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Controller) wakeDeliveryMonitor(immediate bool) {
@@ -688,9 +703,17 @@ func (c *Controller) monitorDeliveries() {
 				c.deliveryCheckMu.Unlock()
 				continue
 			}
+			if c.deliveryMonitorStopping() {
+				c.deliveryCheckMu.Unlock()
+				return
+			}
 			ctx, cancel := c.deadlineContext(context.Background(), 10*time.Second)
 			attempts, err := journal.PendingChatDeliveries(ctx, c.sessionID)
 			cancel()
+			if c.deliveryMonitorStopping() {
+				c.deliveryCheckMu.Unlock()
+				return
+			}
 			var earliest time.Time
 			if err != nil {
 				if !journalReadFailed {
@@ -705,6 +728,9 @@ func (c *Controller) monitorDeliveries() {
 				}
 				resolveCancel()
 				for _, a := range attempts {
+					if c.deliveryMonitorStopping() {
+						break
+					}
 					due := a.LastProgressAt.Add(30 * time.Second)
 					if a.NextCheckAt != nil {
 						due = *a.NextCheckAt
@@ -737,7 +763,7 @@ func (c *Controller) monitorDeliveries() {
 						c.mu.Lock()
 						quiescing := c.deliveryQuiescing
 						c.mu.Unlock()
-						if quiescing {
+						if quiescing || c.deliveryMonitorStopping() {
 							break
 						}
 						if queryErr == nil && (saved.ExecutionSettled || saved.Disposition == domain.ChatDeliveryNotSent) {
@@ -781,7 +807,7 @@ func (c *Controller) monitorDeliveries() {
 			c.deliveryCheckMu.Unlock()
 		}
 		select {
-		case <-c.stopped:
+		case <-c.deliveryMonitorStop:
 			return
 		case <-wake:
 		case <-timer:
@@ -820,7 +846,7 @@ func (c *Controller) scheduleDeliveryRetry() {
 	timer := c.timerAfter(delay)
 	go func() {
 		select {
-		case <-c.stopped:
+		case <-c.deliveryMonitorStop:
 			return
 		case <-timer:
 		}

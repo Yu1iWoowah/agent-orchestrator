@@ -248,9 +248,11 @@ type Controller struct {
 	settingsExecutorID            string                              // guarded by sendMu
 	after                         func(time.Duration) <-chan time.Time
 	deliveryCheckMu               sync.Mutex
-	deliveryReceiptMu             sync.Mutex                          // serializes attention creation with terminal receipts
-	deliveryWake                  chan struct{}                       // guarded by mu
-	deliveryMonitorStarted        bool                                // guarded by mu
+	deliveryReceiptMu             sync.Mutex    // serializes attention creation with terminal receipts
+	deliveryWake                  chan struct{} // guarded by mu
+	deliveryMonitorStarted        bool          // guarded by mu; set at shutdown to prevent a late start
+	deliveryMonitorStop           chan struct{}
+	deliveryMonitor               sync.WaitGroup
 	deliveryImmediate             bool                                // guarded by mu
 	deliveryQuiescing             bool                                // guarded by mu
 	deliveryRetryScheduled        bool                                // guarded by mu
@@ -514,6 +516,7 @@ func newController(
 		mcpServers:             map[string]domain.ConversationMCPServer{},
 		mcpServerSeenRevision:  map[string]uint64{},
 		flushRequests:          make(chan chan struct{}),
+		deliveryMonitorStop:    make(chan struct{}),
 		stopped:                make(chan struct{}),
 	}
 	if conversation.ThreadState != nil {
@@ -2200,7 +2203,7 @@ func (c *Controller) dispatch(
 	followers []string,
 ) (domain.ConversationTurn, error) {
 	select {
-	case <-c.stopped:
+	case <-c.deliveryMonitorStop:
 		return c.preserveBeforeProviderIO(ctx, turnID, followers, requestedAt)
 	default:
 	}
@@ -3621,14 +3624,21 @@ func (c *Controller) reportFailedBranchHandoff(ctx context.Context) {
 	c.reportActivity(reportCtx, domain.ActivityExited, "chat.controller.stopped", c.now())
 }
 
-// Wait blocks until the controller's event stream has ended.
+// Wait blocks until event projection and delivery monitoring have ended.
 func (c *Controller) Wait() { <-c.stopped }
 
 // project consumes the driver's normalized events and writes them down. It runs
 // until this controller's stream closes. That can mean provider termination or a
 // deliberate detach from a provider that remains alive in a persistent host.
 func (c *Controller) project(flushInterval time.Duration) {
-	defer close(c.stopped)
+	defer func() {
+		c.mu.Lock()
+		c.deliveryMonitorStarted = true
+		close(c.deliveryMonitorStop)
+		c.mu.Unlock()
+		c.deliveryMonitor.Wait()
+		close(c.stopped)
+	}()
 
 	// Detached from any request context: this outlives the call that started the
 	// controller, and must keep persisting until the provider stream ends.
