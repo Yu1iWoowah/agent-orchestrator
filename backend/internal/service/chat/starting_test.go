@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -520,6 +522,10 @@ func (s *heldCleanupStore) CleanupOwnedControllerWork(ctx context.Context, sessi
 }
 
 func TestInputQueuedWhileTheOldControllerCleansUpIsDelivered(t *testing.T) {
+	synctest.Test(t, checkInputQueuedDuringCleanup)
+}
+
+func checkInputQueuedDuringCleanup(t *testing.T) {
 	st := openStore(t)
 	store := &heldCleanupStore{Store: st, entered: make(chan struct{}, 1), release: make(chan struct{})}
 	first := newFakeConversation()
@@ -539,15 +545,9 @@ func TestInputQueuedWhileTheOldControllerCleansUpIsDelivered(t *testing.T) {
 	if err := st.UpdateSession(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	released := false
-	release := func() {
-		if !released {
-			released = true
-			close(store.release)
-		}
-	}
+	releaseCleanup := sync.OnceFunc(func() { close(store.release) })
 	t.Cleanup(func() {
-		release()
+		releaseCleanup()
 		select {
 		case held.release <- errors.New("test ended"):
 		default:
@@ -583,19 +583,28 @@ func TestInputQueuedWhileTheOldControllerCleansUpIsDelivered(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
+	// Hold the new provider until Send returns its durable queue receipt.
+	sendCtx, cancelSend := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelSend()
 	var typed domain.ConversationTurn
 	var typedErr error
 	sent := make(chan struct{})
 	go func() {
 		defer close(sent)
-		typed, typedErr = svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "typed during cleanup", ClientMessageID: "msg-cleanup", Origin: domain.MessageOriginHuman})
+		typed, typedErr = svc.Send(sendCtx, testSession, ports.ChatUserMessage{Text: "typed during cleanup", ClientMessageID: "msg-cleanup", Origin: domain.MessageOriginHuman})
 	}()
-	// Give the send time to land before the cleanup, if it can.
+	// Let Send reach the cleanup wait while the old controller is still held.
+	synctest.Wait()
 	select {
 	case <-sent:
-	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("send returned before the old controller finished cleanup: %+v, %v", typed, typedErr)
+	default:
 	}
-	release()
+	releaseCleanup()
+	<-sent
+	if typedErr != nil || typed.State != domain.TurnStateQueued {
+		t.Fatalf("send during the old controller's cleanup = %+v, %v; want a queued turn", typed, typedErr)
+	}
 	select {
 	case <-held.entered:
 	case <-time.After(5 * time.Second):
@@ -605,12 +614,6 @@ func TestInputQueuedWhileTheOldControllerCleansUpIsDelivered(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	<-sent
-	if typedErr != nil || typed.State != domain.TurnStateQueued {
-		t.Fatalf("send during the old controller's cleanup = %+v, %v; want a queued turn", typed, typedErr)
-	}
 	awaitSent(t, held.conv, []string{"typed during cleanup"})
-	if turn, err := st.TurnByID(ctx, typed.ID); err != nil || turn.State == domain.TurnStateFailed {
-		t.Fatalf("turn queued during the cleanup = %q, %v; want it kept", turn.State, err)
-	}
+	awaitTurnState(t, st, typed.ID, domain.TurnStateRunning)
 }

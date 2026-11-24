@@ -75,6 +75,14 @@ type stalledDeliveryConversation struct {
 	timeout      bool
 }
 
+func (c *stalledDeliveryConversation) settleHostReceipt(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	receipt := c.deliveryReceipts[id]
+	receipt.Disposition, receipt.Source, receipt.Complete, receipt.ExecutionSettled = domain.ChatDeliveryAccepted, "provider_response", true, true
+	c.deliveryReceipts[id] = receipt
+}
+
 func (c *stalledDeliveryConversation) QueryDeliveryAttempt(ctx context.Context, key ports.ChatDeliveryLookup) (domain.ChatDeliveryReceipt, error) {
 	c.queryCount <- key.AttemptID
 	if c.queryStarted != nil {
@@ -857,12 +865,11 @@ func TestStalledPromptWithUnsettledDeliveryHoldsQueueUntilSettled(t *testing.T) 
 		t.Fatalf("provider received %v while the stalled prompt's execution was unverified", sent)
 	}
 
-	conv.mu.Lock()
-	receipt := conv.deliveryReceipts[a.ID]
-	receipt.Disposition, receipt.Source, receipt.Complete, receipt.ExecutionSettled = domain.ChatDeliveryAccepted, "provider_response", true, true
-	conv.deliveryReceipts[a.ID] = receipt
-	conv.mu.Unlock()
-	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	// The monitor can start the queue recheck as soon as it sees settlement.
+	h.ctrl.AdvanceDeliveryClockForTest(func() {
+		conv.settleHostReceipt(a.ID)
+		clock.advance(30 * time.Second)
+	})
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		return turnStateByText(t, s)["queued"] != domain.TurnStateQueued && len(conv.sentTexts()) >= 2
 	})
