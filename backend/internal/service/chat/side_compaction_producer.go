@@ -76,14 +76,12 @@ func (m *sideManager) registerCompaction(ctx context.Context, r domain.SideCompa
 	}
 	release := m.service.nativeGuard.lock(r.NativeHome, r.NativeID)
 	defer release()
-	rows, err := store.durable.SideCompactions(ctx, true)
+	sideID, err := store.durable.SideWithUnresolvedNativeCompaction(ctx, r.NativeHome, r.NativeID)
 	if err != nil {
 		return err
 	}
-	for _, row := range rows {
-		if row.NativeHome == r.NativeHome && row.NativeID == r.NativeID {
-			return fmt.Errorf("%w: side %s", ErrNativeConversationProtected, row.SideID)
-		}
+	if sideID != "" {
+		return fmt.Errorf("%w: side %s", ErrNativeConversationProtected, sideID)
 	}
 
 	store.mu.Lock()

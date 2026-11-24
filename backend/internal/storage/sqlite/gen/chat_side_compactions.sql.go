@@ -9,6 +9,15 @@ import (
 	"context"
 )
 
+const closeSideCompactions = `-- name: CloseSideCompactions :exec
+UPDATE chat_side_compactions SET closed=1 WHERE side_id=? AND closed=0
+`
+
+func (q *Queries) CloseSideCompactions(ctx context.Context, sideID string) error {
+	_, err := q.db.ExecContext(ctx, closeSideCompactions, sideID)
+	return err
+}
+
 const deleteSettledSideContent = `-- name: DeleteSettledSideContent :exec
 DELETE FROM chat_side_contents WHERE chat_side_contents.side_id=?1 AND NOT EXISTS
 (SELECT 1 FROM chat_side_compactions c WHERE c.side_id=chat_side_contents.side_id AND c.closed=0 AND c.state IN ('pending','unknown'))
@@ -64,6 +73,49 @@ func (q *Queries) InsertSideCompaction(ctx context.Context, arg InsertSideCompac
 		arg.RecordJson,
 	)
 	return err
+}
+
+const listSideCompactionRecovery = `-- name: ListSideCompactionRecovery :many
+SELECT side_id, state, closed,
+       CAST(COALESCE(json_extract(record_json,'$.ProviderHostID'),'') AS TEXT) AS provider_host_id
+FROM chat_side_compactions
+GROUP BY side_id, state, closed, provider_host_id
+ORDER BY MAX(rowid)
+`
+
+type ListSideCompactionRecoveryRow struct {
+	SideID         string
+	State          string
+	Closed         int64
+	ProviderHostID string
+}
+
+func (q *Queries) ListSideCompactionRecovery(ctx context.Context) ([]ListSideCompactionRecoveryRow, error) {
+	rows, err := q.db.QueryContext(ctx, listSideCompactionRecovery)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSideCompactionRecoveryRow{}
+	for rows.Next() {
+		var i ListSideCompactionRecoveryRow
+		if err := rows.Scan(
+			&i.SideID,
+			&i.State,
+			&i.Closed,
+			&i.ProviderHostID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listSideCompactions = `-- name: ListSideCompactions :many
@@ -146,6 +198,34 @@ type PutSideCompactionContentParams struct {
 func (q *Queries) PutSideCompactionContent(ctx context.Context, arg PutSideCompactionContentParams) error {
 	_, err := q.db.ExecContext(ctx, putSideCompactionContent, arg.SideID, arg.ContentJson)
 	return err
+}
+
+const sideCompactionContent = `-- name: SideCompactionContent :one
+SELECT CAST(COALESCE((SELECT content_json FROM chat_side_contents WHERE side_id=?),'') AS TEXT)
+`
+
+func (q *Queries) SideCompactionContent(ctx context.Context, sideID string) (string, error) {
+	row := q.db.QueryRowContext(ctx, sideCompactionContent, sideID)
+	var column_1 string
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const sideWithUnresolvedNativeCompaction = `-- name: SideWithUnresolvedNativeCompaction :one
+SELECT CAST(COALESCE((SELECT side_id FROM chat_side_compactions
+WHERE native_home=? AND native_id=? AND closed=0 AND state IN ('pending','unknown') LIMIT 1),'') AS TEXT)
+`
+
+type SideWithUnresolvedNativeCompactionParams struct {
+	NativeHome string
+	NativeID   string
+}
+
+func (q *Queries) SideWithUnresolvedNativeCompaction(ctx context.Context, arg SideWithUnresolvedNativeCompactionParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, sideWithUnresolvedNativeCompaction, arg.NativeHome, arg.NativeID)
+	var column_1 string
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const updateSideCompaction = `-- name: UpdateSideCompaction :exec

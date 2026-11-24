@@ -90,6 +90,44 @@ func (s *Store) SideCompactions(ctx context.Context, unresolved bool) ([]domain.
 	return out, nil
 }
 
+// SideCompactionRecovery lists the metadata needed to restore or clean up each side.
+func (s *Store) SideCompactionRecovery(ctx context.Context) ([]domain.SideCompaction, error) {
+	rows, err := s.qr.ListSideCompactionRecovery(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.SideCompaction, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.SideCompaction{SideID: row.SideID, State: domain.SideCompactionState(row.State), Closed: row.Closed != 0, ProviderHostID: row.ProviderHostID})
+	}
+	return out, nil
+}
+
+// SideCompactionContent reads the current durable body for one side.
+func (s *Store) SideCompactionContent(ctx context.Context, sideID string) (json.RawMessage, error) {
+	content, err := s.qr.SideCompactionContent(ctx, sideID)
+	return json.RawMessage(content), err
+}
+
+// SideWithUnresolvedNativeCompaction returns the side protecting the native ID, if any.
+func (s *Store) SideWithUnresolvedNativeCompaction(ctx context.Context, home, id string) (string, error) {
+	return s.qr.SideWithUnresolvedNativeCompaction(ctx, gen.SideWithUnresolvedNativeCompactionParams{NativeHome: home, NativeID: id})
+}
+
+// CloseSideCompactions preserves each result and removes its side's settled body.
+func (s *Store) CloseSideCompactions(ctx context.Context, sideID string) error {
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "close side compactions", func(q *gen.Queries) error {
+		if err := q.CloseSideCompactions(ctx, sideID); err != nil {
+			return err
+		}
+		return q.DeleteSettledSideContent(ctx, sideID)
+	})
+}
+
 // SaveSideCompactionContent updates content only while an obligation is open.
 func (s *Store) SaveSideCompactionContent(ctx context.Context, sideID string, content json.RawMessage) error {
 	if !json.Valid(content) {

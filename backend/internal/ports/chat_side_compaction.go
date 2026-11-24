@@ -12,6 +12,10 @@ import (
 type SideCompactionStore interface {
 	RegisterSideCompaction(context.Context, domain.SideCompaction) error
 	SideCompactions(context.Context, bool) ([]domain.SideCompaction, error)
+	SideCompactionRecovery(context.Context) ([]domain.SideCompaction, error)
+	SideCompactionContent(context.Context, string) (json.RawMessage, error)
+	SideWithUnresolvedNativeCompaction(context.Context, string, string) (string, error)
+	CloseSideCompactions(context.Context, string) error
 	SaveSideCompactionContent(context.Context, string, json.RawMessage) error
 	TransitionSideCompaction(context.Context, string, string, domain.SideCompactionState, bool, bool) error
 	MarkSideCompactionHistorical(context.Context, string, string, string) error
