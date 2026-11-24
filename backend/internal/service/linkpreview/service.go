@@ -146,7 +146,11 @@ func (s *Service) Preview(ctx context.Context, rawURL string) (Preview, error) {
 		return Preview{}, err
 	}
 	key := pageURL.String()
+	// Keep a fetch from filling the cache and leaving the group between a
+	// cache miss and registration with singleflight.
+	s.mu.Lock()
 	if e, ok := s.lookup(key); ok {
+		s.mu.Unlock()
 		return e.result()
 	}
 	fetchCtx := context.WithoutCancel(ctx)
@@ -157,6 +161,7 @@ func (s *Service) Preview(ctx context.Context, rawURL string) (Preview, error) {
 		s.store(key, cacheEntry{preview: p, failure: failure, fetchedAt: s.now()})
 		return p, fetchErr
 	})
+	s.mu.Unlock()
 	select {
 	case <-ctx.Done():
 		return Preview{}, ctx.Err()
@@ -321,10 +326,8 @@ func resolveReference(base *url.URL, ref string) string {
 	return base.ResolveReference(u).String()
 }
 
-// lookup returns a cached entry when one exists and is still fresh.
+// lookup returns a fresh cached entry. The caller must hold s.mu.
 func (s *Service) lookup(key string) (cacheEntry, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	e, ok := s.entries[key]
 	if !ok {
 		return cacheEntry{}, false
