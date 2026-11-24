@@ -1,7 +1,6 @@
 package store
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -1740,7 +1739,7 @@ func (s *Store) SettleTurn(
 	errMessage string,
 	now time.Time,
 ) error {
-	return s.SettleTurnWithFailureCode(ctx, conversationID, providerTurnID, state, errMessage, "", time.Time{}, now)
+	return s.SettleTurnWithFailureCode(ctx, conversationID, providerTurnID, state, errMessage, "", false, time.Time{}, now)
 }
 
 // SettleTurnWithFailureCode retains a provider-classified cause beside the raw
@@ -1751,6 +1750,7 @@ func (s *Store) SettleTurnWithFailureCode(
 	state domain.TurnState,
 	errMessage string,
 	failureCode domain.ConversationFailureCode,
+	historical bool,
 	usageLimitResetsAt time.Time,
 	now time.Time,
 ) error {
@@ -1771,12 +1771,15 @@ func (s *Store) SettleTurnWithFailureCode(
 		return fmt.Errorf("select turn %s: %w", providerTurnID, err)
 	}
 	// A history replay re-settles a turn without its error, which is not
-	// portable. Keep the live reason and any missing failure classification.
+	// portable. Keep the live reason: a usage limit is classified from it.
 	// The native-history import shares this rule to tell a no-op replay.
 	state = domain.SettledTurnStateKeepingFailure(turn.State, turn.ErrorMessage, state, errMessage)
 	if errMessage == "" && turn.State == state {
 		errMessage = turn.ErrorMessage
-		failureCode = cmp.Or(failureCode, domain.ConversationFailureCode(turn.FailureCode))
+	}
+	// History can include the error text without its provider classification.
+	if historical && state == domain.TurnStateFailed && turn.State == state && failureCode == "" {
+		failureCode = domain.ConversationFailureCode(turn.FailureCode)
 	}
 
 	return settleConversationTurn(ctx, q, turn, state, errMessage, failureCode, usageLimitResetsAt, now)
