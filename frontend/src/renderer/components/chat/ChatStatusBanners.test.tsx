@@ -226,9 +226,14 @@ describe("VersionSwitchBanner", () => {
 		expect(container).toBeEmptyDOMElement();
 	});
 
-	it("tells the user the session moves to the new release when idle", () => {
+	it("explains when a pending version switch can happen", () => {
 		render(<VersionSwitchBanner staleBinary={{ version: "2.1.300", since: "2026-10-15T00:00:00Z" }} />);
-		expect(screen.getByRole("status")).toHaveTextContent("Switching to v2.1.300…");
+		expect(screen.getByRole("status")).toHaveTextContent(
+			"Waiting to switch to v2.1.300" +
+				"By default, the chat must be idle for about 10 minutes, with no active turn, queued messages, or pending approvals. " +
+				"Once eligible, the background switch waits until you leave this chat. " +
+				"If you stay, AO tries to switch before passing your next message to the agent.",
+		);
 	});
 
 	it("asks for a resume instead of promising a switch when the agent stopped", () => {
@@ -236,7 +241,7 @@ describe("VersionSwitchBanner", () => {
 		const status = screen.getByRole("status");
 		expect(status).toHaveTextContent("v2.1.308 installed");
 		expect(status).toHaveTextContent("Resume the agent to start it on the new version.");
-		expect(status).not.toHaveTextContent("Switching");
+		expect(status).not.toHaveTextContent("Waiting to switch");
 	});
 
 	it("stays quiet when moving sessions is turned off", () => {
