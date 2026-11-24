@@ -7,6 +7,7 @@ import (
 	"path"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -364,7 +365,8 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 		case <-time.After(time.Millisecond):
 		}
 	}
-	defer controller.deliveryCheckMu.Unlock()
+	releaseDeliveryCheck := sync.OnceFunc(controller.deliveryCheckMu.Unlock)
+	defer releaseDeliveryCheck()
 	controller.mu.Lock()
 	busy := controller.state != ports.ChatControllerReady ||
 		controller.handoff != controllerHandoffNone ||
@@ -458,6 +460,8 @@ func (s *Service) hibernateChat(ctx context.Context, id domain.SessionID, opts h
 	} else {
 		stopErr = hibernator.Hibernate()
 	}
+	// Let a monitor already waiting for this lock exit before we wait for stopped.
+	releaseDeliveryCheck()
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	if stopErr == nil {

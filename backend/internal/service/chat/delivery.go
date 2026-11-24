@@ -639,20 +639,22 @@ func (c *Controller) startDeliveryMonitor() {
 		return
 	}
 	c.mu.Lock()
-	if c.deliveryMonitorStarted {
-		wake := c.deliveryWake
-		c.mu.Unlock()
+	defer c.mu.Unlock()
+	select {
+	case <-c.deliveryMonitorStop:
+		return
+	default:
+	}
+	if c.deliveryWake != nil {
 		select {
-		case wake <- struct{}{}:
+		case c.deliveryWake <- struct{}{}:
 		default:
 		}
 		return
 	}
-	c.deliveryMonitorStarted = true
 	c.deliveryImmediate = false
 	c.deliveryWake = make(chan struct{}, 1)
-	c.mu.Unlock()
-	go c.monitorDeliveries()
+	c.deliveryMonitor.Go(c.monitorDeliveries)
 }
 
 func (c *Controller) wakeDeliveryMonitor(immediate bool) {
@@ -781,7 +783,7 @@ func (c *Controller) monitorDeliveries() {
 			c.deliveryCheckMu.Unlock()
 		}
 		select {
-		case <-c.stopped:
+		case <-c.deliveryMonitorStop:
 			return
 		case <-wake:
 		case <-timer:
