@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -20,29 +21,46 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionartifacts"
 )
 
-// SessionTurns returns every turn AO holds for a session, oldest first: the
-// completed Chat exchanges merged by time with the stored Terminal UI turns.
-// A turn is written to one of the two stores only, so merging never repeats it.
-// A session that has never been in Chat simply has no conversation.
-func (s *Service) SessionTurns(ctx context.Context, id domain.SessionID) ([]domain.HandoffTurn, error) {
-	return s.sessionTurns(ctx, id, true)
-}
-
-func (s *Service) sessionTurns(ctx context.Context, id domain.SessionID, includeHarnessTriggered bool) ([]domain.HandoffTurn, error) {
-	var turns []domain.HandoffTurn
-	conversation, err := s.store.ConversationForSession(ctx, id)
+// sessionTurns merges completed Chat exchanges and stored Terminal UI turns by
+// time. The history view also includes retired orchestrator conversations and
+// harness-triggered replies.
+func (s *Service) sessionTurns(ctx context.Context, record domain.SessionRecord, forHistory bool) ([]domain.HandoffTurn, error) {
+	var rows ConversationRows
+	conversation, err := s.store.ConversationForSession(ctx, record.ID)
 	switch {
 	case errors.Is(err, domain.ErrNoConversation):
+		if !forHistory {
+			break
+		}
+		var pages []Snapshot
+		var before int64
+		for {
+			page, err := s.snapshotWithoutCurrentConversation(ctx, record, before, 0)
+			if err != nil {
+				return nil, err
+			}
+			pages = append(pages, page)
+			if !page.HasMoreBefore {
+				break
+			}
+			before = page.OldestSequence
+		}
+		// Keep prompts, replies, and provider switches together across pages.
+		for _, page := range slices.Backward(pages) {
+			rows.Turns = append(rows.Turns, page.Turns...)
+			rows.Messages = append(rows.Messages, page.Messages...)
+			rows.Activities = append(rows.Activities, page.Activities...)
+		}
 	case err != nil:
 		return nil, err
 	case s.reader != nil:
-		rows, readErr := s.reader.LoadConversationSnapshot(ctx, conversation.ID)
-		if readErr != nil {
-			return nil, fmt.Errorf("load conversation %s turns: %w", conversation.ID, readErr)
+		rows, err = s.reader.LoadConversationSnapshot(ctx, conversation.ID)
+		if err != nil {
+			return nil, fmt.Errorf("load conversation %s turns: %w", conversation.ID, err)
 		}
-		turns = chatHandoffTurns(rows.Turns, rows.Messages, rows.Activities, includeHarnessTriggered)
 	}
-	stored, err := s.store.ListTerminalTurns(ctx, id)
+	turns := chatHandoffTurns(rows.Turns, rows.Messages, rows.Activities, forHistory)
+	stored, err := s.store.ListTerminalTurns(ctx, record.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +219,7 @@ func (s *Service) ForkHandoffNote(ctx context.Context, source domain.SessionReco
 // handoffNoteInput is the note's input without the changed files, which need
 // git and can run while the outgoing provider stops.
 func (s *Service) handoffNoteInput(ctx context.Context, record domain.SessionRecord, target domain.AgentHarness, switchID string) (domain.HandoffNoteInput, error) {
-	turns, err := s.sessionTurns(ctx, record.ID, false)
+	turns, err := s.sessionTurns(ctx, record, false)
 	if err != nil {
 		return domain.HandoffNoteInput{}, err
 	}
@@ -241,12 +259,14 @@ func (s *Service) handoffArtifacts(ctx context.Context, record domain.SessionRec
 // total number AO holds. It backs `ao session history`, which lets the agent
 // that took over read what the handoff note left out.
 func (s *Service) SessionHistory(ctx context.Context, id domain.SessionID, offset, limit int) ([]domain.HandoffTurn, int, error) {
-	if _, found, err := s.sessions.GetSession(ctx, id); err != nil {
+	record, found, err := s.sessions.GetSession(ctx, id)
+	if err != nil {
 		return nil, 0, err
-	} else if !found {
+	}
+	if !found {
 		return nil, 0, ports.ErrSessionNotFound
 	}
-	turns, err := s.SessionTurns(ctx, id)
+	turns, err := s.sessionTurns(ctx, record, true)
 	if err != nil {
 		return nil, 0, err
 	}
