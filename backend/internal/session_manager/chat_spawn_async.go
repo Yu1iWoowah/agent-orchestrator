@@ -476,7 +476,7 @@ func (m *Manager) failAsyncChatSpawn(ctx context.Context, id domain.SessionID, c
 	defer cancel()
 	// The 201 has already gone out, so the request logger never sees this.
 	captureBackgroundFault(cleanupCtx, cause, "chat_spawn", "")
-	m.stopChatBestEffort(cleanupCtx, id)
+	m.stopChatBestEffort(cleanupCtx, id, "async spawn rollback")
 	// A failed Setup step already explains itself; the spawn stage prefix is noise.
 	message := cause.Error()
 	var setupErr *SetupStepError

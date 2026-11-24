@@ -111,7 +111,7 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 	}
 	pending, err := journal.PendingChatDeliveries(ctx, c.sessionID)
 	if err != nil {
-		return c.blocked("delivery_journal_unavailable", err)
+		return c.deliveryJournalBlocked("", err)
 	}
 	// An attempt from a host that no longer exists can never be answered by
 	// the attached one: settle it first instead of failing the flush on it.
@@ -119,7 +119,7 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 	for _, a := range pending {
 		settled, err := c.settleGoneHostDelivery(ctx, a)
 		if err != nil {
-			return c.blocked("delivery_journal_unavailable", err)
+			return c.deliveryJournalBlocked(a.ID, err)
 		}
 		if !settled {
 			keys = append(keys, deliveryLookup(a))
@@ -133,7 +133,7 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 	for i, r := range receipts {
 		filled, err := c.fillDeliveryLookup(&keys[i], r)
 		if err != nil {
-			return c.blocked("delivery_journal_unavailable", err)
+			return c.deliveryJournalBlocked(keys[i].AttemptID, err)
 		}
 		keysFilled = keysFilled || filled
 	}
@@ -148,7 +148,7 @@ func (c *Controller) settleOutboundLocked(ctx context.Context, notify bool) erro
 	for i, r := range receipts {
 		saved, err := c.commitDeliveryLookupReceipt(ctx, keys[i], r)
 		if err != nil {
-			return c.blocked("delivery_journal_unavailable", err)
+			return c.deliveryJournalBlocked(keys[i].AttemptID, err)
 		}
 		settled := saved.ExecutionSettled || saved.Disposition == "known_not_sent" || saved.Disposition == "accepted" && r.CustodyFlushed && preserves
 		if !settled {
@@ -186,10 +186,12 @@ func (c *Controller) flushDeliveryReceipts(ctx context.Context, observer ports.C
 
 // blocked names this session and a fixed reason for a refused settlement.
 func (c *Controller) blocked(reason string, cause error) error {
-	if reason == "delivery_journal_unavailable" {
-		logDeliveryJournalFailure(c.log, c.sessionID, "", cause)
-	}
 	return &ports.ChatShutdownBlockedError{SessionID: string(c.sessionID), Reason: reason, Cause: cause}
+}
+
+func (c *Controller) deliveryJournalBlocked(attempt string, cause error) error {
+	logDeliveryJournalFailure(c.log, c.sessionID, attempt, cause)
+	return c.blocked("delivery_journal_unavailable", cause)
 }
 
 func logDeliveryJournalFailure(log *slog.Logger, id domain.SessionID, attempt string, cause error) {
@@ -199,11 +201,14 @@ func logDeliveryJournalFailure(log *slog.Logger, id domain.SessionID, attempt st
 	stage := "reconcile"
 	var journal *ports.ChatDeliveryJournalError
 	if errors.As(cause, &journal) {
-		stage = journal.Stage
+		stage, cause = journal.Stage, journal.Cause
+		if journal.AttemptID != "" {
+			attempt = journal.AttemptID
+		}
 	} else if errors.Is(cause, ports.ErrAgentSettingsConflict) {
 		stage = "version_or_owner"
 	}
-	log.Warn("chat delivery journal unavailable", "session", id, "reason", "delivery_journal_unavailable", "stage", stage, "attempt", attempt)
+	log.Warn("chat delivery journal unavailable", "session", id, "reason", "delivery_journal_unavailable", "stage", stage, "attempt", attempt, "error", cause)
 }
 
 // Record an already-observed custody failure before a native read can consume

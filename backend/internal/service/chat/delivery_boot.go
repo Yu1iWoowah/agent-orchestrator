@@ -31,11 +31,11 @@ func (c *Controller) reconcileBeforeHibernate(ctx context.Context) error {
 	defer c.deliveryCheckMu.Unlock()
 	attempts, err := journal.PendingChatDeliveries(ctx, c.sessionID)
 	if err != nil {
-		return c.blocked("delivery_journal_unavailable", err)
+		return c.deliveryJournalBlocked("", err)
 	}
 	for _, a := range attempts {
 		if _, err := c.settlePreviousBootAcceptance(ctx, a); err != nil {
-			return c.blocked("delivery_journal_unavailable", err)
+			return c.deliveryJournalBlocked(a.ID, err)
 		}
 	}
 	return nil

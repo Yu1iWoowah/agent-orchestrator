@@ -3009,7 +3009,7 @@ func (c *Controller) BeginForcedBranchHandoff(ctx context.Context) (domain.Provi
 	if journal, ok := c.store.(chatDeliveryJournal); ok {
 		pending, err := journal.PendingChatDeliveries(ctx, c.sessionID)
 		if err != nil {
-			return domain.ProviderSwitchResult{}, c.blocked("delivery_journal_unavailable", err)
+			return domain.ProviderSwitchResult{}, c.deliveryJournalBlocked("", err)
 		}
 		if len(pending) != 0 {
 			return domain.ProviderSwitchResult{}, c.blocked("delivery_not_settled", nil)

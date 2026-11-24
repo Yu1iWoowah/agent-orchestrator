@@ -444,7 +444,7 @@ func (s *Store) PendingChatDeliveries(ctx context.Context, id domain.SessionID) 
 	for _, row := range rows {
 		a, err := decodeChatDelivery(row)
 		if err != nil {
-			return nil, &ports.ChatDeliveryJournalError{Stage: "validate", Cause: err}
+			return nil, &ports.ChatDeliveryJournalError{Stage: "validate", AttemptID: row.ID, Cause: err}
 		}
 		result = append(result, a)
 	}

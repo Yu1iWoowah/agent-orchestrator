@@ -467,18 +467,16 @@ func mcpServerCommand(executable string) (string, []string) {
 func (m *Manager) stopChatAfterSpawnFailure(ctx context.Context, id domain.SessionID) {
 	cleanupCtx, cancel := spawnRollbackContext(ctx)
 	defer cancel()
-	m.stopChatBestEffort(cleanupCtx, id)
+	m.stopChatBestEffort(cleanupCtx, id, "spawn rollback")
 }
 
-// stopChatBestEffort closes a controller during rollback. A failure here is
-// logged rather than returned: the spawn is already failing, and the caller's
-// error is the one worth surfacing.
-func (m *Manager) stopChatBestEffort(ctx context.Context, id domain.SessionID) {
+// stopChatBestEffort closes a controller and logs any failure for the caller's operation.
+func (m *Manager) stopChatBestEffort(ctx context.Context, id domain.SessionID, operation string) {
 	if m.chat == nil {
 		return
 	}
 	if err := m.chat.StopChat(ctx, id); err != nil {
-		m.logger.Warn("spawn rollback: close chat controller", "sessionID", id, "error", err)
+		m.logger.Warn("failed to close chat controller", "operation", operation, "sessionID", id, "error", err)
 	}
 }
 
@@ -776,7 +774,7 @@ func (m *Manager) resumeChatController(
 	})
 	if err != nil {
 		if completionErr != nil {
-			m.stopChatBestEffort(ctx, rec.ID)
+			m.stopChatBestEffort(ctx, rec.ID, operation)
 			return RestoreResult{}, relaunchFailed("record launch", fmt.Errorf("%s %s: completed: %w", operation, rec.ID, completionErr))
 		}
 		// Another app can hold an imported conversation after adoption too.

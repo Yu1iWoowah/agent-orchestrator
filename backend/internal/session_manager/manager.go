@@ -3121,7 +3121,7 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 	// process, and closing it also settles any turn left in flight so a later
 	// read does not show work that is no longer running.
 	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
-		m.stopChatBestEffort(ctx, id)
+		m.stopChatBestEffort(ctx, id, "kill")
 	} else if handle.ID != "" {
 		// Any Destroy error stops the kill. Every runtime's Destroy already
 		// returns nil when it confirms the session is absent, so an error means
@@ -3310,7 +3310,7 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 		}
 		stopCtx, cancelStop := context.WithTimeout(ctx, budget)
 		defer cancelStop()
-		m.stopChatBestEffort(stopCtx, id)
+		m.stopChatBestEffort(stopCtx, id, "retire replacement")
 	}
 	rows, workspaceProject, rowErr := m.workspaceProjectRows(ctx, rec)
 	if rowErr != nil {
