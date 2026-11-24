@@ -98,12 +98,12 @@ func TestUnconfirmedReviewerStopOwnsAccountAfterSQLiteReopen(t *testing.T) {
 	table := newScriptedTable("101 1 100 0:00 pane", "202 101 100 0:00 provider", "303 1 100 0:00 unrelated")
 	runtime := &rootedRuntime{fakeRuntime: &fakeRuntime{alive: true, supervisedRecord: true}, roots: []int{101}}
 	launcher := receiptTestLauncher(root, runtime, table, "boot-1")
-	launcher.forceStop.kill = func(pid int) error {
-		if pid == 202 {
-			table.killed = append(table.killed, pid)
+	launcher.forceStop.kill = func(process capturedProcess) error {
+		if process.pid == 202 {
+			table.killed = append(table.killed, process.pid)
 			return nil
 		}
-		return table.kill(pid)
+		return table.kill(process)
 	}
 	stopTestExec(t, root, `CREATE TRIGGER injected_stop_insert BEFORE INSERT ON reviewer_stop_accounts
 		BEGIN SELECT RAISE(ABORT, 'injected stop insert'); END`)
@@ -214,11 +214,11 @@ func TestReviewerStopSealsOnlyAfterFinalLineage(t *testing.T) {
 	rt := &rootedRuntime{fakeRuntime: &fakeRuntime{}, roots: []int{101}}
 	launcher := receiptTestLauncher(root, rt, table, "boot-1")
 	s.launcher = launcher
-	launcher.forceStop.freeze = func(pid int) error {
-		if pid == 202 {
+	launcher.forceStop.freeze = func(process capturedProcess) error {
+		if process.pid == 202 {
 			return errors.New("freeze denied")
 		}
-		return table.freeze(pid)
+		return table.freeze(process)
 	}
 	if written, err := s.beginDurableReviewerStop(ctx, s.store, launcher, review); !written || err == nil {
 		t.Fatalf("failed freeze must follow the receipt commit: written=%v err=%v", written, err)
@@ -252,10 +252,10 @@ func TestReviewerStopSealsOnlyAfterFinalLineage(t *testing.T) {
 
 	// The original runtime remains observable, and all members later enter a
 	// stopped state independently of the new daemon.
-	if err := table.freeze(202); err != nil {
+	if err := table.freeze(capturedProcess{pid: 202}); err != nil {
 		t.Fatal(err)
 	}
-	if err := table.freeze(204); err != nil {
+	if err := table.freeze(capturedProcess{pid: 204}); err != nil {
 		t.Fatal(err)
 	}
 	s.pass(t)
@@ -830,11 +830,11 @@ func TestLateSpawnFailureRetainsStopOwnerAfterReopen(t *testing.T) {
 	}
 	launcher.reviewers = fakeReviewerResolver{reviewer: &fakeReviewerForPreflight{Argv: []string{executable}}, ok: true}
 	launcher.executable = os.Executable
-	launcher.forceStop.kill = func(pid int) error {
-		if pid == 202 {
+	launcher.forceStop.kill = func(process capturedProcess) error {
+		if process.pid == 202 {
 			return nil
 		}
-		return table.kill(pid)
+		return table.kill(process)
 	}
 	s.launcher = launcher
 	launchCtx, cancel := context.WithCancel(ctx)
