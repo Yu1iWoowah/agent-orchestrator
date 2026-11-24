@@ -44,8 +44,10 @@ type SCMPRRef struct {
 	// DetailsUpdatedAt is the provider updatedAt of the PR state the caller's
 	// stored details were read from. While the PR's updatedAt still equals it,
 	// a provider may leave the observation's PR.Details nil instead of reading
-	// them again. Zero asks for the details unconditionally.
+	// them again. Zero requests fresh details unless OmitDetails is set.
 	DetailsUpdatedAt time.Time
+	// OmitDetails skips display-only PR details regardless of DetailsUpdatedAt.
+	OmitDetails bool
 }
 
 // SCMGuardResult is an ETag-style cache guard result. NotModified maps to HTTP

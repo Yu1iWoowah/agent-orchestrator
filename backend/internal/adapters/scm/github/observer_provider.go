@@ -255,11 +255,10 @@ func stableCheckFingerprint(parts []string) string {
 // distinctly from a transient provider failure. The observer owns chunking;
 // this method rejects larger batches so tests catch accidental over-batching.
 //
-// PR details cost far more than the rest of the query, so they are read only
-// when they can have changed. A ref with no DetailsUpdatedAt gets them in the
-// batch query itself. A ref with one gets the light fields; if the PR's
-// updatedAt has moved from it, one follow-up query reads the details of every
-// such PR in the batch, and otherwise the observation's Details stay nil.
+// PR details cost far more than the rest of the query. Unless OmitDetails is
+// set, a ref with no DetailsUpdatedAt gets them in the batch query itself.
+// A ref with one gets the light fields first. If the PR's updatedAt has moved,
+// one follow-up query reads the details of every such PR in the batch.
 func (p *Provider) FetchPullRequests(ctx context.Context, refs []ports.SCMPRRef) ([]ports.SCMObservation, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -296,6 +295,9 @@ func (p *Provider) FetchPullRequests(ctx context.Context, refs []ports.SCMPRRef)
 		}
 		p.markCancelledGateFailures(ctx, ref.Repo.Owner, ref.Repo.Name, pr)
 		out[i] = scmObservationFromGraphQL(ref, pr)
+		if ref.OmitDetails {
+			continue
+		}
 		switch {
 		case ref.DetailsUpdatedAt.IsZero():
 			details[i] = pullRequestDetailsFromGraphQL(pr)
@@ -455,10 +457,10 @@ func restListPullToSCM(pull restListPull) ports.SCMPRObservation {
 }
 
 // buildSCMBatchQuery selects the light PR fields for every ref, plus the
-// details fields for a ref with no DetailsUpdatedAt.
+// details fields for a ref that requests them and has no DetailsUpdatedAt.
 func buildSCMBatchQuery(refs []ports.SCMPRRef) (string, []string) {
 	return buildPRQuery(refs, func(ref ports.SCMPRRef) string {
-		if ref.DetailsUpdatedAt.IsZero() {
+		if !ref.OmitDetails && ref.DetailsUpdatedAt.IsZero() {
 			return scmPRFields() + scmPRDetailsFields()
 		}
 		return scmPRFields()

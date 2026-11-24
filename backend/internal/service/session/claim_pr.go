@@ -223,6 +223,8 @@ func (s *Service) sameRenamedGitHubRepo(ctx context.Context, prURL, origin strin
 }
 
 func (s *Service) fetchClaimObservation(ctx context.Context, ref ports.SCMPRRef) (ports.SCMObservation, error) {
+	// Claim persists PR state, CI, and review facts. Display details are read separately.
+	ref.OmitDetails = true
 	batch, err := s.scm.FetchPullRequests(ctx, []ports.SCMPRRef{ref})
 	if err != nil {
 		if errors.Is(err, ports.ErrSCMNotFound) {
