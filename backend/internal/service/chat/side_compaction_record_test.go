@@ -77,8 +77,9 @@ func TestSideCompactionRegistrationPrecedesIO(t *testing.T) {
 			svc, db, conv, home := newRecordHarness(t, provider)
 			conv.io = func() {
 				rows, err := db.SideCompactions(ctx, true)
-				if err != nil || len(rows) != 1 || rows[0].NativeHome != home || rows[0].NativeID != "provider-side-1" || rows[0].Provider != provider || rows[0].PermissionMode != domain.PermissionModeBypassPermissions || rows[0].State != domain.SideCompactionPending || !bytes.Contains(rows[0].Content, []byte("draft before")) {
-					t.Fatalf("before I/O: %+v, %v", rows, err)
+				content, contentErr := db.SideCompactionContent(ctx, "side")
+				if err != nil || len(rows) != 1 || rows[0].NativeHome != home || rows[0].NativeID != "provider-side-1" || rows[0].Provider != provider || rows[0].PermissionMode != domain.PermissionModeBypassPermissions || rows[0].State != domain.SideCompactionPending || contentErr != nil || !bytes.Contains(content, []byte("draft before")) {
+					t.Fatalf("before I/O: %+v, %v; content read: %v", rows, err, contentErr)
 				}
 			}
 			if _, err := svc.CompactSideChat(ctx, "session", "side"); err == nil || conv.count != 1 {
@@ -129,8 +130,9 @@ func TestSideCompactionDurableUpdatesAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := db.SideCompactions(ctx, true)
-	if err != nil || len(rows) != 1 || bytes.Contains(rows[0].Content, []byte("aW1hZ2UgYnl0ZXM=")) {
-		t.Fatalf("attachment body stored in database: %v, %v", rows, err)
+	content, contentErr := db.SideCompactionContent(ctx, "side")
+	if err != nil || len(rows) != 1 || contentErr != nil || bytes.Contains(content, []byte("aW1hZ2UgYnl0ZXM=")) {
+		t.Fatalf("attachment body stored in database: %v, %v; content read: %v", rows, err, contentErr)
 	}
 	// Rebuild from SQLite alone: no Electron recovery payload or live runtime.
 	after := New(Options{Store: db, DataDir: svc.dataDir, AppRunID: "new-run", Sessions: sideSessionReader{}})
@@ -291,8 +293,9 @@ func TestSideCompactionDraftReceiptImagesUseReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := db.SideCompactions(ctx, true)
-	if err != nil || len(rows) != 1 || bytes.Contains(rows[0].Content, []byte("aW1hZ2UgYnl0ZXM=")) {
-		t.Fatalf("draft request image body stored in DB: %+v, %v", rows, err)
+	content, contentErr := db.SideCompactionContent(ctx, "side")
+	if err != nil || len(rows) != 1 || contentErr != nil || bytes.Contains(content, []byte("aW1hZ2UgYnl0ZXM=")) {
+		t.Fatalf("draft request image body stored in DB: %+v, %v; content read: %v", rows, err, contentErr)
 	}
 	after := New(Options{Store: db, DataDir: svc.dataDir, AppRunID: "new-run", Sessions: sideSessionReader{}})
 	projection := after.sides.store.(*memorySideStore)
@@ -329,8 +332,9 @@ func TestSideCompactionRollbackPreservesEarlierContent(t *testing.T) {
 		t.Fatalf("failed registration = %v, I/O = %d", err, conv.count)
 	}
 	rows, err := db.SideCompactions(ctx, false)
-	if err != nil || len(rows) != 1 || rows[0].ID != previous.ID || !bytes.Equal(rows[0].Content, previous.Content) {
-		t.Fatalf("earlier content changed: %+v, %v", rows, err)
+	content, contentErr := db.SideCompactionContent(ctx, previous.SideID)
+	if err != nil || len(rows) != 1 || rows[0].ID != previous.ID || contentErr != nil || !bytes.Equal(content, previous.Content) {
+		t.Fatalf("earlier content changed: %+v, %v; content read: %v", rows, err, contentErr)
 	}
 }
 
@@ -355,8 +359,9 @@ func TestSideCompactionFailedContentUpdateIsNotAccepted(t *testing.T) {
 		t.Fatalf("failed edit remained visible: draft=%q err=%v", draft, err)
 	}
 	rows, err := db.SideCompactions(ctx, true)
-	if err != nil || len(rows) != 1 || bytes.Contains(rows[0].Content, []byte("uncommitted")) {
-		t.Fatalf("failed edit changed durable content: %+v, %v", rows, err)
+	content, contentErr := db.SideCompactionContent(ctx, "side")
+	if err != nil || len(rows) != 1 || contentErr != nil || bytes.Contains(content, []byte("uncommitted")) {
+		t.Fatalf("failed edit changed durable content: %+v, %v; content read: %v", rows, err, contentErr)
 	}
 }
 
@@ -385,8 +390,9 @@ func TestSideCompactionNormalTransitions(t *testing.T) {
 					t.Fatal(err)
 				}
 				if len(rows) == 1 && rows[0].State == state {
-					if len(rows[0].Content) != 0 {
-						t.Fatal("terminal result retained side snapshot")
+					content, err := db.SideCompactionContent(ctx, "side")
+					if err != nil || len(content) != 0 {
+						t.Fatal("terminal result retained side snapshot", err)
 					}
 					runtime := svc.sides.runtimes["side"]
 					runtime.mu.Lock()
@@ -431,8 +437,9 @@ func TestSideCompactionOnlyUserClosePersistsClosed(t *testing.T) {
 	} {
 		_ = close()
 		rows, err := db.SideCompactions(ctx, true)
-		if err != nil || len(rows) != 1 || rows[0].Closed || len(rows[0].Content) == 0 {
-			t.Fatalf("non-user source closed obligation: %+v, %v", rows, err)
+		content, contentErr := db.SideCompactionContent(ctx, "side")
+		if err != nil || len(rows) != 1 || rows[0].Closed || contentErr != nil || len(content) == 0 {
+			t.Fatalf("non-user source closed obligation: %+v, %v; content read: %v", rows, err, contentErr)
 		}
 	}
 	stale, err := svc.ExportSideChatLaunch(ctx, "run")
@@ -446,8 +453,9 @@ func TestSideCompactionOnlyUserClosePersistsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := db.SideCompactions(ctx, false)
-	if err != nil || len(rows) != 1 || !rows[0].Closed || rows[0].State != domain.SideCompactionUnknown || len(rows[0].Content) != 0 {
-		t.Fatalf("explicit close metadata: %+v, %v", rows, err)
+	content, contentErr := db.SideCompactionContent(ctx, "side")
+	if err != nil || len(rows) != 1 || !rows[0].Closed || rows[0].State != domain.SideCompactionUnknown || contentErr != nil || len(content) != 0 {
+		t.Fatalf("explicit close metadata: %+v, %v; content read: %v", rows, err, contentErr)
 	}
 	after := New(Options{Store: db, DataDir: svc.dataDir, AppRunID: "run", Sessions: sideSessionReader{}})
 	projection := after.sides.store.(*memorySideStore)

@@ -253,8 +253,12 @@ func TestSideCompactionRetirementRemovesImages(t *testing.T) {
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("record: %v, %v", rows, err)
 	}
+	content, err := db.SideCompactionContent(t.Context(), rows[0].SideID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var saved durableSideContent
-	if err := json.Unmarshal(rows[0].Content, &saved); err != nil {
+	if err := json.Unmarshal(content, &saved); err != nil {
 		t.Fatal(err)
 	}
 	var image string

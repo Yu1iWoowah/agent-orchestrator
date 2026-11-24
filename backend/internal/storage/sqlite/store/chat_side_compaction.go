@@ -73,7 +73,7 @@ func (s *Store) RegisterSideCompaction(ctx context.Context, r domain.SideCompact
 	})
 }
 
-// SideCompactions reads durable metadata and the current side content.
+// SideCompactions reads durable compaction metadata.
 func (s *Store) SideCompactions(ctx context.Context, unresolved bool) ([]domain.SideCompaction, error) {
 	rows, err := s.qr.ListSideCompactions(ctx, unresolved)
 	if err != nil {
@@ -86,7 +86,6 @@ func (s *Store) SideCompactions(ctx context.Context, unresolved bool) ([]domain.
 			return nil, err
 		}
 		r.State, r.Historical, r.Closed = domain.SideCompactionState(row.State), row.Historical != 0, row.Closed != 0
-		r.Content = json.RawMessage(row.ContentJson)
 		out = append(out, r)
 	}
 	return out, nil
@@ -109,6 +108,24 @@ func (s *Store) SideCompactionRecovery(ctx context.Context) ([]domain.SideCompac
 func (s *Store) SideCompactionContent(ctx context.Context, sideID string) (json.RawMessage, error) {
 	content, err := s.qr.SideCompactionContent(ctx, sideID)
 	return json.RawMessage(content), err
+}
+
+// UnresolvedSideCompactionWithContent reads both parts of the side's protection from one snapshot.
+func (s *Store) UnresolvedSideCompactionWithContent(ctx context.Context, sideID string) (domain.SideCompaction, bool, error) {
+	row, err := s.qr.UnresolvedSideCompactionWithContent(ctx, sideID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.SideCompaction{}, false, nil
+	}
+	if err != nil {
+		return domain.SideCompaction{}, false, err
+	}
+	var r domain.SideCompaction
+	if err := json.Unmarshal([]byte(row.RecordJson), &r); err != nil {
+		return domain.SideCompaction{}, false, err
+	}
+	r.State, r.Historical, r.Closed = domain.SideCompactionState(row.State), row.Historical != 0, row.Closed != 0
+	r.Content = json.RawMessage(row.ContentJson)
+	return r, true, nil
 }
 
 // SideWithUnresolvedNativeCompaction returns the side protecting the native ID, if any.

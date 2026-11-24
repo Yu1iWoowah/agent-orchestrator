@@ -22,8 +22,9 @@ func TestSideCompactionTransitionsAndContent(t *testing.T) {
 				t.Fatal(err)
 			}
 			rows, err := s.SideCompactions(ctx, true)
-			if err != nil || len(rows) != 1 || string(rows[0].Content) != `{"draft":"after"}` {
-				t.Fatalf("content = %+v, %v", rows, err)
+			content, contentErr := s.SideCompactionContent(ctx, r.SideID)
+			if err != nil || len(rows) != 1 || contentErr != nil || string(content) != `{"draft":"after"}` {
+				t.Fatalf("records = %+v, %v; content = %s, %v", rows, err, content, contentErr)
 			}
 			if err := s.TransitionSideCompaction(ctx, r.ID, "replacement-host", state, false, false); !errors.Is(err, domain.ErrSideCompactionTransition) {
 				t.Fatalf("replacement host changed result: %v", err)
@@ -45,8 +46,9 @@ func TestSideCompactionTransitionsAndContent(t *testing.T) {
 				t.Fatalf("unresolved = %+v, %v", rows, err)
 			}
 			rows, err = s.SideCompactions(ctx, false)
-			if err != nil || len(rows) != 1 || len(rows[0].Content) != 0 || rows[0].State != state || rows[0].Closed != historical {
-				t.Fatalf("metadata = %+v, %v", rows, err)
+			content, contentErr = s.SideCompactionContent(ctx, r.SideID)
+			if err != nil || len(rows) != 1 || contentErr != nil || len(content) != 0 || rows[0].State != state || rows[0].Closed != historical {
+				t.Fatalf("metadata = %+v, %v; content = %s, %v", rows, err, content, contentErr)
 			}
 		})
 	}

@@ -11,9 +11,11 @@ import (
 // SideCompactionStore owns atomic registration and unresolved side content.
 type SideCompactionStore interface {
 	RegisterSideCompaction(context.Context, domain.SideCompaction) error
+	// SideCompactions lists compaction metadata, optionally limited to unresolved records.
 	SideCompactions(context.Context, bool) ([]domain.SideCompaction, error)
 	SideCompactionRecovery(context.Context) ([]domain.SideCompaction, error)
 	SideCompactionContent(context.Context, string) (json.RawMessage, error)
+	UnresolvedSideCompactionWithContent(context.Context, string) (domain.SideCompaction, bool, error)
 	SideWithUnresolvedNativeCompaction(context.Context, string, string) (string, error)
 	HasUnresolvedSideCompaction(context.Context, string) (bool, error)
 	UnresolvedSideForClose(context.Context, string) (domain.SideConversation, bool, error)

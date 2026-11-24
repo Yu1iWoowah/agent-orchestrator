@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -24,7 +23,7 @@ func TestSideProtectionProjection(t *testing.T) {
 		{"settled", domain.SideCompactionSettled, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			row := domain.SideCompaction{State: tc.state, Closed: tc.closed, Provider: domain.HarnessCodex, Content: json.RawMessage(`{}`)}
+			row := domain.SideCompaction{State: tc.state, Closed: tc.closed, Provider: domain.HarnessCodex}
 			before := row
 			p := svc.sideProtectionStatus(t.Context(), row)
 			if p.Result != tc.state || p.Isolated != tc.isolated || p.ShutdownBlocked != tc.isolated || p.Closed != tc.closed {

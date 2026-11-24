@@ -131,33 +131,19 @@ func (q *Queries) ListSideCompactionRecovery(ctx context.Context) ([]ListSideCom
 }
 
 const listSideCompactions = `-- name: ListSideCompactions :many
-SELECT c.id, c.side_id, c.native_home, c.native_id, c.epoch, c.state, c.historical, c.closed, c.record_json,COALESCE(s.content_json,'') AS content_json FROM chat_side_compactions c
-LEFT JOIN chat_side_contents s ON s.side_id=c.side_id
-WHERE ?1=0 OR (c.closed=0 AND c.state IN ('pending','unknown'))
+SELECT id, side_id, native_home, native_id, epoch, state, historical, closed, record_json FROM chat_side_compactions
+WHERE ?1=0 OR (closed=0 AND state IN ('pending','unknown'))
 `
 
-type ListSideCompactionsRow struct {
-	ID          string
-	SideID      string
-	NativeHome  string
-	NativeID    string
-	Epoch       string
-	State       string
-	Historical  int64
-	Closed      int64
-	RecordJson  string
-	ContentJson string
-}
-
-func (q *Queries) ListSideCompactions(ctx context.Context, unresolvedOnly interface{}) ([]ListSideCompactionsRow, error) {
+func (q *Queries) ListSideCompactions(ctx context.Context, unresolvedOnly interface{}) ([]ChatSideCompaction, error) {
 	rows, err := q.db.QueryContext(ctx, listSideCompactions, unresolvedOnly)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListSideCompactionsRow{}
+	items := []ChatSideCompaction{}
 	for rows.Next() {
-		var i ListSideCompactionsRow
+		var i ChatSideCompaction
 		if err := rows.Scan(
 			&i.ID,
 			&i.SideID,
@@ -168,7 +154,6 @@ func (q *Queries) ListSideCompactions(ctx context.Context, unresolvedOnly interf
 			&i.Historical,
 			&i.Closed,
 			&i.RecordJson,
-			&i.ContentJson,
 		); err != nil {
 			return nil, err
 		}
@@ -238,6 +223,36 @@ func (q *Queries) SideWithUnresolvedNativeCompaction(ctx context.Context, arg Si
 	var column_1 string
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const unresolvedSideCompactionWithContent = `-- name: UnresolvedSideCompactionWithContent :one
+SELECT c.state,c.historical,c.closed,c.record_json,COALESCE(s.content_json,'') AS content_json
+FROM chat_side_compactions c
+LEFT JOIN chat_side_contents s ON s.side_id=c.side_id
+WHERE c.side_id=? AND c.closed=0 AND c.state IN ('pending','unknown')
+ORDER BY c.rowid
+LIMIT 1
+`
+
+type UnresolvedSideCompactionWithContentRow struct {
+	State       string
+	Historical  int64
+	Closed      int64
+	RecordJson  string
+	ContentJson string
+}
+
+func (q *Queries) UnresolvedSideCompactionWithContent(ctx context.Context, sideID string) (UnresolvedSideCompactionWithContentRow, error) {
+	row := q.db.QueryRowContext(ctx, unresolvedSideCompactionWithContent, sideID)
+	var i UnresolvedSideCompactionWithContentRow
+	err := row.Scan(
+		&i.State,
+		&i.Historical,
+		&i.Closed,
+		&i.RecordJson,
+		&i.ContentJson,
+	)
+	return i, err
 }
 
 const unresolvedSideForClose = `-- name: UnresolvedSideForClose :one
