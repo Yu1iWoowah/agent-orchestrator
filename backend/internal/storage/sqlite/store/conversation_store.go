@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -1770,11 +1771,12 @@ func (s *Store) SettleTurnWithFailureCode(
 		return fmt.Errorf("select turn %s: %w", providerTurnID, err)
 	}
 	// A history replay re-settles a turn without its error, which is not
-	// portable. Keep the live reason: a usage limit is classified from it.
+	// portable. Keep the live reason and any missing failure classification.
 	// The native-history import shares this rule to tell a no-op replay.
 	state = domain.SettledTurnStateKeepingFailure(turn.State, turn.ErrorMessage, state, errMessage)
 	if errMessage == "" && turn.State == state {
 		errMessage = turn.ErrorMessage
+		failureCode = cmp.Or(failureCode, domain.ConversationFailureCode(turn.FailureCode))
 	}
 
 	return settleConversationTurn(ctx, q, turn, state, errMessage, failureCode, usageLimitResetsAt, now)
