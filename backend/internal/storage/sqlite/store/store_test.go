@@ -2317,7 +2317,7 @@ func TestUpsertSessionWorktreeEmptyStateDefaultsToActive(t *testing.T) {
 	}
 }
 
-func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
+func TestRememberProjectPermissionsDoesNotChangeExistingSessions(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	seedProject(t, s, "permissions")
@@ -2329,8 +2329,7 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 	for _, tc := range []struct {
 		kind  domain.SessionKind
 		saved domain.PermissionMode
-		want  domain.PermissionMode
-	}{{domain.KindWorker, "", domain.PermissionModeAcceptEdits}, {domain.KindOrchestrator, "", domain.PermissionModeDefault}, {domain.KindWorker, domain.PermissionModeAuto, domain.PermissionModeAuto}} {
+	}{{domain.KindWorker, ""}, {domain.KindOrchestrator, ""}, {domain.KindWorker, domain.PermissionModeAuto}} {
 		rec := sampleRecord("permissions")
 		rec.Kind = tc.kind
 		rec.Metadata.Permissions = tc.saved
@@ -2342,10 +2341,6 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 		row.ProvisionState = domain.SessionProvisionReady
 		row.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
 		row.OutputType = domain.SessionOutputNone
-		row.Metadata.Permissions = tc.want
-		if tc.saved == "" {
-			row.Revision++ // Pinning permissions writes even without changing updated_at.
-		}
 		rows = append(rows, row)
 	}
 	if _, ok, err := s.SetProjectPermissions(ctx, "permissions", domain.PermissionModeBypassPermissions); err != nil || !ok {
@@ -2357,7 +2352,7 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 			t.Fatalf("load: %v %v", ok, err)
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("session mutated beyond permission pin: got %#v want %#v", got, want)
+			t.Fatalf("remembering project permissions changed session: got %#v want %#v", got, want)
 		}
 	}
 	if _, ok, err := s.SetProjectPermissions(ctx, "permissions", domain.PermissionModeDefault); err != nil || !ok {
@@ -2369,7 +2364,7 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got.Metadata.Permissions != want.Metadata.Permissions {
-			t.Fatalf("repinned existing session: %q", got.Metadata.Permissions)
+			t.Fatalf("remembering project permissions changed session permissions: got %q want %q", got.Metadata.Permissions, want.Metadata.Permissions)
 		}
 	}
 }

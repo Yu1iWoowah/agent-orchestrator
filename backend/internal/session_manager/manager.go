@@ -2749,10 +2749,15 @@ func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) por
 		restored.Mode = rec.Metadata.Model
 	}
 	if restored.Permissions == "" {
-		restored.Permissions = ports.PermissionModeDefault
-		if rec.NeedsImportResume() {
+		switch {
+		case rec.NeedsImportResume():
 			// The first AO launch of an import chooses its starting policy.
 			restored.Permissions = effectiveAgentConfig(rec.Harness, rec.Kind, cfg).Permissions
+		case rec.Harness == domain.HarnessCodex:
+			// Codex's default bypasses approvals and sandboxing.
+			restored.Permissions = ports.PermissionModeAcceptEdits
+		default:
+			restored.Permissions = ports.PermissionModeDefault
 		}
 	}
 	return restored
