@@ -1022,6 +1022,7 @@ func Run(ctx context.Context, cfg Config) error {
 			_ = killProviderProcess(context.WithoutCancel(ctx), child)
 			return err
 		}
+		h.acp.delivery = h.delivery
 		defer func() { _ = h.acp.close(context.WithoutCancel(ctx)) }()
 	}
 	h.compactionDataDir = cfg.DataDir

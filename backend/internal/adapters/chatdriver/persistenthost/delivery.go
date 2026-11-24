@@ -409,6 +409,29 @@ func (j *deliveryJournal) observe(frame []byte) error {
 	return nil
 }
 
+// The relay still has the original attempt key after observe retired the RPC.
+// The error proves execution ended, while acceptance remains unknown.
+func (j *deliveryJournal) settleStalledPromptError(id, params json.RawMessage) error {
+	var request struct {
+		Meta map[string]json.RawMessage `json:"_meta"`
+	}
+	_ = json.Unmarshal(params, &request)
+	var attempt string
+	_ = json.Unmarshal(request.Meta[DeliveryMetaKey], &attempt)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	record, ok := j.records[attempt]
+	if !ok || record.Receipt.ProviderRequestID != rpcCorrelation(id) {
+		return nil
+	}
+	record.Receipt.ExecutionSettled = true
+	record.Receipt.ObservedAt = time.Now().UTC()
+	record.Receipt.ProgressSequence++
+	j.records[attempt] = record
+	j.clearWaiting(attempt, record.NativeTurn)
+	return j.append(record)
+}
+
 // ACP notifications lack a request ID. Multiple active prompts are ambiguous;
 // a completed/error request never borrows another prompt's session broadcasts.
 func (j *deliveryJournal) activeACPAttempt(session string) string {

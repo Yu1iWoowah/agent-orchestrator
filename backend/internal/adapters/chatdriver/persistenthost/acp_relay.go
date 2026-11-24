@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -104,6 +105,7 @@ type acpRelay struct {
 	state             ACPState
 	promptJournal     *acpPromptJournal
 	unpromptedJournal *acpPromptJournal
+	delivery          *deliveryJournal
 	promptResult      []byte
 	// availableCommands holds the latest command catalog the adapter announced
 	// and availableCommandsSession the session it belongs to; see
@@ -598,6 +600,11 @@ func (r *acpRelay) providerFrame(
 		return nil, false, nil
 	}
 	if request.method == "session/prompt" {
+		if rpcError := envelope["error"]; !r.stallCancelledAt.IsZero() && r.delivery != nil && len(rpcError) > 0 && rpcError[0] == '{' {
+			if err := r.delivery.settleStalledPromptError(id, request.params); err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
+			}
+		}
 		return r.settleTurn(id, request, envelope, frame, generation, attached)
 	}
 	if request.generation != generation || !attached {
