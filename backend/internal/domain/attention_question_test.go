@@ -80,8 +80,8 @@ func TestAttentionPayloadRejectsInvalidStructure(t *testing.T) {
 			}
 		}},
 		{"one option", "options", func(p *AttentionQuestionPayload) { p.Questions[0].Options = p.Questions[0].Options[:1] }},
-		{"five options", "options", func(p *AttentionQuestionPayload) {
-			for i := 2; i < 5; i++ {
+		{"nine options", "options", func(p *AttentionQuestionPayload) {
+			for i := 2; i < 9; i++ {
 				p.Questions[0].Options = append(p.Questions[0].Options, AttentionQuestionOption{ID: fmt.Sprint(i), Label: fmt.Sprint(i), Description: "A distinct option."})
 			}
 		}},
@@ -95,11 +95,6 @@ func TestAttentionPayloadRejectsInvalidStructure(t *testing.T) {
 		{"key with whitespace", "key", func(p *AttentionQuestionPayload) { p.Questions[0].Key = " Q1" }},
 		{"long key", "key", func(p *AttentionQuestionPayload) { p.Questions[0].Key = strings.Repeat("a", 65) }},
 		{"long id", "id", func(p *AttentionQuestionPayload) { p.Questions[0].Options[0].ID = strings.Repeat("a", 65) }},
-		{"nonfirst recommendation", "recommended", func(p *AttentionQuestionPayload) { p.Questions[0].Options[1].Recommended = true }},
-		{"two recommendations", "recommended", func(p *AttentionQuestionPayload) {
-			p.Questions[0].Options[0].Recommended = true
-			p.Questions[0].Options[1].Recommended = true
-		}},
 		{"unknown version", "schemaVersion", func(p *AttentionQuestionPayload) { p.SchemaVersion = 2 }},
 		{"missing title", "title", func(p *AttentionQuestionPayload) { p.Title = " \t" }},
 		{"missing explanation", "explanation", func(p *AttentionQuestionPayload) { p.Explanation = "" }},
@@ -120,9 +115,11 @@ func TestAttentionPayloadRejectsInvalidStructure(t *testing.T) {
 	allowed := testAttentionPayload()
 	allowed.Questions[0].Key = strings.Repeat("A", 64)
 	allowed.Questions[0].Options[0].ID = strings.Repeat("B", 64)
-	allowed.Questions[0].Options = append(allowed.Questions[0].Options,
-		AttentionQuestionOption{ID: "third", Label: "Third", Description: "Third."},
-		AttentionQuestionOption{ID: "fourth", Label: "Fourth", Description: "Fourth."})
+	for i := 2; i < 8; i++ {
+		allowed.Questions[0].Options = append(allowed.Questions[0].Options, AttentionQuestionOption{
+			ID: fmt.Sprint(i), Label: fmt.Sprint(i), Description: "A distinct option.", Recommended: i == 2 || i == 7,
+		})
+	}
 	if _, err := ParseAttentionQuestionPayload(attentionJSON(t, allowed), AttentionQuestionKindQuestion); err != nil {
 		t.Fatal(err)
 	}

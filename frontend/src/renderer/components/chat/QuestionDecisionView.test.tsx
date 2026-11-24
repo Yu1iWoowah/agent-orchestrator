@@ -26,14 +26,19 @@ function show(props: Parameters<typeof Subject>[0] = {}) {
 	return render(<QueryClientProvider client={client}><Subject {...props} /></QueryClientProvider>);
 }
 
-it("shows descriptions and one recommendation with no preselected choice", async () => {
-	show();
+it("shows eight options and multiple recommendations with no preselected choice", async () => {
+	const question = sessionQuestionFixture();
+	const checks = question.payload.questions[1];
+	checks.options.push(...Array.from({ length: 6 }, (_, index) => ({
+		id: `check-${index}`, label: `Check ${index + 3}`, description: "Run this check.", recommended: index === 0 || index === 5,
+	})));
+	show({ question });
 	const stage = await screen.findByRole("radio", { name: /Staging/ });
 	expect(stage).not.toBeChecked();
 	for (const control of [...screen.getAllByRole("radio"), ...screen.getAllByRole("checkbox")]) expect(control).not.toBeChecked();
-	expect(screen.getAllByText("Recommended")).toHaveLength(1);
+	expect(screen.getAllByText("Recommended")).toHaveLength(3);
 	expect(screen.getByText("Validate with internal users first.")).toBeVisible();
-	expect(screen.getByText("Run automated regression checks.")).toBeVisible();
+	expect(screen.getByRole("checkbox", { name: /Check 8/ })).toBeVisible();
 });
 
 it("submits through the UI when inaccessible remote drafts fill local persistence", async () => {

@@ -10,6 +10,8 @@ export interface QuestionField { selectedOptionIds: string[]; otherSelected: boo
 export type QuestionFields = Record<string, QuestionField>;
 export type QuestionFieldError = "required" | "single" | "unknown" | "otherRequired" | "otherTooLong" | "notesTooLong";
 
+const MAX_OPTIONS_PER_QUESTION = 8;
+
 export class InvalidQuestionResponse extends Error {
 	constructor() { super("Invalid structured question response."); }
 }
@@ -41,12 +43,11 @@ function isPrompt(value: unknown): value is components["schemas"]["AttentionProm
 		!isText(value.question, 2000) ||
 		(value.explanation !== undefined && !isText(value.explanation, 4000)) ||
 		(value.multiSelect !== undefined && typeof value.multiSelect !== "boolean") ||
-		!Array.isArray(value.options) || value.options.length < 2 || value.options.length > 4) return false;
+		!Array.isArray(value.options) || value.options.length < 2 || value.options.length > MAX_OPTIONS_PER_QUESTION) return false;
 	const options: unknown[] = value.options;
 	if (!options.every(isOption)) return false;
 	return new Set(options.map((option) => option.id)).size === options.length &&
-		new Set(options.map((option) => option.label.trim())).size === options.length &&
-		options.every((option, index) => !option.recommended || index === 0);
+		new Set(options.map((option) => option.label.trim())).size === options.length;
 }
 
 function isAuthorization(value: unknown): value is components["schemas"]["AttentionAuthorization"] {
@@ -68,7 +69,7 @@ function isPayload(value: unknown): value is QuestionPayload {
 
 function isAnswer(value: unknown): value is QuestionAnswer {
 	return isRecord(value) && isToken(value.questionKey, 64) &&
-		Array.isArray(value.selectedOptionIds) && value.selectedOptionIds.length <= 4 &&
+		Array.isArray(value.selectedOptionIds) && value.selectedOptionIds.length <= MAX_OPTIONS_PER_QUESTION &&
 		value.selectedOptionIds.every((id: unknown) => isToken(id, 64)) &&
 		(value.otherText === undefined || isText(value.otherText, 4000)) &&
 		(value.notes === undefined || isText(value.notes, 4000));

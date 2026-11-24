@@ -39,10 +39,11 @@ Example `question.json`:
 }
 ```
 
-Provide 1–4 related questions, each with 2–4 options. IDs and keys are stable,
+Provide 1–4 related questions, each with 2–8 options. IDs and keys are stable,
 case-sensitive ASCII tokens (1–64 characters, starting with a letter or digit).
-Each option needs a short label and description. At most one option can be
-recommended, and it must come first; recommendations never preselect an answer.
+Each option needs a short label and description. For both single-select and
+multi-select questions, set `recommended: true` on any options you recommend,
+in any position. Each recommendation is displayed as a label without preselecting an answer.
 Do not include an Other option: every question automatically offers Other free
 text. `multiSelect` defaults to false. An optional question-level `explanation`
 adds context specific to that question.

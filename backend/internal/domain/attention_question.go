@@ -25,7 +25,7 @@ type AttentionPrompt struct {
 	Question    string                    `json:"question" minLength:"1" maxLength:"2000"`
 	Explanation *string                   `json:"explanation,omitempty" minLength:"1" maxLength:"4000"`
 	MultiSelect bool                      `json:"multiSelect,omitempty"`
-	Options     []AttentionQuestionOption `json:"options" minItems:"2" maxItems:"4"`
+	Options     []AttentionQuestionOption `json:"options" minItems:"2" maxItems:"8"`
 }
 
 // AttentionQuestionOption describes an offered choice without implying user consent.
@@ -54,7 +54,7 @@ type AttentionAuthorization struct {
 // AttentionQuestionAnswer records selected IDs and optional user-authored Other text and notes.
 type AttentionQuestionAnswer struct {
 	QuestionKey       string   `json:"questionKey" minLength:"1" maxLength:"64"`
-	SelectedOptionIDs []string `json:"selectedOptionIds" maxItems:"4"`
+	SelectedOptionIDs []string `json:"selectedOptionIds" maxItems:"8"`
 	OtherText         *string  `json:"otherText,omitempty" minLength:"1" maxLength:"4000"`
 	Notes             *string  `json:"notes,omitempty" minLength:"1" maxLength:"4000"`
 }

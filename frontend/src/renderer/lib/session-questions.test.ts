@@ -23,17 +23,9 @@ describe("structured question boundary", () => {
 		expect(() => parseSessionQuestion(value, "session")).toThrow();
 	});
 
-	it("rejects malformed choices, recommendations and unsafe previews without dropping them", () => {
+	it("rejects malformed choices and unsafe previews without dropping them", () => {
 		for (const patch of [
 			{ options: [{ id: "only", label: "Only", description: "One is insufficient" }] },
-			{ options: [
-				{ id: "first", label: "First", description: "A", recommended: true },
-				{ id: "second", label: "Second", description: "B", recommended: true },
-			] },
-			{ options: [
-				{ id: "first", label: "First", description: "A" },
-				{ id: "second", label: "Second", description: "B", recommended: true },
-			] },
 			{ options: [
 				{ id: "first", label: "Other", description: "A" },
 				{ id: "second", label: "Second", description: "B" },
