@@ -306,8 +306,8 @@ func TestHiddenPIDProbeTimeoutKeepsRunFile(t *testing.T) {
 	deps.HTTPClient = &http.Client{Timeout: 200 * time.Millisecond}
 
 	out, _, err := executeCLI(t, deps, "status", "--json")
-	if err != nil {
-		t.Fatal(err)
+	if code := ExitCode(err); code != 1 {
+		t.Fatalf("status exit = %d, want 1: %v", code, err)
 	}
 	if !strings.Contains(out, `"state": "unhealthy"`) {
 		t.Fatalf("status after a probe timeout did not report unhealthy:\n%s", out)

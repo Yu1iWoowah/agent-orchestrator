@@ -170,7 +170,8 @@ done
 "$node" --version >/dev/null
 
 # Do not attach a second service to a daemon owned by another AO installation.
-status="$("$ao" status --json)"
+# A non-ready daemon still reports its state as JSON.
+status="$("$ao" status --json)" || true
 state="$(printf '%s' "$status" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state", ""))')"
 if [[ "$state" == ready ]]; then
 	current_exe="$(printf '%s' "$status" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("executablePath", ""))')"
@@ -322,7 +323,7 @@ PY
 fi
 
 for attempt in {1..20}; do
-	status="$("$host_root/current/resources/daemon/ao" status --json)"
+	status="$("$host_root/current/resources/daemon/ao" status --json)" || true
 	state="$(printf '%s' "$status" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state", ""))')"
 	[[ "$state" == ready ]] && break
 	sleep 1

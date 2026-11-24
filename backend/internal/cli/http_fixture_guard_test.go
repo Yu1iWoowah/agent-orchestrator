@@ -176,8 +176,8 @@ func TestFixtureGuardRawEntryPoints(t *testing.T) {
 	if _, err := c.inspectDaemon(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := executeCLI(t, deps, "status", "--json"); err != nil {
-		t.Fatal(err)
+	if _, _, err := executeCLI(t, deps, "status", "--json"); ExitCode(err) != 1 {
+		t.Fatalf("status exit = %d, want 1: %v", ExitCode(err), err)
 	}
 	if _, _, err := executeCLI(t, deps, "stop", "--json"); err == nil {
 		t.Fatal("stop accepted an unowned target")

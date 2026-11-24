@@ -28,7 +28,8 @@ printf '%s\n' '#!/bin/sh' 'case "$1" in' \
 	'    if [ -n "${TEST_AO_READY_FOR_TARGET:-}" ] && [ "$(readlink "$TEST_AO_HOST_ROOT/current")" = "$TEST_AO_READY_FOR_TARGET" ]; then' \
 	'      TEST_AO_STATE=ready TEST_AO_EXE="$TEST_AO_HOST_ROOT/current/resources/daemon/ao"' \
 	'    fi' \
-	'    printf '\''{"state":"%s","executablePath":"%s"}\n'\'' "${TEST_AO_STATE:-stopped}" "${TEST_AO_EXE:-}" ;;' \
+	'    printf '\''{"state":"%s","executablePath":"%s"}\n'\'' "${TEST_AO_STATE:-stopped}" "${TEST_AO_EXE:-}"' \
+	'    [ "${TEST_AO_STATE:-stopped}" = ready ] ;;' \
 	'  remote-host)' \
 	'    if [ -n "${TEST_AO_TUNNEL_PAIRING:-}" ]; then' \
 	'      case "$2" in' \
