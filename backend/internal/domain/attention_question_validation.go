@@ -224,8 +224,8 @@ func ParseAttentionQuestionPayload(raw []byte, kind AttentionQuestionKind) (Atte
 				return payload, err
 			}
 		}
-		if len(question.Options) < 2 || len(question.Options) > 4 {
-			return payload, attentionInvalid(path+".options", "must contain 2–4 options")
+		if len(question.Options) < 2 || len(question.Options) > 8 {
+			return payload, attentionInvalid(path+".options", "must contain 2–8 options")
 		}
 		ids, labels := map[string]bool{}, map[string]bool{}
 		for j, option := range question.Options {
@@ -247,9 +247,6 @@ func ParseAttentionQuestionPayload(raw []byte, kind AttentionQuestionKind) (Atte
 			}
 			if err := attentionTextBound(optionPath+".description", option.Description, 1000); err != nil {
 				return payload, err
-			}
-			if option.Recommended && j != 0 {
-				return payload, attentionInvalid(optionPath+".recommended", "only the first option may be recommended")
 			}
 			if option.Preview != nil {
 				if err := validateAttentionPreview(option.Preview); err != nil {

@@ -6,7 +6,7 @@ import { sessionQuestionFixture } from "../../test/fixtures/session-question";
 import { questionSourceQueryOptions } from "../../hooks/useSessionQuestions";
 import { questionDraftStorageKey, useQuestionDraftStore } from "../../stores/question-draft-store";
 import { QuestionDecisionView } from "./QuestionDecisionView";
-import type { SessionQuestion } from "../../lib/session-questions";
+import { parseSessionQuestion, type SessionQuestion } from "../../lib/session-questions";
 
 const { post } = vi.hoisted(() => ({ post: vi.fn() }));
 vi.mock("../../lib/host-clients", () => ({ clientForSessionHost: () => ({ POST: (path: string, request: unknown) => post(path, request) }), labelForHost: () => "Remote host" }));
@@ -26,14 +26,30 @@ function show(props: Parameters<typeof Subject>[0] = {}) {
 	return render(<QueryClientProvider client={client}><Subject {...props} /></QueryClientProvider>);
 }
 
-it("shows descriptions and one recommendation with no preselected choice", async () => {
-	show();
+it("renders a parsed eight-option question with multiple recommendations and confirms all eight selections", async () => {
+	const question = sessionQuestionFixture();
+	const checks = question.payload.questions[1];
+	checks.options.push(...Array.from({ length: 6 }, (_, index) => ({
+		id: `check-${index}`, label: `Check ${index + 3}`, description: "Run this check.", recommended: index === 0 || index === 5,
+	})));
+	show({ question: parseSessionQuestion(question, "session") });
+	const user = userEvent.setup();
 	const stage = await screen.findByRole("radio", { name: /Staging/ });
+	const checksGroup = within(screen.getByRole("group", { name: /Which checks/ }));
 	expect(stage).not.toBeChecked();
 	for (const control of [...screen.getAllByRole("radio"), ...screen.getAllByRole("checkbox")]) expect(control).not.toBeChecked();
-	expect(screen.getAllByText("Recommended")).toHaveLength(1);
+	expect(checksGroup.getAllByText("Recommended")).toHaveLength(2);
 	expect(screen.getByText("Validate with internal users first.")).toBeVisible();
-	expect(screen.getByText("Run automated regression checks.")).toBeVisible();
+	await user.click(stage);
+	for (const option of checks.options) {
+		await user.click(checksGroup.getByRole("checkbox", { name: (name) => name.startsWith(option.label) }));
+	}
+	await user.click(screen.getByRole("button", { name: "Submit all answers" }));
+	await screen.findByText("Saved · Pending delivery");
+	const { queryKey } = questionSourceQueryOptions({ sessionId: question.originSessionId, questionId: question.id });
+	const receipt = client.getQueryData(queryKey)?.answer;
+	expect(receipt?.answers.find((answer) => answer.questionKey === checks.key)?.selectedOptionIds)
+		.toEqual(checks.options.map((option) => option.id));
 });
 
 it("submits through the UI when inaccessible remote drafts fill local persistence", async () => {

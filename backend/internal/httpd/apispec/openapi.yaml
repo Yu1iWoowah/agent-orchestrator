@@ -22828,7 +22828,7 @@ components:
         options:
           items:
             $ref: '#/components/schemas/AttentionQuestionOption'
-          maxItems: 4
+          maxItems: 8
           minItems: 2
           type: array
         question:
@@ -22862,7 +22862,7 @@ components:
         selectedOptionIds:
           items:
             type: string
-          maxItems: 4
+          maxItems: 8
           type: array
       required:
       - questionKey
