@@ -126,6 +126,16 @@ go test -race ./...        # with race detection
 go test -v ./internal/cli/ # a specific package
 ```
 
+From `backend/` on Linux, split one package's race tests across parallel shards.
+
+```bash
+GOMAXPROCS=8 GOFLAGS='-p=8 -gcflags=modernc.org/...=-race=false' ../.github/scripts/go-test-parallel.sh 3 ./internal/service/chat
+```
+
+The first argument sets the shard count. The command uses CI's round-robin test
+selection and SQLite compiler flags. See the [Go workflow](../.github/workflows/go.yml)
+for the exact CI jobs, including the SQLite store test that runs separately.
+
 ### Lint
 
 ```bash
