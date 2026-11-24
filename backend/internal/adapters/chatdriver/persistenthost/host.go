@@ -256,6 +256,11 @@ func validHostProcessIdentity(identity string) bool {
 	return err == nil && strconv.FormatUint(start, 10) == ticks
 }
 
+func hostProcessIdentityMatchesBoot(identity, bootID string) bool {
+	recordedBootID, _, _ := strings.Cut(identity, ".")
+	return recordedBootID == bootID && validHostProcessIdentity(identity)
+}
+
 func hostProcessReused(pid int, identity string) bool {
 	if identity == "" {
 		return false
@@ -421,7 +426,7 @@ func hostLockIdentity(fields []string) (string, bool) {
 	case 1, 2:
 		return "", true
 	case 3:
-		return fields[2], validHostProcessIdentity(fields[2])
+		return fields[2], hostProcessIdentityMatchesBoot(fields[2], fields[1])
 	default:
 		return "", false
 	}
@@ -450,7 +455,8 @@ func readDescriptorOnce(dataDir, sessionID string) (Descriptor, error) {
 	}
 	d := record.Descriptor
 	if record.ProcessIdentity != nil {
-		if err := json.Unmarshal(record.ProcessIdentity, &d.ProcessIdentity); err != nil || !validHostProcessIdentity(d.ProcessIdentity) {
+		if err := json.Unmarshal(record.ProcessIdentity, &d.ProcessIdentity); err != nil ||
+			!hostProcessIdentityMatchesBoot(d.ProcessIdentity, d.BootID) {
 			return Descriptor{}, errors.New("invalid chat host process identity")
 		}
 	}
