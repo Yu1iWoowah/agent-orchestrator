@@ -3165,7 +3165,7 @@
 	"settings.sessionRetention.never": "Jamais",
 	"settings.sessionRetention.afterDays": "Après {{days}} jours",
 	"chat.versionSwitch.pending": "Passage à {{version}} en attente",
-	"chat.versionSwitch.pendingHint": "Par défaut, le chat doit rester inactif environ 10 minutes, sans tour en cours, message en file d’attente ni approbation en attente. Le changement peut ensuite se faire en arrière-plan ou avant l’envoi de votre prochain message.",
+	"chat.versionSwitch.pendingHint": "Par défaut, le chat doit rester inactif environ 10 minutes, sans tour en cours, message en file d’attente ni approbation en attente. Une fois ces conditions remplies, le changement en arrière-plan attend que vous quittiez ce chat. Si vous y restez, AO tente de changer de version avant de transmettre votre prochain message à l’agent.",
 	"chat.versionSwitch.installed": "{{version}} installée",
 	"chat.versionSwitch.stoppedHint": "Reprenez l’agent pour le démarrer sur la nouvelle version.",
 	"chat.reauth.expired": "Votre connexion à {{agent}} a expiré. Reconnectez-vous pour continuer à utiliser cette discussion.",

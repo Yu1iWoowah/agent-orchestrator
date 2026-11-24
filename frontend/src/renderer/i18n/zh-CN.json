@@ -3171,7 +3171,7 @@
 	"settings.sessionRetention.never": "从不",
 	"settings.sessionRetention.afterDays": "{{days}} 天后",
 	"chat.versionSwitch.pending": "等待切换到 {{version}}",
-	"chat.versionSwitch.pendingHint": "默认需要空闲约 10 分钟，且没有正在进行的轮次、排队消息或待批准事项，才会在后台或发送下一条消息前切换。",
+	"chat.versionSwitch.pendingHint": "默认需要空闲约 10 分钟，且没有正在进行的轮次、排队消息或待批准事项。满足条件后，后台切换会等你离开此对话。如果你继续停留，AO 会在把下一条消息交给代理前尝试切换。",
 	"chat.versionSwitch.installed": "已安装 {{version}}",
 	"chat.versionSwitch.stoppedHint": "恢复代理即可在新版本上启动。",
 	"chat.reauth.expired": "你的 {{agent}} 登录已过期。请重新登录以继续使用此聊天。",

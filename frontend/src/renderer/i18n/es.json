@@ -3165,7 +3165,7 @@
 	"settings.sessionRetention.never": "Nunca",
 	"settings.sessionRetention.afterDays": "Pasados {{days}} días",
 	"chat.versionSwitch.pending": "Cambio a {{version}} pendiente",
-	"chat.versionSwitch.pendingHint": "De forma predeterminada, el chat debe estar inactivo unos 10 minutos, sin turnos en curso, mensajes en cola ni aprobaciones pendientes. Después, el cambio puede ocurrir en segundo plano o antes de que se envíe tu próximo mensaje.",
+	"chat.versionSwitch.pendingHint": "De forma predeterminada, el chat debe estar inactivo unos 10 minutos, sin turnos en curso, mensajes en cola ni aprobaciones pendientes. Una vez cumplidas estas condiciones, el cambio en segundo plano espera a que salgas de este chat. Si te quedas, AO intenta cambiar de versión antes de entregar tu próximo mensaje al agente.",
 	"chat.versionSwitch.installed": "{{version}} instalada",
 	"chat.versionSwitch.stoppedHint": "Reanuda el agente para iniciarlo con la nueva versión.",
 	"chat.reauth.expired": "Tu sesión de {{agent}} ha caducado. Vuelve a iniciar sesión para seguir usando este chat.",

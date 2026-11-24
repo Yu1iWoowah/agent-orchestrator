@@ -2043,7 +2043,7 @@
 	"settings.sessionRetention.never": "Asla",
 	"settings.sessionRetention.afterDays": "{{days}} gün sonra",
 	"chat.versionSwitch.pending": "{{version}} sürümüne geçiş bekleniyor",
-	"chat.versionSwitch.pendingHint": "Varsayılan olarak sohbet yaklaşık 10 dakika boşta kalmalı ve devam eden bir tur, sırada mesaj veya bekleyen onay olmamalıdır. Geçiş bundan sonra arka planda veya bir sonraki mesajını göndermeden önce gerçekleşebilir.",
+	"chat.versionSwitch.pendingHint": "Varsayılan olarak sohbet yaklaşık 10 dakika boşta kalmalı ve devam eden bir tur, sırada mesaj veya bekleyen onay olmamalıdır. Bu koşullar sağlandığında arka planda geçiş, bu sohbetten ayrılmanı bekler. Sohbette kalırsan AO, bir sonraki mesajını ajana iletmeden önce sürümü değiştirmeyi dener.",
 	"chat.versionSwitch.installed": "{{version}} yüklendi",
 	"chat.versionSwitch.stoppedHint": "Yeni sürümde başlatmak için aracıyı devam ettirin.",
 	"chat.reauth.expired": "{{agent}} oturum açma süreniz doldu. Bu sohbeti kullanmaya devam etmek için yeniden oturum açın.",

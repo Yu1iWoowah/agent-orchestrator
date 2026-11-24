@@ -231,7 +231,8 @@ describe("VersionSwitchBanner", () => {
 		expect(screen.getByRole("status")).toHaveTextContent(
 			"Waiting to switch to v2.1.300" +
 				"By default, the chat must be idle for about 10 minutes, with no active turn, queued messages, or pending approvals. " +
-				"It can then switch in the background or before your next message is sent.",
+				"Once eligible, the background switch waits until you leave this chat. " +
+				"If you stay, AO tries to switch before passing your next message to the agent.",
 		);
 	});
 

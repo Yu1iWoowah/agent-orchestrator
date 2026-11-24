@@ -3101,7 +3101,7 @@
 	"settings.sessionRetention.never": "Nie",
 	"settings.sessionRetention.afterDays": "Nach {{days}} Tagen",
 	"chat.versionSwitch.pending": "Wechsel zu {{version}} steht aus",
-	"chat.versionSwitch.pendingHint": "Standardmäßig muss der Chat etwa 10 Minuten inaktiv sein. Wenn kein Durchlauf aktiv ist und keine Nachrichten oder Genehmigungen ausstehen, kann der Wechsel im Hintergrund oder vor dem Senden deiner nächsten Nachricht erfolgen.",
+	"chat.versionSwitch.pendingHint": "Standardmäßig muss der Chat etwa 10 Minuten inaktiv sein. Es dürfen kein Durchlauf aktiv sein und keine Nachrichten oder Genehmigungen ausstehen. Sind diese Bedingungen erfüllt, wartet der Wechsel im Hintergrund, bis du diesen Chat verlässt. Wenn du im Chat bleibst, versucht AO den Wechsel, bevor deine nächste Nachricht an den Agenten weitergegeben wird.",
 	"chat.versionSwitch.installed": "{{version}} installiert",
 	"chat.versionSwitch.stoppedHint": "Setze den Agenten fort, um ihn mit der neuen Version zu starten.",
 	"chat.reauth.expired": "Deine {{agent}}-Anmeldung ist abgelaufen. Melde dich erneut an, um diesen Chat weiter zu nutzen.",

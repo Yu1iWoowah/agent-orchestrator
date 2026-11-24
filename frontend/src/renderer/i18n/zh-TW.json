@@ -1905,7 +1905,7 @@
 	"settings.sessionRetention.never": "從不",
 	"settings.sessionRetention.afterDays": "{{days}} 天后",
 	"chat.versionSwitch.pending": "等待切換至 {{version}}",
-	"chat.versionSwitch.pendingHint": "預設需閒置約 10 分鐘，且沒有進行中的回合、排隊訊息或待核准項目，才會在背景或送出下一則訊息前切換。",
+	"chat.versionSwitch.pendingHint": "預設需閒置約 10 分鐘，且沒有進行中的回合、排隊訊息或待核准項目。符合條件後，背景切換會等你離開這個 Chat。若你繼續停留，AO 會在把下一則訊息交給 agent 前嘗試切換。",
 	"chat.versionSwitch.installed": "已安裝 {{version}}",
 	"chat.versionSwitch.stoppedHint": "恢復 agent，即可使用新版本啟動。",
 	"chat.reauth.expired": "你的 {{agent}} 登入已過期。請重新登入以繼續使用此對話。",
