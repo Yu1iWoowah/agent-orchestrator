@@ -504,7 +504,7 @@ func (l *agentLauncher) sealTerminalStop(ctx context.Context, store reviewerStop
 			}
 			stopped = false
 			if local && frozen[p.pid] != p.start {
-				if err := hooks.freeze(p.pid); err != nil {
+				if err := hooks.freeze(p); err != nil {
 					return nil, errors.Join(err, updateStopReason(ctx, store, receipt, "freeze_unconfirmed"))
 				}
 				frozen[p.pid] = p.start

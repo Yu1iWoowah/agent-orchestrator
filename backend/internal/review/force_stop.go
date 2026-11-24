@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -28,12 +27,12 @@ type forceStopHooks struct {
 	chatEnded       func(context.Context, *processscope.Scope) (bool, string)
 	stopped         func(pid int, start string) bool
 	record          func(context.Context, []capturedProcess) error
-	kill            func(pid int) error
+	kill            func(capturedProcess) error
 	// freeze stops a process without ending it (SIGSTOP), so it can no longer
 	// spawn anything while its tree is captured. Nil where the platform has no
 	// such signal (Windows, which keeps a dead parent's pid on its children
 	// instead).
-	freeze func(pid int) error
+	freeze func(capturedProcess) error
 	wait   time.Duration
 	poll   time.Duration
 }
@@ -52,18 +51,10 @@ func defaultForceStopHooks() forceStopHooks {
 		comparisonScope: processscope.CurrentScope,
 		chatEnded:       processscope.Ended,
 		stopped:         stopped,
-		kill: func(pid int) error {
-			process, err := os.FindProcess(pid)
-			if err != nil {
-				return err
-			}
-			// SIGKILL on Unix, TerminateProcess on Windows: neither can be
-			// ignored, and SIGKILL also ends a stopped process.
-			return process.Kill()
-		},
-		freeze: freezeProcess,
-		wait:   defaultForceStopWait,
-		poll:   100 * time.Millisecond,
+		kill:            killProcess,
+		freeze:          freezeProcess,
+		wait:            defaultForceStopWait,
+		poll:            100 * time.Millisecond,
 	}
 }
 
@@ -234,7 +225,7 @@ func freezeTree(ctx context.Context, tree []capturedProcess, hooks forceStopHook
 			}
 			frozen[p.pid] = true
 			froze = true
-			_ = hooks.freeze(p.pid)
+			_ = hooks.freeze(p)
 		}
 		if !froze {
 			return tree, nil
@@ -484,7 +475,7 @@ func killTreeSurvivors(ctx context.Context, tree []capturedProcess, hooks forceS
 			remaining = append(remaining, captured)
 			if !killed[captured.pid] {
 				killed[captured.pid] = true
-				_ = hooks.kill(captured.pid)
+				_ = hooks.kill(captured)
 			}
 		}
 		if len(remaining) == 0 {

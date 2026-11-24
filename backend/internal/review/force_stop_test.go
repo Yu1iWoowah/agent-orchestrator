@@ -62,18 +62,18 @@ func (t *scriptedTable) identities(context.Context) (map[int]procmem.Identity, e
 	return out, nil
 }
 
-func (t *scriptedTable) freeze(pid int) error {
+func (t *scriptedTable) freeze(process capturedProcess) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.frozen = append(t.frozen, pid)
+	t.frozen = append(t.frozen, process.pid)
 	return nil
 }
 
-func (t *scriptedTable) kill(pid int) error {
+func (t *scriptedTable) kill(process capturedProcess) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.killed = append(t.killed, pid)
-	delete(t.processes, pid)
+	t.killed = append(t.killed, process.pid)
+	delete(t.processes, process.pid)
 	return nil
 }
 
