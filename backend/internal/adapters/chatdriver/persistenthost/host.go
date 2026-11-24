@@ -29,6 +29,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
+	"github.com/aoagents/agent-orchestrator/backend/internal/processscope"
 )
 
 const (
@@ -127,7 +128,8 @@ type Descriptor struct {
 	StartedAt            time.Time `json:"startedAt"`
 	// BootID names the boot the host started in; empty for hosts started
 	// before it was recorded.
-	BootID string `json:"bootId,omitempty"`
+	BootID          string `json:"bootId,omitempty"`
+	ProcessIdentity string `json:"processIdentity,omitempty"`
 }
 
 // Config identifies one provider process and its AO session ownership.
@@ -227,16 +229,35 @@ func lockPath(dataDir, sessionID string) (string, error) {
 	return filepath.Join(dir, "host.lock"), nil
 }
 
-// Each detached host gets its own spawn record, named by its pid, so no host's
-// cleanup can remove another's record.
+// Each detached host gets its own spawn record, named by its PID and available
+// process identity, so cleanup leaves later launches' records alone.
 const spawnRecordPrefix = "host.spawn-"
+
+func hostProcessIdentity(pid int, bootID string) string {
+	if ticks := processscope.StartTicks(pid); bootID != "" && ticks != "" {
+		return bootID + "." + ticks
+	}
+	return ""
+}
+
+func hostProcessReused(pid int, identity string) bool {
+	if identity == "" {
+		return false
+	}
+	current := hostProcessIdentity(pid, currentBootID())
+	return current != "" && current != identity
+}
 
 func spawnPath(dataDir, sessionID string, pid int) (string, error) {
 	dir, err := hostDir(dataDir, sessionID)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, spawnRecordPrefix+strconv.Itoa(pid)), nil
+	name := spawnRecordPrefix + strconv.Itoa(pid)
+	if identity := hostProcessIdentity(pid, currentBootID()); identity != "" {
+		name += "-" + identity
+	}
+	return filepath.Join(dir, name), nil
 }
 
 // recordSpawn names a detached host process before it can take its launch
@@ -259,9 +280,13 @@ func clearSpawnRecord(dataDir, sessionID string, pid int) {
 	}
 }
 
-// spawnRecords lists the pids named by spawn records. A record whose name is
-// not a pid makes the result unknown.
-func spawnRecords(dataDir, sessionID string) ([]int, HostState) {
+type spawnRecord struct {
+	pid            int
+	path, identity string
+}
+
+// spawnRecords lists spawn markers, including older markers named by PID alone.
+func spawnRecords(dataDir, sessionID string) ([]spawnRecord, HostState) {
 	dir, err := hostDir(dataDir, sessionID)
 	if err != nil {
 		return nil, HostUnknown
@@ -274,26 +299,27 @@ func spawnRecords(dataDir, sessionID string) ([]int, HostState) {
 		return nil, HostUnknown
 	}
 	state := HostAbsent
-	var pids []int
+	var records []spawnRecord
 	for _, entry := range entries {
 		name, ok := strings.CutPrefix(entry.Name(), spawnRecordPrefix)
 		if !ok {
 			continue
 		}
-		pid, err := strconv.Atoi(name)
+		pidText, identity, _ := strings.Cut(name, "-")
+		pid, err := strconv.Atoi(pidText)
 		if err != nil || pid <= 0 {
 			state = HostUnknown
 			continue
 		}
-		pids = append(pids, pid)
+		records = append(records, spawnRecord{pid: pid, path: filepath.Join(dir, entry.Name()), identity: identity})
 	}
-	return pids, state
+	return records, state
 }
 
 func spawnHostState(dataDir, sessionID string) HostState {
-	pids, state := spawnRecords(dataDir, sessionID)
-	for _, pid := range pids {
-		if processalive.Alive(pid) {
+	records, state := spawnRecords(dataDir, sessionID)
+	for _, record := range records {
+		if processalive.Alive(record.pid) && !hostProcessReused(record.pid, record.identity) {
 			return HostRunning
 		}
 	}
@@ -302,10 +328,10 @@ func spawnHostState(dataDir, sessionID string) HostState {
 
 // clearDeadSpawnRecords removes spawn records whose host has exited.
 func clearDeadSpawnRecords(dataDir, sessionID string) {
-	pids, _ := spawnRecords(dataDir, sessionID)
-	for _, pid := range pids {
-		if !processalive.Alive(pid) {
-			clearSpawnRecord(dataDir, sessionID, pid)
+	records, _ := spawnRecords(dataDir, sessionID)
+	for _, record := range records {
+		if !processalive.Alive(record.pid) || hostProcessReused(record.pid, record.identity) {
+			_ = os.Remove(record.path)
 		}
 	}
 }
@@ -330,7 +356,8 @@ func acquireHostLock(dataDir, sessionID string) (func(), error) {
 		if len(fields) > 0 {
 			pid, parseErr = strconv.Atoi(fields[0])
 		}
-		if readErr != nil || parseErr != nil || pid <= 0 || processalive.Alive(pid) && !lockFromPreviousBoot(dataDir, sessionID, pid, fields) {
+		if readErr != nil || parseErr != nil || pid <= 0 ||
+			processalive.Alive(pid) && !lockFromPreviousBoot(dataDir, sessionID, pid, fields) && !lockOwnerReused(pid, fields) {
 			return nil, ErrHostExists
 		}
 		// A host can die after atomically creating its launch lock but before it
@@ -348,7 +375,8 @@ func acquireHostLock(dataDir, sessionID string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := fmt.Fprintf(f, "%d %s\n", os.Getpid(), currentBootID()); err != nil {
+	pid, bootID := os.Getpid(), currentBootID()
+	if _, err := fmt.Fprintf(f, "%d %s %s\n", pid, bootID, hostProcessIdentity(pid, bootID)); err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
 		return nil, err
@@ -369,6 +397,10 @@ func lockFromPreviousBoot(dataDir, sessionID string, pid int, fields []string) b
 	}
 	d, err := readDescriptorOnce(dataDir, sessionID)
 	return err == nil && d.PID == pid && hostFromPreviousBoot(d.BootID, d.StartedAt)
+}
+
+func lockOwnerReused(pid int, fields []string) bool {
+	return len(fields) >= 3 && hostProcessReused(pid, fields[2])
 }
 
 func readDescriptorOnce(dataDir, sessionID string) (Descriptor, error) {
@@ -445,10 +477,10 @@ func validateDescriptor(cfg Config, d Descriptor) error {
 	return nil
 }
 
-// hostMayBeAlive is false when the descriptor's PID is gone or proven to be
-// reused after a reboot; a failed probe alone never proves a host dead.
+// hostMayBeAlive is false when the descriptor's PID is gone or proven reused;
+// an unavailable identity alone never proves a host dead.
 func hostMayBeAlive(d Descriptor) bool {
-	return processalive.Alive(d.PID) && !hostFromPreviousBoot(d.BootID, d.StartedAt)
+	return processalive.Alive(d.PID) && !hostFromPreviousBoot(d.BootID, d.StartedAt) && !hostProcessReused(d.PID, d.ProcessIdentity)
 }
 
 // ConnectOrStart attaches to an existing compatible host or starts one with the
@@ -569,13 +601,16 @@ func Reconcile(ctx context.Context, dataDir string, keep map[string]struct{}) er
 		}
 		clearDeadSpawnRecords(dataDir, sessionID)
 		d, readErr := readDescriptor(dataDir, sessionID)
-		if readErr != nil {
+		if runtime.GOOS == "linux" && errors.Is(readErr, os.ErrNotExist) {
+			// A host can exit after taking the lock, before writing its descriptor.
+			path, _ := lockPath(dataDir, sessionID)
+			if _, err := os.Stat(path); err != nil {
+				continue
+			}
+		} else if readErr != nil || d.Version != ProtocolVersion {
 			continue
 		}
-		if d.Version != ProtocolVersion {
-			continue
-		}
-		if !processalive.Alive(d.PID) {
+		if !hostMayBeAlive(d) {
 			// Claim the launch lock before cleaning a dead descriptor. If a new host
 			// already owns it, preserve its descriptor instead of deleting ownership
 			// state observed by a stale reconciler.
@@ -726,7 +761,7 @@ func descriptorHostState(dataDir, sessionID string) HostState {
 		return HostAbsent
 	case err != nil || d.PID <= 0:
 		return HostUnknown
-	case processalive.Alive(d.PID):
+	case hostMayBeAlive(d):
 		return HostRunning
 	default:
 		return HostAbsent
@@ -743,7 +778,7 @@ func pidFileHostState(path string, pathErr error) HostState {
 	if errors.Is(err, os.ErrNotExist) {
 		return HostAbsent
 	}
-	// The lock holds "<pid> <boot id>"; locks written before boot ids hold the pid only.
+	// The lock holds the PID, followed by boot and process identities when available.
 	fields := strings.Fields(string(owner))
 	pid, parseErr := 0, errors.New("empty chat host lock")
 	if len(fields) > 0 {
@@ -752,7 +787,7 @@ func pidFileHostState(path string, pathErr error) HostState {
 	switch {
 	case err != nil || parseErr != nil || pid <= 0:
 		return HostUnknown
-	case processalive.Alive(pid):
+	case processalive.Alive(pid) && !lockOwnerReused(pid, fields):
 		return HostRunning
 	default:
 		return HostAbsent
@@ -994,6 +1029,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Address:              listener.Addr().String(), Token: token, PID: os.Getpid(), StartedAt: time.Now().UTC(),
 		BootID: currentBootID(),
 	}
+	d.ProcessIdentity = hostProcessIdentity(d.PID, d.BootID)
 	if err := recordAdapterIdentity(cfg.DataDir, d, child.Process.Pid); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "chat adapter lifetime evidence unavailable")
 	}

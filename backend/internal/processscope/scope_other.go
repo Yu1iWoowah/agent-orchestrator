@@ -6,6 +6,9 @@ import "context"
 
 func AdapterExited(*Scope) bool { return false }
 
+// StartTicks is unavailable on platforms without Linux procfs.
+func StartTicks(int) string { return "" }
+
 // Capture leaves process identity absent on unsupported platforms.
 func Capture(int) *Scope { return nil }
 

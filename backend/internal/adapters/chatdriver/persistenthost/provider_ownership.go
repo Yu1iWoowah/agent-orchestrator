@@ -28,14 +28,14 @@ func ProbeProviderOwnership(dataDir, sessionID string) ProviderOwnership {
 	if err != nil {
 		return ProviderOwnershipUncertain
 	}
-	pids, spawnState := spawnRecords(dataDir, sessionID)
+	records, spawnState := spawnRecords(dataDir, sessionID)
 	if spawnState == HostUnknown {
 		return ProviderOwnershipUncertain
 	}
 	lock, lockErr := os.ReadFile(path) //nolint:gosec // AO-owned path derived from validated session id.
 	d, descriptorErr := readDescriptorOnce(dataDir, sessionID)
 	noLock := errors.Is(lockErr, os.ErrNotExist)
-	if noLock && errors.Is(descriptorErr, os.ErrNotExist) && len(pids) == 0 {
+	if noLock && errors.Is(descriptorErr, os.ErrNotExist) && len(records) == 0 {
 		return ProviderOwnershipUnrecorded
 	}
 	if descriptorErr != nil || d.PID <= 0 || d.StartedAt.IsZero() || !EpochFromPreviousBoot(deliveryEpoch(d)) {
@@ -43,15 +43,14 @@ func ProbeProviderOwnership(dataDir, sessionID string) ProviderOwnership {
 	}
 	if !noLock {
 		fields := strings.Fields(string(lock))
-		if lockErr != nil || len(fields) == 0 || len(fields) > 2 || fields[0] != strconv.Itoa(d.PID) ||
-			(len(fields) == 2 && fields[1] != d.BootID) {
+		if lockErr != nil || len(fields) == 0 || len(fields) > 3 || fields[0] != strconv.Itoa(d.PID) ||
+			(len(fields) >= 2 && fields[1] != d.BootID) {
 			return ProviderOwnershipUncertain
 		}
 	}
-	// Spawn markers have no boot ID. A different PID or a live one can be a new
-	// host, including one reusing the previous boot's PID.
-	for _, pid := range pids {
-		if pid != d.PID || processalive.Alive(pid) {
+	// A different PID or a live one keeps provider ownership uncertain.
+	for _, record := range records {
+		if record.pid != d.PID || processalive.Alive(record.pid) {
 			return ProviderOwnershipUncertain
 		}
 	}
