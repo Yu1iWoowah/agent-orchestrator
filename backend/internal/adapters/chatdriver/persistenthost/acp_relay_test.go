@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -555,6 +556,52 @@ func TestACPRelayStalledPromptEndsWhenTheAdapterAnswersTheCancel(t *testing.T) {
 	}
 	if len(relay.abandonedPrompts) != 0 {
 		t.Fatalf("an answered prompt must not be marked abandoned: %v", relay.abandonedPrompts)
+	}
+}
+
+func TestACPRelayDeliveryFlushAfterStalledPromptCancelError(t *testing.T) {
+	relay := newTestACPRelay(t)
+	journal := recoveryJournal(t)
+	relay.delivery = journal
+
+	session := relayClientFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}`+"\n"), 1)
+	relayProviderFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":`+frameID(t, session)+`,"result":{"sessionId":"session-live"}}`+"\n"), 1, true)
+	prompt := relayClientFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"session-live","prompt":[],"_meta":{"aoDeliveryAttempt":"managed"}}}`+"\n"), 1)
+	deliveryFrame(t, journal, string(prompt), true)
+	steer := relayClientFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":3,"method":"_session/steering","params":{"sessionId":"session-live","prompt":[],"_meta":{"steering":{"idleBehavior":"promptRequired"}}}}`+"\n"), 1)
+	deliveryFrame(t, journal, string(steer), true)
+	injected := `{"jsonrpc":"2.0","id":` + frameID(t, steer) + `,"result":{"outcome":"injected"}}` + "\n"
+	deliveryFrame(t, journal, injected, false)
+	relayProviderFrame(t, relay, []byte(injected), 1, true)
+
+	cancel := failStalled(t, relay, 1, time.Now().Add(2*promptStallTimeout)).provider
+	if want := `{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"session-live"}}` + "\n"; string(cancel) != want {
+		t.Fatalf("watchdog frame = %s, want %s", cancel, want)
+	}
+	failure := `{"jsonrpc":"2.0","id":` + frameID(t, prompt) + `,"error":{"code":-32603,"message":"cancelled"}}` + "\n"
+	deliveryFrame(t, journal, failure, false)
+	relayProviderFrame(t, relay, []byte(failure), 1, true)
+
+	h := &host{ctx: t.Context(), token: "fixture", acp: relay, delivery: journal}
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.handle(server)
+	}()
+	defer func() {
+		_ = client.Close()
+		<-done
+	}()
+	if err := json.NewEncoder(client).Encode(hello{Version: ProtocolVersion, Token: "fixture", Action: "delivery-flush"}); err != nil {
+		t.Fatal(err)
+	}
+	var response helloResponse
+	if err := json.NewDecoder(client).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.OK {
+		t.Fatalf("delivery-flush after cancelled prompt: %q", response.Error)
 	}
 }
 

@@ -429,6 +429,7 @@ func (j *deliveryJournal) settleStalledPromptError(id, params json.RawMessage) e
 	record.Receipt.ProgressSequence++
 	j.records[attempt] = record
 	j.clearWaiting(attempt, record.NativeTurn)
+	j.promptEnded(string(id))
 	return j.append(record)
 }
 

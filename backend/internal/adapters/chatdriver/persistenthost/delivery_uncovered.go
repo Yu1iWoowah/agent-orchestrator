@@ -23,7 +23,7 @@ type nativeDeliveryGap struct {
 	// SteerHadPrompts is true when at least one prompt was in flight then.
 	SteerHadPrompts bool
 	// SteerJoined records an injected (or errored) steering answer: the gap
-	// settles once every prompt in SteerPrompts has a terminal stopReason.
+	// settles once every prompt in SteerPrompts has settled.
 	SteerJoined bool
 }
 
@@ -67,8 +67,7 @@ func (j *deliveryJournal) promptsInFlight(session string) []string {
 	return ids
 }
 
-// promptEnded releases steering gaps waiting on a prompt that has just
-// returned its stopReason; a joined steer settles when none remain.
+// promptEnded releases steering gaps waiting on a settled prompt.
 func (j *deliveryJournal) promptEnded(request string) {
 	for id, gap := range j.unsettled {
 		if gap.Method != acpSteeringMethod || !slices.Contains(gap.SteerPrompts, request) {
