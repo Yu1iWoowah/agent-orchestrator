@@ -135,8 +135,9 @@ GOMAXPROCS=8 GOFLAGS='-p=8 -gcflags=modernc.org/...=-race=false' ../.github/scri
 ```
 
 The first argument sets the shard count. The command uses CI's round-robin test
-selection and SQLite compiler flags. See the [Go workflow](../.github/workflows/go.yml)
-for the exact CI jobs, including the SQLite store test that runs separately.
+selection and SQLite compiler flags, and each shard has the same 20-minute test
+timeout as CI. See the [Go workflow](../.github/workflows/go.yml) for the exact CI
+jobs, including the SQLite store test that runs separately.
 
 ### Lint
 
