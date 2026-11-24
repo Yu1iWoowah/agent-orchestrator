@@ -13,16 +13,8 @@ func (m *sideManager) protectedSide(ctx context.Context, id string) (bool, error
 	if !ok || store.durable == nil {
 		return false, nil
 	}
-	rows, err := store.durable.SideCompactions(ctx, true)
-	if err != nil {
-		return true, err
-	}
-	for _, row := range rows {
-		if id != "" && row.SideID == id {
-			return true, nil
-		}
-	}
-	return false, nil
+	protected, err := store.durable.HasUnresolvedSideCompaction(ctx, id)
+	return protected || err != nil, err
 }
 
 // Retry can observe the original compaction host, never start a replacement.

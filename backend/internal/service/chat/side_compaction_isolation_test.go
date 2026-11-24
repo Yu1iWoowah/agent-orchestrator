@@ -441,12 +441,12 @@ type retireProtectionFailure struct {
 	err   error
 }
 
-func (s *retireProtectionFailure) SideCompactions(ctx context.Context, unresolved bool) ([]domain.SideCompaction, error) {
+func (s *retireProtectionFailure) HasUnresolvedSideCompaction(ctx context.Context, id string) (bool, error) {
 	s.calls++
 	if s.calls == 1 {
-		return nil, s.err
+		return false, s.err
 	}
-	return s.SideCompactionStore.SideCompactions(ctx, unresolved)
+	return s.SideCompactionStore.HasUnresolvedSideCompaction(ctx, id)
 }
 func TestRetireContinuesAfterProtectionReadFailure(t *testing.T) {
 	svc, _, _, _ := newRecordHarness(t, domain.HarnessCodex)

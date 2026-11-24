@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -88,6 +90,62 @@ func (s *Store) SideCompactions(ctx context.Context, unresolved bool) ([]domain.
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// SideCompactionRecovery lists the metadata needed to restore or clean up each side.
+func (s *Store) SideCompactionRecovery(ctx context.Context) ([]domain.SideCompaction, error) {
+	rows, err := s.qr.ListSideCompactionRecovery(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.SideCompaction, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.SideCompaction{SideID: row.SideID, State: domain.SideCompactionState(row.State), Closed: row.Closed != 0, ProviderHostID: row.ProviderHostID})
+	}
+	return out, nil
+}
+
+// SideCompactionContent reads the current durable body for one side.
+func (s *Store) SideCompactionContent(ctx context.Context, sideID string) (json.RawMessage, error) {
+	content, err := s.qr.SideCompactionContent(ctx, sideID)
+	return json.RawMessage(content), err
+}
+
+// SideWithUnresolvedNativeCompaction returns the side protecting the native ID, if any.
+func (s *Store) SideWithUnresolvedNativeCompaction(ctx context.Context, home, id string) (string, error) {
+	return s.qr.SideWithUnresolvedNativeCompaction(ctx, gen.SideWithUnresolvedNativeCompactionParams{NativeHome: home, NativeID: id})
+}
+
+// HasUnresolvedSideCompaction checks protection for one side.
+func (s *Store) HasUnresolvedSideCompaction(ctx context.Context, sideID string) (bool, error) {
+	protected, err := s.qr.HasUnresolvedSideCompaction(ctx, sideID)
+	return protected != 0, err
+}
+
+// UnresolvedSideForClose reads the metadata required to close a protected side.
+func (s *Store) UnresolvedSideForClose(ctx context.Context, sideID string) (domain.SideConversation, bool, error) {
+	row, err := s.qr.UnresolvedSideForClose(ctx, sideID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.SideConversation{}, false, nil
+	}
+	if err != nil {
+		return domain.SideConversation{}, false, err
+	}
+	return domain.SideConversation{ID: sideID, SessionID: domain.SessionID(row.SessionID), ProviderHostID: row.ProviderHostID, ProviderForkID: row.NativeID, Harness: domain.AgentHarness(row.Provider)}, true, nil
+}
+
+// CloseSideCompactions preserves each result and removes its side's settled body.
+func (s *Store) CloseSideCompactions(ctx context.Context, sideID string) error {
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return s.inTx(ctx, "close side compactions", func(q *gen.Queries) error {
+		if err := q.CloseSideCompactions(ctx, sideID); err != nil {
+			return err
+		}
+		return q.DeleteSettledSideContent(ctx, sideID)
+	})
 }
 
 // SaveSideCompactionContent updates content only while an obligation is open.

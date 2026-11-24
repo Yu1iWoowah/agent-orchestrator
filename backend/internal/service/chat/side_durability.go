@@ -212,7 +212,7 @@ func (m *memorySideStore) loadCompactions(ctx context.Context) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	rows, err := m.durable.SideCompactions(ctx, false)
+	rows, err := m.durable.SideCompactionRecovery(ctx)
 	if err != nil {
 		return err
 	}
@@ -227,8 +227,12 @@ func (m *memorySideStore) loadCompactions(ctx context.Context) error {
 		if !row.Unresolved() || m.protected[row.SideID] {
 			continue
 		}
+		content, err := m.durable.SideCompactionContent(ctx, row.SideID)
+		if err != nil {
+			return err
+		}
 		m.protected[row.SideID] = true
-		if err := m.restoreContentLocked(row.Content); err != nil {
+		if err := m.restoreContentLocked(content); err != nil {
 			m.log.Warn("side compaction content unavailable", "side", row.SideID, "code", "CHAT_SIDE_COMPACTION_RESTORE_FAILED", "error", err)
 		}
 	}
@@ -263,16 +267,8 @@ func (s *Service) closeSideCompactions(ctx context.Context, id string) error {
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	rows, err := store.durable.SideCompactions(ctx, false)
-	if err != nil {
+	if err := store.durable.CloseSideCompactions(ctx, id); err != nil {
 		return err
-	}
-	for _, row := range rows {
-		if row.SideID == id && !row.Closed {
-			if err := store.durable.TransitionSideCompaction(ctx, row.ID, row.Epoch, row.State, row.Historical, true); err != nil {
-				return err
-			}
-		}
 	}
 	delete(store.protected, id)
 	return nil
