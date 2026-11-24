@@ -266,8 +266,8 @@ func TestStatusStoppedJSON(t *testing.T) {
 	setConfigEnv(t)
 
 	out, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return false }}, "status", "--json")
-	if err != nil {
-		t.Fatal(err)
+	if code := ExitCode(err); code != 1 {
+		t.Fatalf("status exit = %d, want 1: %v", code, err)
 	}
 	if !strings.Contains(out, `"state": "stopped"`) {
 		t.Fatalf("status did not report stopped:\n%s", out)
@@ -405,8 +405,8 @@ func TestStatusKeepsLiveProbeFailureUnhealthy(t *testing.T) {
 		HTTPClient:   terminalErrorClient(errors.New("fixture daemon endpoint is unreachable")),
 		ProcessAlive: func(pid int) bool { return pid == 4242 },
 	}, "status", "--json")
-	if err != nil {
-		t.Fatal(err)
+	if code := ExitCode(err); code != 1 {
+		t.Fatalf("status exit = %d, want 1: %v", code, err)
 	}
 	if !strings.Contains(out, `"state": "unhealthy"`) {
 		t.Fatalf("status should keep live probe failures unhealthy:\n%s", out)

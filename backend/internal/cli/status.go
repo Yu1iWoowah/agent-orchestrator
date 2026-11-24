@@ -69,9 +69,17 @@ func newStatusCommand(ctx *commandContext) *cobra.Command {
 				st.Uptime = formatUptime(ctx.deps.Now().Sub(*st.StartedAt))
 			}
 			if opts.json {
-				return writeJSON(cmd.OutOrStdout(), st)
+				err = writeJSON(cmd.OutOrStdout(), st)
+			} else {
+				err = writeStatus(cmd, st)
 			}
-			return writeStatus(cmd, st)
+			if err != nil {
+				return err
+			}
+			if st.State != stateReady {
+				return fmt.Errorf("daemon is %s", st.State)
+			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&opts.json, "json", false, "Output status as JSON")

@@ -261,8 +261,8 @@ func TestE2E_DoctorDoesNotTouchTheStore(t *testing.T) {
 func TestE2E_StatusStopped(t *testing.T) {
 	e := newEnv(t)
 	out, code := e.run(t, "status", "--json")
-	if code != 0 { // status always exits 0
-		t.Fatalf("status exit %d", code)
+	if code != 1 {
+		t.Fatalf("status exit %d, want 1", code)
 	}
 	mustContain(t, out, `"state": "stopped"`)
 	mustNotContain(t, out, "startedAt")

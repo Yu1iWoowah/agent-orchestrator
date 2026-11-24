@@ -106,9 +106,8 @@ linters:
       # nolint at the call site.
       - path: internal/process/
         linters: [forbidigo]
-      # status.go deliberately reports probe failures in the result struct
-      # (st.State/st.Error) and returns nil — a down daemon is the status being
-      # reported, not a failure of the status command itself.
+      # Daemon inspection records probe failures in the result (st.State/st.Error).
+      # The status command prints the result and exits 1 for a non-ready state.
       - path: internal/cli/status\.go
         linters: [nilerr]
       # The reflect/unsafe field-inspection test is intentional.
