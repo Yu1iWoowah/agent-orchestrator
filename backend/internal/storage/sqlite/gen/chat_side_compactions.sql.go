@@ -49,6 +49,18 @@ func (q *Queries) GetSideCompaction(ctx context.Context, id string) (ChatSideCom
 	return i, err
 }
 
+const hasUnresolvedSideCompaction = `-- name: HasUnresolvedSideCompaction :one
+SELECT CAST(EXISTS(SELECT 1 FROM chat_side_compactions
+WHERE side_id=? AND closed=0 AND state IN ('pending','unknown')) AS INTEGER)
+`
+
+func (q *Queries) HasUnresolvedSideCompaction(ctx context.Context, sideID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, hasUnresolvedSideCompaction, sideID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const insertSideCompaction = `-- name: InsertSideCompaction :exec
 INSERT INTO chat_side_compactions(id,side_id,native_home,native_id,epoch,state,record_json)
 VALUES(?,?,?,?,?,'pending',?)
@@ -226,6 +238,35 @@ func (q *Queries) SideWithUnresolvedNativeCompaction(ctx context.Context, arg Si
 	var column_1 string
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const unresolvedSideForClose = `-- name: UnresolvedSideForClose :one
+SELECT native_id,
+       CAST(COALESCE(json_extract(record_json,'$.SessionID'),'') AS TEXT) AS session_id,
+       CAST(COALESCE(json_extract(record_json,'$.ProviderHostID'),'') AS TEXT) AS provider_host_id,
+       CAST(COALESCE(json_extract(record_json,'$.Provider'),'') AS TEXT) AS provider
+FROM chat_side_compactions
+WHERE side_id=? AND closed=0 AND state IN ('pending','unknown')
+LIMIT 1
+`
+
+type UnresolvedSideForCloseRow struct {
+	NativeID       string
+	SessionID      string
+	ProviderHostID string
+	Provider       string
+}
+
+func (q *Queries) UnresolvedSideForClose(ctx context.Context, sideID string) (UnresolvedSideForCloseRow, error) {
+	row := q.db.QueryRowContext(ctx, unresolvedSideForClose, sideID)
+	var i UnresolvedSideForCloseRow
+	err := row.Scan(
+		&i.NativeID,
+		&i.SessionID,
+		&i.ProviderHostID,
+		&i.Provider,
+	)
+	return i, err
 }
 
 const updateSideCompaction = `-- name: UpdateSideCompaction :exec

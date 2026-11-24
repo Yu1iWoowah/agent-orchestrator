@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -112,6 +114,24 @@ func (s *Store) SideCompactionContent(ctx context.Context, sideID string) (json.
 // SideWithUnresolvedNativeCompaction returns the side protecting the native ID, if any.
 func (s *Store) SideWithUnresolvedNativeCompaction(ctx context.Context, home, id string) (string, error) {
 	return s.qr.SideWithUnresolvedNativeCompaction(ctx, gen.SideWithUnresolvedNativeCompactionParams{NativeHome: home, NativeID: id})
+}
+
+// HasUnresolvedSideCompaction checks protection for one side.
+func (s *Store) HasUnresolvedSideCompaction(ctx context.Context, sideID string) (bool, error) {
+	protected, err := s.qr.HasUnresolvedSideCompaction(ctx, sideID)
+	return protected != 0, err
+}
+
+// UnresolvedSideForClose reads the metadata required to close a protected side.
+func (s *Store) UnresolvedSideForClose(ctx context.Context, sideID string) (domain.SideConversation, bool, error) {
+	row, err := s.qr.UnresolvedSideForClose(ctx, sideID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.SideConversation{}, false, nil
+	}
+	if err != nil {
+		return domain.SideConversation{}, false, err
+	}
+	return domain.SideConversation{ID: sideID, SessionID: domain.SessionID(row.SessionID), ProviderHostID: row.ProviderHostID, ProviderForkID: row.NativeID, Harness: domain.AgentHarness(row.Provider)}, true, nil
 }
 
 // CloseSideCompactions preserves each result and removes its side's settled body.

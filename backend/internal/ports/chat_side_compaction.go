@@ -15,6 +15,8 @@ type SideCompactionStore interface {
 	SideCompactionRecovery(context.Context) ([]domain.SideCompaction, error)
 	SideCompactionContent(context.Context, string) (json.RawMessage, error)
 	SideWithUnresolvedNativeCompaction(context.Context, string, string) (string, error)
+	HasUnresolvedSideCompaction(context.Context, string) (bool, error)
+	UnresolvedSideForClose(context.Context, string) (domain.SideConversation, bool, error)
 	CloseSideCompactions(context.Context, string) error
 	SaveSideCompactionContent(context.Context, string, json.RawMessage) error
 	TransitionSideCompaction(context.Context, string, string, domain.SideCompactionState, bool, bool) error

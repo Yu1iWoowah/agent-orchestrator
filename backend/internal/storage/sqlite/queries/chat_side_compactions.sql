@@ -24,6 +24,19 @@ WHERE native_home=? AND native_id=? AND closed=0 AND state IN ('pending','unknow
 -- name: CloseSideCompactions :exec
 UPDATE chat_side_compactions SET closed=1 WHERE side_id=? AND closed=0;
 
+-- name: HasUnresolvedSideCompaction :one
+SELECT CAST(EXISTS(SELECT 1 FROM chat_side_compactions
+WHERE side_id=? AND closed=0 AND state IN ('pending','unknown')) AS INTEGER);
+
+-- name: UnresolvedSideForClose :one
+SELECT native_id,
+       CAST(COALESCE(json_extract(record_json,'$.SessionID'),'') AS TEXT) AS session_id,
+       CAST(COALESCE(json_extract(record_json,'$.ProviderHostID'),'') AS TEXT) AS provider_host_id,
+       CAST(COALESCE(json_extract(record_json,'$.Provider'),'') AS TEXT) AS provider
+FROM chat_side_compactions
+WHERE side_id=? AND closed=0 AND state IN ('pending','unknown')
+LIMIT 1;
+
 -- name: GetSideCompaction :one
 SELECT * FROM chat_side_compactions WHERE id=?;
 

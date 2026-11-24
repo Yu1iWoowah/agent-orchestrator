@@ -111,30 +111,26 @@ func (s *Service) CloseProtectedSide(ctx context.Context, id string) error {
 	if s.nativeGuard.store == nil {
 		return ErrSideClosed
 	}
-	rows, err := s.nativeGuard.store.SideCompactions(ctx, true)
+	side, found, err := s.nativeGuard.store.UnresolvedSideForClose(ctx, id)
 	if err != nil {
 		return err
 	}
-	for _, row := range rows {
-		if row.SideID != id {
-			continue
-		}
-		side := domain.SideConversation{ID: id, SessionID: row.SessionID, ProviderHostID: row.ProviderHostID, ProviderForkID: row.NativeID, Harness: row.Provider}
-		store, ok := s.sides.store.(*memorySideStore)
-		if !ok {
-			return ErrSideUnavailable
-		}
-		store.mu.Lock()
-		if existing, ok := store.sides[id]; ok {
-			side = existing
-		} else {
-			store.sides[id] = side
-		}
-		store.mu.Unlock()
-		if err := s.closeSideCompactions(ctx, id); err != nil {
-			return err
-		}
-		return s.closeSide(ctx, side)
+	if !found {
+		return ErrSideClosed
 	}
-	return ErrSideClosed
+	store, ok := s.sides.store.(*memorySideStore)
+	if !ok {
+		return ErrSideUnavailable
+	}
+	store.mu.Lock()
+	if existing, ok := store.sides[id]; ok {
+		side = existing
+	} else {
+		store.sides[id] = side
+	}
+	store.mu.Unlock()
+	if err := s.closeSideCompactions(ctx, id); err != nil {
+		return err
+	}
+	return s.closeSide(ctx, side)
 }
