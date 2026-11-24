@@ -803,8 +803,7 @@ func (r *lateReceiptRuntime) Create(ctx context.Context, cfg ports.RuntimeConfig
 }
 
 func TestLateSpawnFailureRetainsStopOwnerAfterReopen(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	root := t.TempDir()
 	store, err := sqlite.Open(root)
 	if err != nil {
@@ -838,17 +837,19 @@ func TestLateSpawnFailureRetainsStopOwnerAfterReopen(t *testing.T) {
 		return table.kill(pid)
 	}
 	s.launcher = launcher
+	launchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.TriggerWithOptions(ctx, worker.ID, TriggerOptions{})
+		_, err := s.TriggerWithOptions(launchCtx, worker.ID, TriggerOptions{})
 		done <- err
 	}()
 	select {
 	case <-rt.entered:
 	case early := <-done:
 		t.Fatalf("trigger returned before runtime Create: %v", early)
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
+	case <-time.After(20 * time.Second):
+		t.Fatal("trigger did not reach runtime Create")
 	}
 	review := s.review(t)
 	account := domain.ResolvedAgentAccount{
@@ -870,8 +871,8 @@ func TestLateSpawnFailureRetainsStopOwnerAfterReopen(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
+	case <-time.After(20 * time.Second):
+		t.Fatal("trigger did not finish after runtime Create resumed")
 	}
 	review = s.review(t)
 	if rt.destroyed == "" || review.ReviewerHandleID != rt.destroyed {
