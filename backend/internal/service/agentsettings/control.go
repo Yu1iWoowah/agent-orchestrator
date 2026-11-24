@@ -116,15 +116,23 @@ func (c *Control) ChangeAgentSettings(ctx context.Context, id domain.SessionID, 
 }
 
 func (c *Control) target(ctx context.Context, caller Caller, id domain.SessionID) (domain.SessionRecord, Authorization, error) {
-	rec, ok, err := c.store.GetSession(ctx, id)
+	rec, err := c.lookupTarget(ctx, id)
 	if err != nil {
 		return rec, Authorization{}, err
 	}
-	if !ok {
-		return rec, Authorization{}, apierr.NotFound("AGENT_SETTINGS_NOT_FOUND", "Session settings not found")
-	}
 	accepted, err := c.authorizer.Authorize(ctx, caller, rec)
 	return rec, accepted, err
+}
+
+func (c *Control) lookupTarget(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	rec, ok, err := c.store.GetSession(ctx, id)
+	if err != nil {
+		return rec, err
+	}
+	if !ok {
+		return rec, apierr.NotFound("AGENT_SETTINGS_NOT_FOUND", "Session settings not found")
+	}
+	return rec, nil
 }
 
 // Change authorizes and validates a patch before admitting it with revision CAS.
@@ -312,7 +320,11 @@ func (c *Control) Operation(ctx context.Context, caller Caller, id domain.Sessio
 
 // ReadForCaller qualifies access before reading preferences and observations.
 func (c *Control) ReadForCaller(ctx context.Context, caller Caller, id domain.SessionID) (Snapshot, error) {
-	if _, _, err := c.target(ctx, caller, id); err != nil {
+	rec, err := c.lookupTarget(ctx, id)
+	if err != nil {
+		return Snapshot{}, settingsError(err)
+	}
+	if _, err := c.authorizer.authorize(ctx, caller, rec, true); err != nil {
 		return Snapshot{}, settingsError(err)
 	}
 	result, err := c.core.Read(ctx, id)

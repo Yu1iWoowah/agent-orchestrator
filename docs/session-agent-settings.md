@@ -264,8 +264,9 @@ workspace and launch veto stay in place; there is no manual proof override.
 - `AGENT_SETTINGS_WRITER_UNCONFIRMED` (409) preserves a terminated operation's
   unresolved physical-writer obligation; logical termination permits no launch.
 
-Managed orchestrator grants follow project policy and the same-project worker
-scope, excluding self/orchestrator. Grants have a fixed 24-hour lifetime and
+Managed changes follow project policy and target same-project workers. The
+current orchestrator can also read its own settings snapshot with a valid
+settings grant. Grants have a fixed 24-hour lifetime and
 are **not renewed in place**; a live reconnect preserves launch identity but
 does not extend expiry. Relaunch through the normal lifecycle to obtain a new
 grant. Local UI/CLI without a grant retain manual target scope and are audited
