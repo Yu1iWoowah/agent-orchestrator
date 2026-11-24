@@ -372,19 +372,15 @@ func acquireHostLock(dataDir, sessionID string) (func(), error) {
 	// Serialize acquisition across processes, including the decision to reclaim
 	// a stale owner. The guard file stays in place while host.lock is replaced.
 	guardPath := filepath.Join(dir, "host.acquire.lock")
-	guard, err := datadirlock.AcquireFile(context.Background(), guardPath, 0)
-	switch {
-	case err == nil:
-		defer func() { _ = guard.Release() }()
-	case errors.Is(err, datadirlock.ErrUnsupported):
-		log := openAdapterLog(dir, adapterLogMaxBytes)
-		_, _ = fmt.Fprintf(log, "warning: file locking is unsupported for %q. Move AO_DATA_DIR to a filesystem that supports file locking.\n", guardPath)
-		_ = log.Close()
-	case errors.Is(err, datadirlock.ErrLocked):
-		return nil, ErrHostExists
-	default:
-		return nil, err
+	guard, guardErr := datadirlock.AcquireFile(context.Background(), guardPath, 0)
+	fallback := errors.Is(guardErr, datadirlock.ErrUnsupported)
+	if guardErr != nil && !fallback {
+		if errors.Is(guardErr, datadirlock.ErrLocked) {
+			return nil, ErrHostExists
+		}
+		return nil, guardErr
 	}
+	defer func() { _ = guard.Release() }()
 
 	path, _ := lockPath(dataDir, sessionID)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // AO-owned capability directory.
@@ -424,6 +420,12 @@ func acquireHostLock(dataDir, sessionID string) (func(), error) {
 	if err := f.Close(); err != nil {
 		_ = os.Remove(path)
 		return nil, err
+	}
+	if fallback {
+		// Only write to the rotating log after taking ownership of host.lock.
+		log := openAdapterLog(dir, adapterLogMaxBytes)
+		_, _ = fmt.Fprintf(log, "warning: file locking is unsupported for %q. Move AO_DATA_DIR to a filesystem that supports file locking.\n", guardPath)
+		_ = log.Close()
 	}
 	return func() { _ = os.Remove(path) }, nil
 }
