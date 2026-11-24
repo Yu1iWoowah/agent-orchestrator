@@ -121,9 +121,6 @@ type acpRelay struct {
 	// silence. The prompt stays active until the adapter answers it, so output
 	// the cancelled turn still emits is not attributed to the next prompt.
 	stallCancelledAt time.Time
-	// Keep the original RPC error's correlation until every prompt has answered.
-	stalledPromptErrorID     json.RawMessage
-	stalledPromptErrorParams json.RawMessage
 	// abandonedPrompts holds provider ids of prompts the watchdog failed. The
 	// adapter's own late answer to one is dropped, not forwarded.
 	abandonedPrompts map[string]struct{}
@@ -563,12 +560,6 @@ func (r *acpRelay) providerFrame(
 	delete(r.pending, string(id))
 	r.captureResponse(request, envelope)
 
-	if rpcError := envelope["error"]; request.method == "session/prompt" &&
-		!r.stallCancelledAt.IsZero() && r.delivery != nil &&
-		len(rpcError) > 0 && rpcError[0] == '{' && !isSteerPrompt(request.params) {
-		r.stalledPromptErrorID, r.stalledPromptErrorParams = id, request.params
-	}
-
 	if request.method == "session/prompt" && keepsTurn(request.params) {
 		// A steer command's answer is never the turn's result; that comes from
 		// the turn's own prompts.
@@ -609,6 +600,11 @@ func (r *acpRelay) providerFrame(
 		return nil, false, nil
 	}
 	if request.method == "session/prompt" {
+		if rpcError := envelope["error"]; !r.stallCancelledAt.IsZero() && r.delivery != nil && len(rpcError) > 0 && rpcError[0] == '{' {
+			if err := r.delivery.settleStalledPromptError(id, request.params); err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
+			}
+		}
 		return r.settleTurn(id, request, envelope, frame, generation, attached)
 	}
 	if request.generation != generation || !attached {
@@ -629,12 +625,6 @@ func (r *acpRelay) settleTurn(
 	attached bool,
 ) ([]byte, bool, error) {
 	if !r.stallCancelledAt.IsZero() {
-		if r.stalledPromptErrorID != nil {
-			if err := r.delivery.settleStalledPromptError(r.stalledPromptErrorID, r.stalledPromptErrorParams); err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
-			}
-			r.stalledPromptErrorID, r.stalledPromptErrorParams = nil, nil
-		}
 		// The adapter has answered the last prompt of the turn the watchdog
 		// cancelled. Whatever it says, the turn ended because the adapter went
 		// silent. An earlier prompt's answer passed through providerFrame
@@ -729,7 +719,6 @@ func (r *acpRelay) failStalledPrompt(
 	// first, so the newest failure is the turn's result and no prompt the
 	// controller is waiting on is left unanswered.
 	r.stallCancelledAt = time.Time{}
-	r.stalledPromptErrorID, r.stalledPromptErrorParams = nil, nil
 	if held := r.heldResult; held != nil {
 		// The turn's own prompt answered, but a steer command ignored the
 		// cancel. A held success would release the queue into a wedged adapter,
