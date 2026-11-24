@@ -2,12 +2,15 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
 func (c *Controller) outboundQuiescing() bool {
@@ -202,13 +205,28 @@ func logDeliveryJournalFailure(log *slog.Logger, id domain.SessionID, attempt st
 	var journal *ports.ChatDeliveryJournalError
 	if errors.As(cause, &journal) {
 		stage, cause = journal.Stage, journal.Cause
-		if journal.AttemptID != "" {
-			attempt = journal.AttemptID
-		}
 	} else if errors.Is(cause, ports.ErrAgentSettingsConflict) {
 		stage = "version_or_owner"
 	}
-	log.Warn("chat delivery journal unavailable", "session", id, "reason", "delivery_journal_unavailable", "stage", stage, "attempt", attempt, "error", cause)
+	attrs := []any{"session", id, "reason", "delivery_journal_unavailable", "stage", stage, "attempt", attempt}
+	var decode *ports.ChatDeliveryDecodeError
+	switch {
+	case errors.As(cause, &decode):
+		attrs = append(attrs, "error_type", fmt.Sprintf("%T", decode.Cause))
+		var typeError *json.UnmarshalTypeError
+		if errors.As(decode.Cause, &typeError) {
+			attrs = append(attrs, "field", typeError.Field)
+		}
+	case stage == listSessionsJournalStage:
+		attrs = append(attrs, "error_type", telemetrymeta.ErrorType(cause))
+		var coded interface{ Code() int }
+		if errors.As(cause, &coded) {
+			attrs = append(attrs, "sqlite_code", coded.Code())
+		}
+	default:
+		attrs = append(attrs, "error", cause)
+	}
+	log.Warn("chat delivery journal unavailable", attrs...)
 }
 
 // Record an already-observed custody failure before a native read can consume
@@ -322,6 +340,10 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 		}
 	}()
 	if err := s.ReconcilePreviousBootDeliveries(ctx); err != nil {
+		var journal *ports.ChatDeliveryJournalError
+		if errors.As(err, &journal) && journal.Stage == listSessionsJournalStage {
+			logDeliveryJournalFailure(s.log, "", "", journal)
+		}
 		return err
 	}
 	if s.sides != nil {

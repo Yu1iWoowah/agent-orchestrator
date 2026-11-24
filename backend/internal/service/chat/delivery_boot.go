@@ -9,6 +9,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+const listSessionsJournalStage = "list_sessions"
+
 type previousBootDeliveryStore interface {
 	chatDeliveryJournal
 	SettlePreviousBootAcceptance(context.Context, domain.ChatDeliveryAttempt, domain.AgentSettingsOwner, time.Time) error
@@ -116,7 +118,7 @@ func (s *Service) ReconcilePreviousBootDeliveries(ctx context.Context) error {
 	}
 	records, err := sessions.ListAllSessions(ctx)
 	if err != nil {
-		return &ports.ChatShutdownBlockedError{Reason: "delivery_journal_unavailable", Cause: err}
+		return &ports.ChatShutdownBlockedError{Reason: "delivery_journal_unavailable", Cause: &ports.ChatDeliveryJournalError{Stage: listSessionsJournalStage, Cause: err}}
 	}
 	var failures []error
 	for _, rec := range records {

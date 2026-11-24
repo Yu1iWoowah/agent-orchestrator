@@ -52,13 +52,18 @@ func (e *ChatShutdownBlockedError) Error() string {
 // ChatDeliveryJournalError identifies a journal failure at its source without
 // formatting the original storage or decoder error.
 type ChatDeliveryJournalError struct {
-	Stage     string
-	AttemptID string
-	Cause     error
+	Stage string
+	Cause error
 }
 
 func (e *ChatDeliveryJournalError) Error() string { return "chat delivery journal: " + e.Stage }
 func (e *ChatDeliveryJournalError) Unwrap() error { return e.Cause }
+
+// ChatDeliveryDecodeError marks a decoder error whose text may contain journal values.
+type ChatDeliveryDecodeError struct{ Cause error }
+
+func (e *ChatDeliveryDecodeError) Error() string { return e.Cause.Error() }
+func (e *ChatDeliveryDecodeError) Unwrap() error { return e.Cause }
 
 func (e *ChatShutdownBlockedError) Unwrap() []error {
 	return []error{ErrChatShutdownNotSettled, e.Cause}
