@@ -25,6 +25,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
@@ -240,6 +242,20 @@ func hostProcessIdentity(pid int, bootID string) string {
 	return ""
 }
 
+// The identity is compared as text, so require the canonical spelling that Linux emits.
+func validHostProcessIdentity(identity string) bool {
+	bootID, ticks, ok := strings.Cut(identity, ".")
+	if !ok {
+		return false
+	}
+	boot, err := uuid.Parse(bootID)
+	if err != nil || boot.String() != bootID {
+		return false
+	}
+	start, err := strconv.ParseUint(ticks, 10, 64)
+	return err == nil && strconv.FormatUint(start, 10) == ticks
+}
+
 func hostProcessReused(pid int, identity string) bool {
 	if identity == "" {
 		return false
@@ -305,9 +321,9 @@ func spawnRecords(dataDir, sessionID string) ([]spawnRecord, HostState) {
 		if !ok {
 			continue
 		}
-		pidText, identity, _ := strings.Cut(name, "-")
+		pidText, identity, hasIdentity := strings.Cut(name, "-")
 		pid, err := strconv.Atoi(pidText)
-		if err != nil || pid <= 0 {
+		if err != nil || pid <= 0 || (hasIdentity && !validHostProcessIdentity(identity)) {
 			state = HostUnknown
 			continue
 		}
@@ -352,12 +368,13 @@ func acquireHostLock(dataDir, sessionID string) (func(), error) {
 	if errors.Is(err, os.ErrExist) {
 		owner, readErr := os.ReadFile(path) //nolint:gosec // AO-owned path derived from validated session id.
 		fields := strings.Fields(string(owner))
+		identity, valid := hostLockIdentity(fields)
 		pid, parseErr := 0, errors.New("empty chat host lock")
 		if len(fields) > 0 {
 			pid, parseErr = strconv.Atoi(fields[0])
 		}
-		if readErr != nil || parseErr != nil || pid <= 0 ||
-			processalive.Alive(pid) && !lockFromPreviousBoot(dataDir, sessionID, pid, fields) && !lockOwnerReused(pid, fields) {
+		if readErr != nil || parseErr != nil || pid <= 0 || !valid ||
+			processalive.Alive(pid) && !lockFromPreviousBoot(dataDir, sessionID, pid, fields) && !hostProcessReused(pid, identity) {
 			return nil, ErrHostExists
 		}
 		// A host can die after atomically creating its launch lock but before it
@@ -399,8 +416,15 @@ func lockFromPreviousBoot(dataDir, sessionID string, pid int, fields []string) b
 	return err == nil && d.PID == pid && hostFromPreviousBoot(d.BootID, d.StartedAt)
 }
 
-func lockOwnerReused(pid int, fields []string) bool {
-	return len(fields) >= 3 && hostProcessReused(pid, fields[2])
+func hostLockIdentity(fields []string) (string, bool) {
+	switch len(fields) {
+	case 1, 2:
+		return "", true
+	case 3:
+		return fields[2], validHostProcessIdentity(fields[2])
+	default:
+		return "", false
+	}
 }
 
 func readDescriptorOnce(dataDir, sessionID string) (Descriptor, error) {
@@ -417,9 +441,18 @@ func readDescriptorOnce(dataDir, sessionID string) (Descriptor, error) {
 	if err != nil {
 		return Descriptor{}, err
 	}
-	var d Descriptor
-	if err := json.Unmarshal(b, &d); err != nil {
+	var record struct {
+		Descriptor
+		ProcessIdentity json.RawMessage `json:"processIdentity"`
+	}
+	if err := json.Unmarshal(b, &record); err != nil {
 		return Descriptor{}, fmt.Errorf("decode chat host descriptor: %w", err)
+	}
+	d := record.Descriptor
+	if record.ProcessIdentity != nil {
+		if err := json.Unmarshal(record.ProcessIdentity, &d.ProcessIdentity); err != nil || !validHostProcessIdentity(d.ProcessIdentity) {
+			return Descriptor{}, errors.New("invalid chat host process identity")
+		}
 	}
 	if d.SessionID != sessionID || d.Address == "" || d.Token == "" {
 		return Descriptor{}, errors.New("invalid chat host descriptor")
@@ -780,14 +813,15 @@ func pidFileHostState(path string, pathErr error) HostState {
 	}
 	// The lock holds the PID, followed by boot and process identities when available.
 	fields := strings.Fields(string(owner))
+	identity, valid := hostLockIdentity(fields)
 	pid, parseErr := 0, errors.New("empty chat host lock")
 	if len(fields) > 0 {
 		pid, parseErr = strconv.Atoi(fields[0])
 	}
 	switch {
-	case err != nil || parseErr != nil || pid <= 0:
+	case err != nil || parseErr != nil || pid <= 0 || !valid:
 		return HostUnknown
-	case processalive.Alive(pid) && !lockOwnerReused(pid, fields):
+	case processalive.Alive(pid) && !hostProcessReused(pid, identity):
 		return HostRunning
 	default:
 		return HostAbsent

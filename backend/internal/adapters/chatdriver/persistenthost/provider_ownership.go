@@ -43,7 +43,8 @@ func ProbeProviderOwnership(dataDir, sessionID string) ProviderOwnership {
 	}
 	if !noLock {
 		fields := strings.Fields(string(lock))
-		if lockErr != nil || len(fields) == 0 || len(fields) > 3 || fields[0] != strconv.Itoa(d.PID) ||
+		_, valid := hostLockIdentity(fields)
+		if lockErr != nil || !valid || fields[0] != strconv.Itoa(d.PID) ||
 			(len(fields) >= 2 && fields[1] != d.BootID) {
 			return ProviderOwnershipUncertain
 		}
