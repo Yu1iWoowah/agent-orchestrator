@@ -392,12 +392,14 @@ func TestPromptSuggestionForkReturnedChildSurvivesDaemonCrash(t *testing.T) {
 		parent.mu.Unlock()
 		if deleted {
 			files, err = filepath.Glob(filepath.Join(dir, "side-forks", "*.json"))
-			if err != nil || len(files) != 0 {
-				t.Fatalf("retired journal=%v %v", files, err)
+			if err != nil {
+				t.Fatal(err)
 			}
-			return
+			if len(files) == 0 {
+				return
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("replacement daemon did not clean up returned child")
+	t.Fatalf("replacement daemon did not finish cleaning up returned child: journal=%v", files)
 }

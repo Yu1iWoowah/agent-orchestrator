@@ -87,14 +87,6 @@ func emitStall(t *testing.T, h *harness, conv *gatedQueryConversation) {
 	})
 }
 
-func settleHostReceipt(conv *gatedQueryConversation, id string) {
-	conv.mu.Lock()
-	defer conv.mu.Unlock()
-	receipt := conv.deliveryReceipts[id]
-	receipt.Disposition, receipt.Source, receipt.Complete, receipt.ExecutionSettled = domain.ChatDeliveryAccepted, "provider_response", true, true
-	conv.deliveryReceipts[id] = receipt
-}
-
 func sendQueued(t *testing.T, h *harness, text string) {
 	t.Helper()
 	if _, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: text, ClientMessageID: text, Origin: domain.MessageOriginHuman}); err != nil {
@@ -129,7 +121,7 @@ func TestStalledPromptHoldKeepsStopCutoff(t *testing.T) {
 	}
 	assertTurnStaysQueued(t, h, "before stop")
 
-	settleHostReceipt(conv, a.ID)
+	conv.settleHostReceipt(a.ID)
 	release()
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		states := turnStateByText(t, s)
@@ -156,9 +148,11 @@ func TestStalledPromptHoldSurvivesJournalReadFailure(t *testing.T) {
 		t.Fatalf("provider received %v while the journal could not say the stalled prompt settled", sent)
 	}
 
-	st.failPending.Store(false)
-	settleHostReceipt(conv, a.ID)
-	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(30 * time.Second) })
+	h.ctrl.AdvanceDeliveryClockForTest(func() {
+		st.failPending.Store(false)
+		conv.settleHostReceipt(a.ID)
+		clock.advance(30 * time.Second)
+	})
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		return turnStateByText(t, s)["queued"] != domain.TurnStateQueued
 	})
@@ -170,7 +164,7 @@ func TestStalledPromptHoldSurvivesJournalReadFailure(t *testing.T) {
 func TestStalledPromptHoldSeesSettlementDuringInstall(t *testing.T) {
 	h, conv, st, clock, a := stallHoldHarness(t)
 	sendQueued(t, h, "queued")
-	settleHostReceipt(conv, a.ID)
+	conv.settleHostReceipt(a.ID)
 
 	// Park the monitor inside its host query, so the only pending-delivery read
 	// at the stall is the hold's own.
