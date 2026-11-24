@@ -250,6 +250,7 @@ type Controller struct {
 	deliveryCheckMu               sync.Mutex
 	deliveryReceiptMu             sync.Mutex    // serializes attention creation with terminal receipts
 	deliveryWake                  chan struct{} // guarded by mu
+	deliveryMonitorStarted        bool          // guarded by mu; set at shutdown to prevent a late start
 	deliveryMonitorStop           chan struct{}
 	deliveryMonitor               sync.WaitGroup
 	deliveryImmediate             bool                                // guarded by mu
@@ -2202,7 +2203,7 @@ func (c *Controller) dispatch(
 	followers []string,
 ) (domain.ConversationTurn, error) {
 	select {
-	case <-c.stopped:
+	case <-c.deliveryMonitorStop:
 		return c.preserveBeforeProviderIO(ctx, turnID, followers, requestedAt)
 	default:
 	}
@@ -3632,6 +3633,7 @@ func (c *Controller) Wait() { <-c.stopped }
 func (c *Controller) project(flushInterval time.Duration) {
 	defer func() {
 		c.mu.Lock()
+		c.deliveryMonitorStarted = true
 		close(c.deliveryMonitorStop)
 		c.mu.Unlock()
 		c.deliveryMonitor.Wait()

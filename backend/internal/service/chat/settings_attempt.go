@@ -321,7 +321,7 @@ func (c *Controller) waitSettingsRetry(delay time.Duration) bool {
 	select {
 	case <-c.timerAfter(delay):
 		return true
-	case <-c.stopped:
+	case <-c.deliveryMonitorStop:
 		return false
 	}
 }

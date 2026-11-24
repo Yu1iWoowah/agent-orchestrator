@@ -645,20 +645,20 @@ func (c *Controller) startDeliveryMonitor() {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.deliveryMonitorStopping() {
-		return
-	}
-	if c.deliveryWake != nil {
+	if c.deliveryMonitorStarted {
+		wake := c.deliveryWake
+		c.mu.Unlock()
 		select {
-		case c.deliveryWake <- struct{}{}:
+		case wake <- struct{}{}:
 		default:
 		}
 		return
 	}
+	c.deliveryMonitorStarted = true
 	c.deliveryImmediate = false
 	c.deliveryWake = make(chan struct{}, 1)
 	c.deliveryMonitor.Go(c.monitorDeliveries)
+	c.mu.Unlock()
 }
 
 func (c *Controller) deliveryMonitorStopping() bool {
@@ -842,7 +842,7 @@ func (c *Controller) scheduleDeliveryRetry() {
 	timer := c.timerAfter(delay)
 	go func() {
 		select {
-		case <-c.stopped:
+		case <-c.deliveryMonitorStop:
 			return
 		case <-timer:
 		}
