@@ -137,14 +137,14 @@ func (s lifecycleEngine) review(t *testing.T) domain.Review {
 
 // observe feeds a reviewer hook signal through the same path the daemon's
 // activity endpoint uses.
-func (s lifecycleEngine) observe(t *testing.T, launchID string, state domain.ActivityState) {
+func (s lifecycleEngine) observe(t *testing.T, launchID string, state domain.ActivityState, event string) {
 	t.Helper()
 	review := s.review(t)
 	if _, err := s.store.UpdateReviewActivity(context.Background(), review.ID, state, "", launchID); err != nil {
 		t.Fatalf("UpdateReviewActivity: %v", err)
 	}
 	review.ReviewerActivityState = state
-	if err := s.ObserveReviewActivity(context.Background(), review, launchID, state); err != nil {
+	if err := s.ObserveReviewActivity(context.Background(), review, launchID, state, event); err != nil {
 		t.Fatalf("ObserveReviewActivity: %v", err)
 	}
 }
@@ -289,8 +289,8 @@ func TestRowOneReviewRunsAlwaysReachAFinalState(t *testing.T) {
 			s := newLifecycleEngine(t, launcher)
 			run := s.trigger(t)
 			launchID := s.run(t, run.ID).LaunchID
-			s.observe(t, launchID, domain.ActivityActive)
-			s.observe(t, launchID, domain.ActivityIdle)
+			s.observe(t, launchID, domain.ActivityActive, "")
+			s.observe(t, launchID, domain.ActivityIdle, "")
 			s.advance(cfg.IdleGrace)
 			if _, err := s.List(context.Background(), s.worker.ID); err != nil {
 				t.Fatal(err)
@@ -325,6 +325,25 @@ func TestRowOneReviewRunsAlwaysReachAFinalState(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReaperFailsRunningReviewAfterSupervisorExitDuringLaunch(t *testing.T) {
+	launcher := &fakeLauncher{handle: "review-mer-1"}
+	s := newLifecycleEngine(t, launcher)
+	launcher.onSpawn = func(spec LaunchSpec) {
+		s.observe(t, spec.LaunchID, domain.ActivityExited, "process-exited")
+		s.advance(time.Second)
+	}
+
+	run := s.trigger(t)
+	wantRun(t, s.run(t, run.ID), domain.ReviewRunRunning, "")
+	if state := s.review(t).ReviewerActivityState; state != domain.ActivityExited {
+		t.Fatalf("reviewer activity = %q, want exited", state)
+	}
+
+	launcher.aliveErr = errors.New("runtime probe unavailable")
+	s.pass(t)
+	wantRun(t, s.run(t, run.ID), domain.ReviewRunFailed, domain.ReviewFailureProcessExited)
 }
 
 func describeRun(run domain.ReviewRun) string {

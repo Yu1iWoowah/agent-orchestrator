@@ -56,7 +56,7 @@ func (*rhCatalogProvider) Logout(context.Context, string) error {
 }
 func (*rhCatalogProvider) LaunchEnv(string) map[string]string { return nil }
 
-func TestReusableHandoffAccountRefreshIsGlobalBeforeCLIFilter(t *testing.T) {
+func TestAccountRefreshIsGlobalBeforeCLIFilter(t *testing.T) {
 	cfg := setConfigEnv(t)
 	store := sqlitetest.MustOpen(t)
 	root := filepath.Join(t.TempDir(), "accounts")
