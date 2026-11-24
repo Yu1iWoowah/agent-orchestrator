@@ -913,12 +913,15 @@ func testSendWhileHibernatedReturnsBeforeWakeAndDrainsQueue(t *testing.T, cancel
 		}
 		cancel()
 	}
-	started := time.Now()
-	turn, err := wakeService.Send(ctx, testSession, ports.ChatUserMessage{
+	// The wake is still blocked by releaseWake, so returning a queued turn
+	// proves Send did not wait for the wake.
+	sendCtx, cancelSend := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelSend()
+	turn, err := wakeService.Send(sendCtx, testSession, ports.ChatUserMessage{
 		Text: "send while cold", ClientMessageID: "cold-send-1",
 	})
-	if err != nil || turn.State != domain.TurnStateQueued || time.Since(started) > 250*time.Millisecond {
-		t.Fatalf("cold send = %+v, %v; elapsed=%s", turn, err, time.Since(started))
+	if err != nil || turn.State != domain.TurnStateQueued {
+		t.Fatalf("cold send before wake = %+v, %v; want queued", turn, err)
 	}
 	select {
 	case <-wakeEntered:
