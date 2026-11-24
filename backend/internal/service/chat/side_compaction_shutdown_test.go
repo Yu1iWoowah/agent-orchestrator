@@ -104,7 +104,12 @@ func onlyCompaction(t *testing.T, db *sqlite.Store) domain.SideCompaction {
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("records: %+v %v", rows, err)
 	}
-	return rows[0]
+	row := rows[0]
+	row.Content, err = db.SideCompactionContent(t.Context(), row.SideID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return row
 }
 
 func TestHistoricalUnknownShutdown(t *testing.T) {

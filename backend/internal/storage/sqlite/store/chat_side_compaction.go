@@ -73,7 +73,7 @@ func (s *Store) RegisterSideCompaction(ctx context.Context, r domain.SideCompact
 	})
 }
 
-// SideCompactions reads durable metadata and the current side content.
+// SideCompactions reads durable compaction metadata.
 func (s *Store) SideCompactions(ctx context.Context, unresolved bool) ([]domain.SideCompaction, error) {
 	rows, err := s.qr.ListSideCompactions(ctx, unresolved)
 	if err != nil {
@@ -86,7 +86,6 @@ func (s *Store) SideCompactions(ctx context.Context, unresolved bool) ([]domain.
 			return nil, err
 		}
 		r.State, r.Historical, r.Closed = domain.SideCompactionState(row.State), row.Historical != 0, row.Closed != 0
-		r.Content = json.RawMessage(row.ContentJson)
 		out = append(out, r)
 	}
 	return out, nil

@@ -3,9 +3,8 @@ INSERT INTO chat_side_compactions(id,side_id,native_home,native_id,epoch,state,r
 VALUES(?,?,?,?,?,'pending',?);
 
 -- name: ListSideCompactions :many
-SELECT c.*,COALESCE(s.content_json,'') AS content_json FROM chat_side_compactions c
-LEFT JOIN chat_side_contents s ON s.side_id=c.side_id
-WHERE sqlc.arg(unresolved_only)=0 OR (c.closed=0 AND c.state IN ('pending','unknown'));
+SELECT * FROM chat_side_compactions
+WHERE sqlc.arg(unresolved_only)=0 OR (closed=0 AND state IN ('pending','unknown'));
 
 -- name: ListSideCompactionRecovery :many
 SELECT side_id, state, closed,

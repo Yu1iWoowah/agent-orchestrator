@@ -58,12 +58,13 @@ func TestSideCompactionDispatchVetoesShutdownBeforeNativeIO(t *testing.T) {
 			}
 			err := svc.PreflightShutdown(ctx)
 			rows, readErr := db.SideCompactions(t.Context(), false)
+			content, contentErr := db.SideCompactionContent(t.Context(), "side")
 			store := svc.sides.store.(*memorySideStore)
 			store.mu.Lock()
 			protected := store.protected["side"]
 			store.mu.Unlock()
-			if !errors.Is(err, ports.ErrChatShutdownNotSettled) || readErr != nil || len(rows) != 1 || rows[0].State != domain.SideCompactionPending || len(rows[0].Content) == 0 || !protected {
-				t.Fatalf("preflight=%v records=%+v protected=%v read=%v; want pending protection and shutdown veto before native I/O", err, rows, protected, readErr)
+			if !errors.Is(err, ports.ErrChatShutdownNotSettled) || readErr != nil || len(rows) != 1 || rows[0].State != domain.SideCompactionPending || contentErr != nil || len(content) == 0 || !protected {
+				t.Fatalf("preflight=%v records=%+v protected=%v read=%v content=%v; want pending protection and shutdown veto before native I/O", err, rows, protected, readErr, contentErr)
 			}
 			if conv.count != 0 || conv.queries.Load() != 0 {
 				t.Fatalf("pre-dispatch provider calls: compact=%d reconcile=%d", conv.count, conv.queries.Load())
@@ -134,12 +135,13 @@ func TestSideCompactionOriginalReceiptCanSettleWithoutReplay(t *testing.T) {
 				default:
 				}
 				rows, err := db.SideCompactions(t.Context(), false)
+				content, contentErr := db.SideCompactionContent(t.Context(), "side")
 				state := domain.SideCompactionSettled
 				if outcome == ports.ChatCompactionNotSent {
 					state = domain.SideCompactionNotSent
 				}
-				if err != nil || len(rows) != 1 || rows[0].State != state || len(rows[0].Content) != 0 {
-					t.Fatalf("original result not settled: %+v, %v", rows, err)
+				if err != nil || len(rows) != 1 || rows[0].State != state || contentErr != nil || len(content) != 0 {
+					t.Fatalf("original result not settled: %+v, %v; content read: %v", rows, err, contentErr)
 				}
 				if conv.count != 1 || conv.queries.Load() != 0 {
 					t.Fatalf("replayed compaction or substituted native inference: io=%d query=%d", conv.count, conv.queries.Load())

@@ -66,14 +66,18 @@ func (s *Service) sideProtectionStatus(ctx context.Context, row domain.SideCompa
 		return p
 	}
 	store, ok := s.sides.store.(*memorySideStore)
-	if !ok {
+	if !ok || s.nativeGuard.store == nil {
+		return p
+	}
+	content, err := s.nativeGuard.store.SideCompactionContent(ctx, row.SideID)
+	if err != nil {
 		return p
 	}
 	// Restore into a separate store so listing never changes live side state or
 	// rewrites attachments, but still verifies the persisted content and images.
 	projection := newMemorySideStore()
 	projection.attachments = store.attachments
-	if err := projection.restoreContentLocked(row.Content); err != nil || projection.sides[row.SideID].ID != row.SideID {
+	if err := projection.restoreContentLocked(content); err != nil || projection.sides[row.SideID].ID != row.SideID {
 		return p
 	}
 	if applicable, reason := sideCompactionApplicable(row, runtime.GOOS); !applicable {

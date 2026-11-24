@@ -58,7 +58,10 @@ func TestProtectedSideAutomaticPaths(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, db, conv, _ := newRecordHarness(t, domain.HarnessCodex)
 			_, _ = svc.CompactSideChat(t.Context(), "session", "side")
-			before, _ := db.SideCompactions(t.Context(), true)
+			before, err := db.SideCompactionContent(t.Context(), "side")
+			if err != nil {
+				t.Fatal(err)
+			}
 			spy := &isolationConversation{recordCompactionConversation: conv}
 			runtime := svc.sides.runtimes["side"]
 			runtime.conv = spy
@@ -70,8 +73,9 @@ func TestProtectedSideAutomaticPaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			after, _ := db.SideCompactions(t.Context(), true)
-			if len(after) != 1 || after[0].Closed || string(before[0].Content) != string(after[0].Content) {
-				t.Fatal("automatic path changed obligation/content", after)
+			content, err := db.SideCompactionContent(t.Context(), "side")
+			if len(after) != 1 || after[0].Closed || err != nil || string(before) != string(content) {
+				t.Fatal("automatic path changed obligation/content", after, err)
 			}
 			if stops+spy.closes+spy.interrupts+spy.deletes != 0 {
 				t.Fatal("automatic provider I/O", stops, spy.closes, spy.interrupts, spy.deletes)
@@ -143,8 +147,9 @@ func TestProtectedSideGlobalListAndClose(t *testing.T) {
 				t.Fatal(list, err)
 			}
 			rows, _ := db.SideCompactions(t.Context(), false)
-			if len(rows) != 1 || !rows[0].Closed || len(rows[0].Content) != 0 || rows[0].State != domain.SideCompactionUnknown {
-				t.Fatal(rows)
+			content, err := db.SideCompactionContent(t.Context(), "side")
+			if len(rows) != 1 || !rows[0].Closed || err != nil || len(content) != 0 || rows[0].State != domain.SideCompactionUnknown {
+				t.Fatal(rows, err)
 			}
 			if err := restarted.PreflightShutdown(t.Context()); err != nil {
 				t.Fatal("closed side still vetoes", err)
@@ -176,9 +181,12 @@ func TestProtectedSideReadOnlyConversation(t *testing.T) {
 func TestProtectedSideDurableContentsSurviveNewLaunch(t *testing.T) {
 	svc, db, _, _ := newRecordHarness(t, domain.HarnessClaudeCode)
 	_, _ = svc.CompactSideChat(t.Context(), "session", "side")
-	rows, _ := db.SideCompactions(t.Context(), true)
+	raw, err := db.SideCompactionContent(t.Context(), "side")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var content durableSideContent
-	if err := json.Unmarshal(rows[0].Content, &content); err != nil {
+	if err := json.Unmarshal(raw, &content); err != nil {
 		t.Fatal(err)
 	}
 	restarted := New(Options{Store: db, DataDir: svc.dataDir, AppRunID: "new-launch", Sessions: sideSessionReader{}})
@@ -338,6 +346,10 @@ func TestProtectedReconnectCanRetryAfterLoss(t *testing.T) {
 			_, _ = svc.CompactSideChat(t.Context(), "session", "side")
 			rows, _ := db.SideCompactions(t.Context(), true)
 			before := rows[0]
+			beforeContent, err := db.SideCompactionContent(t.Context(), "side")
+			if err != nil {
+				t.Fatal(err)
+			}
 			delete(svc.sides.runtimes, "side")
 			first := replayConversation()
 			if activationFailure {
@@ -347,7 +359,7 @@ func TestProtectedReconnectCanRetryAfterLoss(t *testing.T) {
 			reg := registry.New(driver)
 			reg.SetNativeGuard(svc.nativeGuard)
 			svc.drivers = reg
-			err := svc.RetrySideConnection(t.Context(), "session", "side")
+			err = svc.RetrySideConnection(t.Context(), "session", "side")
 			if activationFailure && !errors.Is(err, first.activationErr) {
 				t.Fatal(err)
 			}
@@ -371,8 +383,9 @@ func TestProtectedReconnectCanRetryAfterLoss(t *testing.T) {
 				time.Sleep(time.Millisecond)
 			}
 			rows, _ = db.SideCompactions(t.Context(), true)
-			if len(rows) != 1 || rows[0].ID != before.ID || rows[0].State != before.State || string(rows[0].Content) != string(before.Content) {
-				t.Fatal("lost durable obligation", rows)
+			content, err := db.SideCompactionContent(t.Context(), "side")
+			if len(rows) != 1 || rows[0].ID != before.ID || rows[0].State != before.State || err != nil || string(content) != string(beforeContent) {
+				t.Fatal("lost durable obligation", rows, err)
 			}
 			driver.conv = replayConversation()
 			if err := svc.RetrySideConnection(t.Context(), "session", "side"); err != nil || driver.reconnected != 2 {
