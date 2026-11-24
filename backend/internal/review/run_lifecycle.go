@@ -80,6 +80,8 @@ type activityMark struct {
 	state    domain.ActivityState
 	since    time.Time
 	at       time.Time
+
+	processExited bool
 }
 
 // pendingStop is a reviewer that must still be stopped although none of its
@@ -285,7 +287,7 @@ func (e *Engine) markRunRunning(ctx stdctx.Context, run domain.ReviewRun, from [
 	if _, err := e.transitionRun(ctx, run, from, domain.ReviewRunRunning, domain.ReviewRunPatch{LaunchID: launchID, StartedAt: &at}); err != nil {
 		return run, err
 	}
-	e.forgetActivity(run.ReviewID)
+	e.resetRunActivity(run.ReviewID, launchID)
 	current, ok, err := e.store.GetReviewRun(ctx, run.ID)
 	if err != nil {
 		return run, err
@@ -422,7 +424,7 @@ func (e *Engine) endReviewerRuns(ctx stdctx.Context, workerID domain.SessionID, 
 // when the reviewer went idle, and settles that worker's runs at once instead
 // of waiting for the next reaper pass. A worker whose trigger is launching is
 // left to that pass.
-func (e *Engine) ObserveReviewActivity(ctx stdctx.Context, review domain.Review, launchID string, state domain.ActivityState) error {
+func (e *Engine) ObserveReviewActivity(ctx stdctx.Context, review domain.Review, launchID string, state domain.ActivityState, event string) error {
 	if review.ID == "" || state == "" {
 		return nil
 	}
@@ -432,6 +434,7 @@ func (e *Engine) ObserveReviewActivity(ctx stdctx.Context, review domain.Review,
 	e.noteObservation(now)
 	e.runs.mu.Lock()
 	mark := activityMark{launchID: launchID, state: state, since: now, at: now}
+	mark.processExited = event == "process-exited" && state == domain.ActivityExited && launchID != ""
 	if prev, ok := e.runs.activity[review.ID]; ok && prev.launchID == launchID && prev.state == state {
 		mark.since = prev.since
 	}
@@ -454,10 +457,16 @@ func (e *Engine) ObserveReviewActivity(ctx stdctx.Context, review domain.Review,
 	return nil
 }
 
-func (e *Engine) forgetActivity(reviewID string) {
+func (e *Engine) resetRunActivity(reviewID, launchID string) {
 	e.runs.mu.Lock()
+	defer e.runs.mu.Unlock()
+	mark := e.runs.activity[reviewID]
+	if mark.processExited && mark.launchID == launchID {
+		// The process can exit before dispatch records that the run started.
+		e.runs.activity[reviewID] = activityMark{launchID: launchID, processExited: true}
+		return
+	}
 	delete(e.runs.activity, reviewID)
-	e.runs.mu.Unlock()
 }
 
 // activitySince returns when the reviewer entered state, as far as this
@@ -867,6 +876,17 @@ func (e *Engine) probeReviewer(ctx stdctx.Context, review domain.Review, probes 
 	return probe
 }
 
+func (e *Engine) runningReviewerExited(ctx stdctx.Context, run domain.ReviewRun, review domain.Review, probes map[string]reviewerProbe) bool {
+	e.runs.mu.Lock()
+	mark := e.runs.activity[review.ID]
+	e.runs.mu.Unlock()
+	if mark.processExited && mark.launchID == review.ReviewerLaunchID && mark.launchID == run.LaunchID {
+		return true
+	}
+	probe := e.probeReviewer(ctx, review, probes)
+	return probe.known && !probe.alive
+}
+
 // reviewerProbeHandle is the handle that answers whether a reviewer is alive.
 // A Chat reviewer is addressed by its review id even when no handle is stored.
 func reviewerProbeHandle(review domain.Review) string {
@@ -901,7 +921,7 @@ func (e *Engine) decide(ctx stdctx.Context, run domain.ReviewRun, review domain.
 		}
 		return runDecision{}, nil
 	case domain.ReviewRunRunning:
-		if probe := e.probeReviewer(ctx, review, probes); probe.known && !probe.alive {
+		if e.runningReviewerExited(ctx, run, review, probes) {
 			return fail(domain.ReviewFailureProcessExited, false), nil
 		}
 		started := startedSince(run)

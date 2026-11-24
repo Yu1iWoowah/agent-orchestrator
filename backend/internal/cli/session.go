@@ -179,8 +179,7 @@ type resumeAgentStatusResponse struct {
 }
 
 // resumeAgentWaitLimit bounds how long resume-agent waits for the daemon's
-// background resume. It stays under the 180 seconds reusable handoff allows the
-// command, so the command reports its own error before an outer kill.
+// background resume before reporting a timeout.
 var resumeAgentWaitLimit = 150 * time.Second
 
 // resumeAgentPollInterval spaces the status reads while a resume runs.

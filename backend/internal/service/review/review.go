@@ -875,7 +875,7 @@ func (s *Service) ApplyReviewActivitySignal(ctx context.Context, reviewSessionID
 		if signal.LaunchID != "" {
 			review.ReviewerLaunchID = signal.LaunchID
 		}
-		return s.engine.ObserveReviewActivity(ctx, review, signal.LaunchID, signal.State)
+		return s.engine.ObserveReviewActivity(ctx, review, signal.LaunchID, signal.State, signal.Event)
 	}
 	return nil
 }
