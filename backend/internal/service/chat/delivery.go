@@ -674,6 +674,7 @@ func (c *Controller) monitorDeliveries() {
 		return
 	}
 	firstSweep := true
+	journalReadFailed := false
 	for {
 		c.mu.Lock()
 		force, paused := c.deliveryImmediate, c.deliveryQuiescing
@@ -692,7 +693,7 @@ func (c *Controller) monitorDeliveries() {
 			cancel()
 			var earliest time.Time
 			if err != nil {
-				if firstSweep || force {
+				if !journalReadFailed {
 					logDeliveryJournalFailure(c.log, c.sessionID, "", err)
 				}
 				earliest = c.now().Add(30 * time.Second)
@@ -768,6 +769,7 @@ func (c *Controller) monitorDeliveries() {
 					}
 				}
 			}
+			journalReadFailed = err != nil
 			if ackDue := c.retryDeliveryAcks(); !ackDue.IsZero() && (earliest.IsZero() || ackDue.Before(earliest)) {
 				earliest = ackDue
 			}

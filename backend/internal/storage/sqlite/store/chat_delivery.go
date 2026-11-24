@@ -21,7 +21,7 @@ func chatJournalOwner(row gen.GetSessionAgentSettingsRow) domain.AgentSettingsOw
 func decodeChatDelivery(row gen.ChatDeliveryAttempt) (domain.ChatDeliveryAttempt, error) {
 	var a domain.ChatDeliveryAttempt
 	if err := json.Unmarshal([]byte(row.RecordJson), &a); err != nil {
-		return a, err
+		return a, &ports.ChatDeliveryDecodeError{Cause: err}
 	}
 	if a.ID != row.ID || string(a.SessionID) != row.SessionID || a.ConversationID != row.ConversationID || a.Owner.ControllerGeneration != row.OwnerGeneration || a.Version != row.Version || string(a.Disposition) != row.Disposition || int64(a.EvidenceLevel) != row.EvidenceLevel {
 		return a, ports.ErrAgentSettingsConflict
