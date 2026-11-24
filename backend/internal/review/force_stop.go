@@ -198,16 +198,25 @@ func capturesContain(current, previous []capturedProcess) bool {
 // freezeTree stops every process in tree and keeps re-reading until no new
 // descendant appears. A process is frozen only while its current start
 // identity matches the captured one, so a pid that was reused (a survivor kept
-// from an earlier attempt, say) is never stopped. A round that freezes nothing
-// new read the tree with every live member already stopped, so nothing can
-// have spawned since. It returns the frozen tree, or an error when the tree
-// cannot be trusted or does not settle.
+// from an earlier attempt, say) is never stopped. A successful round that
+// freezes nothing new read the tree with every live member already stopped,
+// so nothing can have spawned since. It returns the frozen tree, or an error
+// when the tree cannot be trusted or does not settle.
 func freezeTree(ctx context.Context, tree []capturedProcess, hooks forceStopHooks) ([]capturedProcess, error) {
 	frozen := map[int]bool{}
+	var failedFreeze capturedProcess
+	var freezeErr error
 	for range maxFreezeRounds {
 		identities, err := hooks.identities(ctx)
 		if err != nil {
-			return tree, fmt.Errorf("read process identities: %w", err)
+			return tree, errors.Join(freezeErr, fmt.Errorf("read process identities: %w", err))
+		}
+		if freezeErr != nil {
+			current, present := identities[failedFreeze.pid]
+			if present && (!current.Known() || current.Start == failedFreeze.start) {
+				return tree, freezeErr
+			}
+			freezeErr = nil
 		}
 		if tree, err = extendTree(tree, identities); err != nil {
 			return tree, err
@@ -223,15 +232,19 @@ func freezeTree(ctx context.Context, tree []capturedProcess, hooks forceStopHook
 			if frozen[p.pid] || !ok || !current.Known() || current.Start != p.start {
 				continue
 			}
+			if err := hooks.freeze(p); err != nil {
+				failedFreeze = p
+				freezeErr = fmt.Errorf("freeze reviewer process %d: %w", p.pid, err)
+				break
+			}
 			frozen[p.pid] = true
 			froze = true
-			_ = hooks.freeze(p)
 		}
-		if !froze {
+		if !froze && freezeErr == nil {
 			return tree, nil
 		}
 	}
-	return tree, errors.New("reviewer process tree kept growing while being frozen")
+	return tree, errors.Join(freezeErr, errors.New("reviewer process tree kept growing while being frozen"))
 }
 
 // extendTree adds every descendant of tree that identities shows. A child of
@@ -444,51 +457,65 @@ func killTreeSurvivors(ctx context.Context, tree []capturedProcess, hooks forceS
 		return nil, nil
 	}
 	deadline := time.Now().Add(hooks.wait)
-	killed := map[int]bool{}
+	// A nil result records a successful signal. Keep the most recent error
+	// for each process until its next signal succeeds or it is confirmed gone.
+	killAttempts := map[capturedProcess]error{}
+	withKillErrors := func(err error) error {
+		errs := []error{err}
+		for _, process := range tree {
+			if killErr := killAttempts[process]; killErr != nil {
+				errs = append(errs, killErr)
+			}
+		}
+		return errors.Join(errs...)
+	}
 	for {
 		identities, err := hooks.identities(ctx)
 		if err != nil {
-			return tree, fmt.Errorf("read process identities: %w", err)
+			return tree, withKillErrors(fmt.Errorf("read process identities: %w", err))
 		}
 		// Anything a captured process spawned before it died is the
 		// reviewer's too.
 		if tree, err = extendTree(tree, identities); err != nil {
-			return tree, err
+			return tree, withKillErrors(err)
 		}
 		if hooks.record != nil {
 			if err := hooks.record(ctx, tree); err != nil {
-				return tree, err
+				return tree, withKillErrors(err)
 			}
 		}
 		var remaining []capturedProcess
 		for _, captured := range tree {
 			current, ok := identities[captured.pid]
 			switch {
-			case !ok:
+			case !ok || current.Known() && current.Start != captured.start:
+				delete(killAttempts, captured)
 				continue // gone
 			case !current.Known():
 				remaining = append(remaining, captured) // unknown: neither ours to kill nor gone
 				continue
-			case current.Start != captured.start:
-				continue // the pid was reused: ours is gone
 			}
 			remaining = append(remaining, captured)
-			if !killed[captured.pid] {
-				killed[captured.pid] = true
-				_ = hooks.kill(captured)
+			if killErr, attempted := killAttempts[captured]; attempted && (killErr == nil || !time.Now().Before(deadline)) {
+				continue
+			}
+			if err := hooks.kill(captured); err != nil {
+				killAttempts[captured] = fmt.Errorf("kill reviewer process %d: %w", captured.pid, err)
+			} else {
+				killAttempts[captured] = nil
 			}
 		}
 		if len(remaining) == 0 {
 			return nil, nil
 		}
 		if !time.Now().Before(deadline) {
-			return remaining, nil
+			return remaining, withKillErrors(nil)
 		}
 		timer := time.NewTimer(hooks.poll)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return remaining, ctx.Err()
+			return remaining, withKillErrors(ctx.Err())
 		case <-timer.C:
 		}
 	}
