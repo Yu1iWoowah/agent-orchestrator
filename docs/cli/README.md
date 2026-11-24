@@ -32,7 +32,7 @@ Product commands use daemon HTTP routes. Run `ao <command>
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `ao start`                    | Open the desktop application, downloading a release if necessary; the app supervises its daemon.                                                                        |
 | `ao stop`                     | Gracefully stop the daemon via loopback `POST /shutdown` after verifying daemon identity.                                         |
-| `ao status` / `--json`        | Report daemon state from `running.json` and the identity in `/healthz` and `/readyz`; host PID visibility is not required.        |
+| `ao status` / `--json`        | Report daemon state from `running.json` and the identity in `/healthz` and `/readyz`. Host PID visibility is not required. Exits `0` for `ready` and `1` for any other recognized state. With `--json`, the state is written to stdout in both cases. |
 | `ao doctor` / `--json`        | Check config, data directory, DB-file presence, daemon state, `git`, and (on Darwin/Linux) `tmux`; on Windows conpty is built in. |
 | `ao completion <shell>`       | Generate completions for `bash`, `zsh`, `fish`, or `powershell`.                                                                  |
 | `ao version` / `ao --version` | Print build metadata.                                                                                                             |
