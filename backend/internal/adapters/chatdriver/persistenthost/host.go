@@ -27,6 +27,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/datadirlock"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
@@ -368,6 +369,17 @@ func acquireHostLock(dataDir, sessionID string) (func(), error) {
 	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // Directories need execute permission; access is owner-only.
 		return nil, err
 	}
+	// Serialize acquisition across processes, including the decision to reclaim
+	// a stale owner. The guard file stays in place while host.lock is replaced.
+	guard, err := datadirlock.AcquireFile(context.Background(), filepath.Join(dir, "host.acquire.lock"), 0)
+	if errors.Is(err, datadirlock.ErrLocked) {
+		return nil, ErrHostExists
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = guard.Release() }()
+
 	path, _ := lockPath(dataDir, sessionID)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // AO-owned capability directory.
 	if errors.Is(err, os.ErrExist) {
@@ -563,7 +575,7 @@ func ConnectOrStart(ctx context.Context, cfg Config) (*Transport, error) {
 		}
 		// Do not remove stale ownership files here. Another starter may have
 		// already reclaimed the dead lock and published a replacement descriptor
-		// since this client read d. The detached host's O_EXCL lock acquisition is
+		// since this client read d. The detached host's launch-lock acquisition is
 		// the single authority for reclaiming dead ownership.
 	} else if !errors.Is(err, os.ErrNotExist) {
 		// A malformed or unreadable ownership record is not proof that no host

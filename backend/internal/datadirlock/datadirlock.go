@@ -1,5 +1,5 @@
-// Package datadirlock guards a daemon's SQLite data directory with an exclusive,
-// OS-level advisory file lock.
+// Package datadirlock provides exclusive OS-level advisory file locks,
+// including the guard for a daemon's SQLite data directory.
 //
 // The lock is scoped to the data directory itself, independent of AO_PORT and
 // AO_RUN_FILE, so two daemons pointed at the same AO_DATA_DIR with different
@@ -36,16 +36,14 @@ const lockFileName = "daemon.lock"
 // portable way to bound the wait.
 const retryInterval = 100 * time.Millisecond
 
-// ErrLocked is returned by Acquire when another live process still holds the
-// data-directory lock after the wait.
+// ErrLocked reports that another process still holds the lock after the wait.
 var ErrLocked = errors.New("data dir is in use by another Orchestrator process")
 
-// ErrUnsupported is returned by Acquire when the data dir's filesystem cannot
-// lock files at all (some NFS, SMB and FUSE mounts). Callers start without the
-// guard rather than refuse to run, which is how AO behaved before the lock.
+// ErrUnsupported reports that the filesystem cannot lock files
+// (some NFS, SMB and FUSE mounts).
 var ErrUnsupported = errors.New("file locks are not supported on this filesystem")
 
-// Lock is a held data-directory lock. Release (or the process exiting) frees it.
+// Lock is a held advisory file lock. Release (or the process exiting) frees it.
 type Lock struct {
 	file *os.File
 }
@@ -61,7 +59,13 @@ func Acquire(ctx context.Context, dataDir string, wait time.Duration) (*Lock, er
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("data dir lock: create %s: %w", dataDir, err)
 	}
-	path := filepath.Join(dataDir, lockFileName)
+	return AcquireFile(ctx, filepath.Join(dataDir, lockFileName), wait)
+}
+
+// AcquireFile takes an exclusive advisory lock on path in an existing directory.
+// A nonpositive wait tries once. All contenders must use the same file, which
+// must remain on disk across acquisitions so they lock the same file identity.
+func AcquireFile(ctx context.Context, path string, wait time.Duration) (*Lock, error) {
 	// O_RDWR (not O_TRUNC): the PID line is rewritten only after the lock is
 	// held, so a failed acquire leaves the current owner's PID readable.
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
@@ -85,6 +89,7 @@ func Acquire(ctx context.Context, dataDir string, wait time.Duration) (*Lock, er
 		if !errors.Is(err, ErrLocked) {
 			return nil, fmt.Errorf("data dir lock: %s: %w", path, err)
 		}
+		dataDir := filepath.Dir(path)
 		if holder > 0 {
 			return nil, fmt.Errorf("%w: %s (pid %d)", ErrLocked, dataDir, holder)
 		}
