@@ -16,6 +16,14 @@ ORDER BY MAX(rowid);
 -- name: SideCompactionContent :one
 SELECT CAST(COALESCE((SELECT content_json FROM chat_side_contents WHERE side_id=?),'') AS TEXT);
 
+-- name: UnresolvedSideCompactionWithContent :one
+SELECT c.state,c.historical,c.closed,c.record_json,COALESCE(s.content_json,'') AS content_json
+FROM chat_side_compactions c
+LEFT JOIN chat_side_contents s ON s.side_id=c.side_id
+WHERE c.side_id=? AND c.closed=0 AND c.state IN ('pending','unknown')
+ORDER BY c.rowid
+LIMIT 1;
+
 -- name: SideWithUnresolvedNativeCompaction :one
 SELECT CAST(COALESCE((SELECT side_id FROM chat_side_compactions
 WHERE native_home=? AND native_id=? AND closed=0 AND state IN ('pending','unknown') LIMIT 1),'') AS TEXT);

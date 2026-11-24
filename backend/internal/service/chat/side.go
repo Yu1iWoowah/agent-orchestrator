@@ -362,23 +362,10 @@ func (s *Service) ListIndependentSideChats(ctx context.Context, session domain.S
 	if err != nil {
 		return nil, err
 	}
-	if len(sides) == 0 {
-		return sides, nil
-	}
-	rows, err := s.unresolvedSideProtectionRows(ctx)
-	if err != nil {
-		return nil, err
-	}
-	bySide := make(map[string]domain.SideCompaction, len(rows))
-	for _, row := range rows {
-		if _, found := bySide[row.SideID]; !found {
-			bySide[row.SideID] = row
-		}
-	}
 	for i := range sides {
-		if row, found := bySide[sides[i].ID]; found {
-			protection := s.sideProtectionStatus(ctx, row)
-			sides[i].Protection = &protection
+		sides[i].Protection, err = s.sideProtection(ctx, sides[i].ID)
+		if err != nil {
+			return nil, err
 		}
 		turns, _, err := s.sides.store.SideTurns(ctx, sides[i].ID, time.Time{}, 0)
 		if err != nil {

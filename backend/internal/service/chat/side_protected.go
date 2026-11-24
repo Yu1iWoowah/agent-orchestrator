@@ -41,11 +41,18 @@ func (s *Service) ListProtectedSides(ctx context.Context) ([]ProtectedSide, erro
 		return nil, err
 	}
 	seen := map[string]bool{}
-	for _, row := range rows {
-		if seen[row.SideID] {
+	for _, candidate := range rows {
+		if seen[candidate.SideID] {
 			continue
 		}
-		seen[row.SideID] = true
+		seen[candidate.SideID] = true
+		row, found, err := s.nativeGuard.store.UnresolvedSideCompactionWithContent(ctx, candidate.SideID)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
 		orphan, err := s.protectedSideOrphan(ctx, row.SessionID)
 		if err != nil {
 			return nil, err
@@ -66,18 +73,14 @@ func (s *Service) sideProtectionStatus(ctx context.Context, row domain.SideCompa
 		return p
 	}
 	store, ok := s.sides.store.(*memorySideStore)
-	if !ok || s.nativeGuard.store == nil {
-		return p
-	}
-	content, err := s.nativeGuard.store.SideCompactionContent(ctx, row.SideID)
-	if err != nil {
+	if !ok {
 		return p
 	}
 	// Restore into a separate store so listing never changes live side state or
 	// rewrites attachments, but still verifies the persisted content and images.
 	projection := newMemorySideStore()
 	projection.attachments = store.attachments
-	if err := projection.restoreContentLocked(content); err != nil || projection.sides[row.SideID].ID != row.SideID {
+	if err := projection.restoreContentLocked(row.Content); err != nil || projection.sides[row.SideID].ID != row.SideID {
 		return p
 	}
 	if applicable, reason := sideCompactionApplicable(row, runtime.GOOS); !applicable {
@@ -89,25 +92,16 @@ func (s *Service) sideProtectionStatus(ctx context.Context, row domain.SideCompa
 	return p
 }
 
-func (s *Service) unresolvedSideProtectionRows(ctx context.Context) ([]domain.SideCompaction, error) {
+func (s *Service) sideProtection(ctx context.Context, sideID string) (*domain.SideProtection, error) {
 	if s.nativeGuard.store == nil {
 		return nil, nil
 	}
-	return s.nativeGuard.store.SideCompactions(ctx, true)
-}
-
-func (s *Service) sideProtection(ctx context.Context, sideID string) (*domain.SideProtection, error) {
-	rows, err := s.unresolvedSideProtectionRows(ctx)
-	if err != nil {
+	row, found, err := s.nativeGuard.store.UnresolvedSideCompactionWithContent(ctx, sideID)
+	if err != nil || !found {
 		return nil, err
 	}
-	for _, row := range rows {
-		if row.SideID == sideID {
-			p := s.sideProtectionStatus(ctx, row)
-			return &p, nil
-		}
-	}
-	return nil, nil
+	protection := s.sideProtectionStatus(ctx, row)
+	return &protection, nil
 }
 
 // CloseProtectedSide is the global user close endpoint; it bypasses launch ownership.
