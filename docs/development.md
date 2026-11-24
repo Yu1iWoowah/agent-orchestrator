@@ -127,6 +127,8 @@ go test -v ./internal/cli/ # a specific package
 ```
 
 From `backend/` on Linux, split one package's race tests across parallel shards.
+Use a worktree path and a `TMPDIR` without spaces, quotes, or backslashes.
+The script parses package and test binary paths with `xargs`.
 
 ```bash
 GOMAXPROCS=8 GOFLAGS='-p=8 -gcflags=modernc.org/...=-race=false' ../.github/scripts/go-test-parallel.sh 3 ./internal/service/chat
