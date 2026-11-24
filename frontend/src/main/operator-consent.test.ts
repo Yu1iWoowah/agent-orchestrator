@@ -249,14 +249,14 @@ it("keeps retrying BUSY beyond the failure limit with a capped backoff and can p
 	vi.useFakeTimers();
 	const f = await retryFixture((attempt) => attempt <= 8 ? "OPERATOR_ISSUER_BUSY" : "accept");
 	try {
-		await waitForIO(() => f.attempts() === 1);
 		for (const [index, delay] of [2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000, 30_000].entries()) {
+			await waitForIO(() => f.attempts() === index + 1);
 			await waitForIO(() => f.open() === 0);
 			await vi.advanceTimersByTimeAsync(delay - 1);
 			expect(f.attempts()).toBe(index + 1);
 			await vi.advanceTimersByTimeAsync(1);
-			await waitForIO(() => f.attempts() === index + 2);
 		}
+		await waitForIO(() => f.frames.includes("ready"));
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(f.attempts()).toBe(9);
 		expect(f.open()).toBe(1);
