@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"sort"
 
@@ -59,11 +60,16 @@ func CompositionRow(ordinal int, req CompositionRequest, unknownMCP bool) domain
 	allocated := func(i int) bool {
 		return i != CategoryWorldState && counts[i] >= 0
 	}
-	var total int64
+	var total, largest int64
 	for i := range counts {
 		if allocated(i) {
 			total += counts[i]
+			largest = max(largest, counts[i])
 		}
+	}
+	// Use the unknown-token path if any category's weighted input would overflow.
+	if req.Input != nil && (*req.Input < 0 || *req.Input > math.MaxInt64/max(largest, 1)) {
+		req.Input = nil
 	}
 	row := domain.UsageCompositionRequest{Ordinal: ordinal, Timestamp: req.Timestamp, InputTokens: req.Input, Unresolved: req.Unresolved}
 	for i, name := range compositionCategoryNames {
