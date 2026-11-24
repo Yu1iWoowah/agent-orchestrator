@@ -39,8 +39,7 @@ var errDeliveryPending = errors.New("original delivery is not settled")
 
 // deliveryFirstProgressLimit bounds how long an ACP prompt the host has
 // recorded may wait for its first progress event. It stays below the host's
-// promptStallTimeout (15 minutes), whose synthesized failure never reaches the
-// delivery journal.
+// promptStallTimeout (15 minutes).
 const deliveryFirstProgressLimit = 5 * time.Minute
 
 func (c *Controller) reserveDeliveryLocked(ctx context.Context, members []string) (*domain.ChatDeliveryAttempt, bool, error) {
@@ -118,9 +117,17 @@ func (c *Controller) bindDeliveryPrepared(ctx context.Context, a domain.ChatDeli
 	return journal.UpdateChatDelivery(ctx, a, a.Version-1, ownerForSettings(current))
 }
 
+func (c *Controller) recordDeliveryReceipt(ctx context.Context, r domain.ChatDeliveryReceipt) (domain.ChatDeliveryAttempt, error) {
+	// Unknown settlement requires a correlated query in queryDelivery.
+	if r.Disposition == domain.ChatDeliveryUnknown && r.ExecutionSettled {
+		return domain.ChatDeliveryAttempt{}, ports.ErrChatDeliveryUnverified
+	}
+	return c.commitDeliveryReceipt(ctx, r)
+}
+
 // A native completion must not disappear when a read-only monitor commits the
 // same row first. Each retry requalifies the owner and the exact receipt keys.
-func (c *Controller) recordDeliveryReceipt(ctx context.Context, r domain.ChatDeliveryReceipt) (domain.ChatDeliveryAttempt, error) {
+func (c *Controller) commitDeliveryReceipt(ctx context.Context, r domain.ChatDeliveryReceipt) (domain.ChatDeliveryAttempt, error) {
 	c.deliveryReceiptMu.Lock()
 	defer c.deliveryReceiptMu.Unlock()
 	var saved domain.ChatDeliveryAttempt
@@ -136,8 +143,7 @@ func (c *Controller) recordDeliveryReceipt(ctx context.Context, r domain.ChatDel
 
 func (c *Controller) recordDeliveryReceiptOnce(ctx context.Context, r domain.ChatDeliveryReceipt) (domain.ChatDeliveryAttempt, error) {
 	journal, ok := c.store.(chatDeliveryJournal)
-	// Only the daemon may settle an unknown outcome (settleLegacyDelivery).
-	if !ok || r.Validate() != nil || r.Disposition == domain.ChatDeliveryUnknown && r.ExecutionSettled {
+	if !ok || r.Validate() != nil {
 		return domain.ChatDeliveryAttempt{}, ports.ErrChatDeliveryUnverified
 	}
 	current, err := c.deliveryOwner(ctx, journal)
@@ -411,7 +417,8 @@ func (c *Controller) queryDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 	}
 	queryCtx, cancel := c.deadlineContext(ctx, 10*time.Second)
 	defer cancel()
-	receipt, err := observer.QueryDeliveryAttempt(queryCtx, deliveryLookup(a))
+	key := deliveryLookup(a)
+	receipt, err := observer.QueryDeliveryAttempt(queryCtx, key)
 	if err != nil {
 		if errors.Is(context.Cause(queryCtx), context.DeadlineExceeded) {
 			return a, errors.Join(ports.ErrChatDeliveryUnverified, context.DeadlineExceeded)
@@ -421,10 +428,13 @@ func (c *Controller) queryDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 		}
 		return a, ports.ErrChatDeliveryUnverified
 	}
-	if receipt.AttemptID != a.ID {
+	if receipt.AttemptID != key.AttemptID ||
+		receipt.Disposition == domain.ChatDeliveryUnknown && receipt.ExecutionSettled &&
+			(key.ProviderEpoch == "" || key.ProviderEpoch != receipt.ProviderEpoch ||
+				key.ProviderRequestID == "" || key.ProviderRequestID != receipt.ProviderRequestID) {
 		return a, ports.ErrChatDeliveryUnverified
 	}
-	return c.recordDeliveryReceipt(ctx, receipt)
+	return c.commitDeliveryReceipt(ctx, receipt)
 }
 
 type deliveryAttentionBlocker interface {

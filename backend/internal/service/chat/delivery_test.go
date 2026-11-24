@@ -871,6 +871,43 @@ func TestStalledPromptWithUnsettledDeliveryHoldsQueueUntilSettled(t *testing.T) 
 	}
 }
 
+func TestStalledPromptCancelErrorReleasesNextInput(t *testing.T) {
+	h, conv, clock, a := firstProgressHarness(t, true)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(5 * time.Minute) })
+	awaitDeliveryQuery(t, conv, a.ID)
+	blocked := awaitDeliveryDecision(t, h, clock, a.ID)
+	if blocked.AttentionID == "" || blocked.Receipt == nil || blocked.Receipt.ProviderEpoch == "" || blocked.Receipt.ProviderRequestID == "" {
+		t.Fatalf("missing original delivery correlation: %+v", blocked)
+	}
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(10*time.Minute + time.Second) })
+	conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "provider-turn-1"})
+
+	// Match the host journal and ACP event when the adapter answers the
+	// watchdog's cancel with a native RPC error for the original prompt.
+	conv.mu.Lock()
+	receipt := conv.deliveryReceipts[a.ID]
+	receipt.ExecutionSettled, receipt.ObservedAt = true, clock.Now()
+	receipt.ProgressSequence++
+	conv.deliveryReceipts[a.ID] = receipt
+	conv.mu.Unlock()
+	conv.events <- ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: "provider-turn-1",
+		TurnState: domain.TurnStateFailed, Err: fmt.Errorf("ACP session/prompt: %w", ports.ErrChatPromptStalled)}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return turnStateByText(t, s)["large context prompt"] == domain.TurnStateFailed
+	})
+
+	sendQueued(t, h, "after cancelled stall")
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		sent := conv.sentTexts()
+		return len(sent) == 2 && sent[1] == "after cancelled stall" &&
+			turnStateByText(t, s)["after cancelled stall"] == domain.TurnStateRunning
+	})
+	saved, err := h.st.ChatDeliveryAttempt(t.Context(), testSession, a.ID)
+	if err != nil || !saved.ExecutionSettled || saved.Disposition != domain.ChatDeliveryUnknown {
+		t.Fatalf("original prompt did not settle with its outcome unknown: %+v, %v", saved, err)
+	}
+}
+
 func TestEagerPromptWithoutProgressStillOpensQuestionAtThirtySeconds(t *testing.T) {
 	h, conv, clock, a := firstProgressHarness(t, false)
 	if r := a.Receipt; a.Disposition != domain.ChatDeliveryUnknown || r == nil || r.Source != "incomplete" || r.ProviderEpoch == "" || r.ProviderRequestID == "" || r.ProgressSequence != 0 {

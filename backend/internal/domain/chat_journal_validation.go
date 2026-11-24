@@ -147,8 +147,7 @@ func (r ChatDeliveryReceipt) Validate() error {
 	if r.ProgressSequence < 0 {
 		return ErrInvalidChatJournal
 	}
-	// The only unknown settlement is the daemon's legacy receipt for a host that
-	// answered without a record after every member turn completed.
+	// A settled execution with unknown acceptance keeps an incomplete receipt.
 	if r.ExecutionSettled && r.Disposition != ChatDeliveryAccepted && r.Disposition != ChatDeliveryNotSent && (r.Disposition != ChatDeliveryUnknown || r.Source != "incomplete") {
 		return ErrInvalidChatJournal
 	}

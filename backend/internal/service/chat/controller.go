@@ -4494,9 +4494,8 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		// the queue so it cannot cascade through the same outage (issue #4861). A
 		// prompt the host's watchdog failed for silence is not an outage: the
 		// provider never answered, so the queued messages get their own turns.
-		// The watchdog's failure never reaches the delivery journal, so a stalled
-		// prompt whose execution is still unverified keeps the queue until that
-		// delivery settles.
+		// A stalled prompt whose execution is still unverified keeps the queue
+		// until the delivery settles.
 		releaseQueue := settledTurnState(event) == domain.TurnStateCompleted ||
 			errors.Is(event.Err, ports.ErrChatPromptStalled) && !c.holdForUnsettledDelivery(ctx)
 		_ = c.drainLocked(ctx, releaseQueue) // drain logs failures.
