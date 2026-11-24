@@ -324,7 +324,7 @@ fi
 
 for attempt in {1..20}; do
 	status="$("$host_root/current/resources/daemon/ao" status --json)" || true
-	state="$(printf '%s' "$status" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state", ""))')"
+	state="$(printf '%s' "$status" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state", ""))' 2>/dev/null)" || state=""
 	[[ "$state" == ready ]] && break
 	sleep 1
 done
