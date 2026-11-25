@@ -18,7 +18,7 @@ type previousBootDeliveryStore interface {
 
 type interruptedDeliveryStore interface {
 	previousBootDeliveryStore
-	SettleInterruptedUnknownDelivery(context.Context, domain.ChatDeliveryAttempt, domain.AgentSettingsOwner, time.Time) error
+	SettleInterruptedUnknownDelivery(context.Context, domain.ChatDeliveryAttempt, time.Time) error
 }
 
 func (c *Controller) reconcileBeforeHibernate(ctx context.Context) error {
@@ -251,5 +251,5 @@ func (s *Service) settleInterruptedDelivery(ctx context.Context, journal interru
 	if unsettledAcceptance(a) {
 		return owner, journal.SettlePreviousBootAcceptance(ctx, a, owner, at)
 	}
-	return owner, journal.SettleInterruptedUnknownDelivery(ctx, a, owner, at)
+	return owner, journal.SettleInterruptedUnknownDelivery(ctx, a, at)
 }

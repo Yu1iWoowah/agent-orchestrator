@@ -116,7 +116,7 @@ func (s *Store) UpdateChatDelivery(ctx context.Context, next domain.ChatDelivery
 	}
 	defer s.writeMu.Unlock()
 	err := s.inTx(ctx, "update chat delivery", func(q *gen.Queries) error {
-		return updateChatDelivery(ctx, q, next, expected, actor, false)
+		return updateChatDelivery(ctx, q, next, expected, &actor, false)
 	})
 	return next, err
 }
@@ -142,7 +142,7 @@ func (s *Store) BlockChatDeliveryWithAttention(ctx context.Context, next domain.
 			return err
 		}
 		next.AttentionID = question.ID
-		return updateChatDelivery(ctx, q, next, expected, actor, false)
+		return updateChatDelivery(ctx, q, next, expected, &actor, false)
 	})
 	if err != nil {
 		next.AttentionID = ""
@@ -152,7 +152,7 @@ func (s *Store) BlockChatDeliveryWithAttention(ctx context.Context, next domain.
 
 // SettleInterruptedUnknownDelivery closes the original inputs without making
 // them replayable. The caller has proved that their execution scope ended.
-func (s *Store) SettleInterruptedUnknownDelivery(ctx context.Context, original domain.ChatDeliveryAttempt, actor domain.AgentSettingsOwner, at time.Time) error {
+func (s *Store) SettleInterruptedUnknownDelivery(ctx context.Context, original domain.ChatDeliveryAttempt, at time.Time) error {
 	if original.ExecutionSettled || original.Disposition != domain.ChatDeliveryUnknown && original.Disposition != domain.ChatDeliveryReserved {
 		return ports.ErrAgentSettingsInvalid
 	}
@@ -188,7 +188,7 @@ func (s *Store) SettleInterruptedUnknownDelivery(ctx context.Context, original d
 		next.UpdatedAt = at
 		next.Disposition, next.Receipt, next.ExecutionSettled, next.EvidenceLevel = domain.ChatDeliveryUnknown, &receipt, true, 0
 		next.NextCheckAt, next.BlockedSince, next.ErrorCode = nil, nil, code
-		return updateChatDelivery(ctx, q, next, original.Version, actor, false)
+		return updateChatDelivery(ctx, q, next, original.Version, nil, false)
 	})
 }
 
@@ -303,11 +303,13 @@ func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domai
 		next.UpdatedAt = at
 		next.ExecutionSettled = true
 		next.NextCheckAt, next.BlockedSince, next.ErrorCode = nil, nil, code
-		return updateChatDelivery(ctx, q, next, original.Version, actor, true)
+		return updateChatDelivery(ctx, q, next, original.Version, &actor, true)
 	})
 }
 
-func updateChatDelivery(ctx context.Context, q *gen.Queries, next domain.ChatDeliveryAttempt, expected int64, actor domain.AgentSettingsOwner, previousBoot bool) error {
+// Only interrupted unknown settlement has no actor. Its original execution
+// has ended, and the session may already be owned by a different branch.
+func updateChatDelivery(ctx context.Context, q *gen.Queries, next domain.ChatDeliveryAttempt, expected int64, actor *domain.AgentSettingsOwner, previousBoot bool) error {
 	row, err := q.GetChatDeliveryAttempt(ctx, gen.GetChatDeliveryAttemptParams{SessionID: string(next.SessionID), ID: next.ID})
 	if err != nil {
 		return err
@@ -320,7 +322,10 @@ func updateChatDelivery(ctx context.Context, q *gen.Queries, next domain.ChatDel
 	if err != nil {
 		return err
 	}
-	if current.IsTerminated || chatJournalOwner(current) != actor || actor.AccountID != old.Owner.AccountID || actor.ProviderConversationID != old.Owner.ProviderConversationID || actor.BranchID != old.Owner.BranchID || old.Version != expected || old.Owner != next.Owner || old.Revision != next.Revision || old.ConversationID != next.ConversationID || !slices.Equal(old.TurnIDs, next.TurnIDs) || !slices.Equal(old.InputRefs, next.InputRefs) || !old.CreatedAt.Equal(next.CreatedAt) || next.UpdatedAt.Before(old.UpdatedAt) || next.LastProgressAt.Before(old.LastProgressAt) || old.PreparedTurnID != "" && next.PreparedTurnID != old.PreparedTurnID || old.ExecutionSettled && !next.ExecutionSettled {
+	if actor != nil && (chatJournalOwner(current) != *actor || actor.AccountID != old.Owner.AccountID || actor.ProviderConversationID != old.Owner.ProviderConversationID || actor.BranchID != old.Owner.BranchID) {
+		return ports.ErrAgentSettingsConflict
+	}
+	if current.IsTerminated || old.Version != expected || old.Owner != next.Owner || old.Revision != next.Revision || old.ConversationID != next.ConversationID || !slices.Equal(old.TurnIDs, next.TurnIDs) || !slices.Equal(old.InputRefs, next.InputRefs) || !old.CreatedAt.Equal(next.CreatedAt) || next.UpdatedAt.Before(old.UpdatedAt) || next.LastProgressAt.Before(old.LastProgressAt) || old.PreparedTurnID != "" && next.PreparedTurnID != old.PreparedTurnID || old.ExecutionSettled && !next.ExecutionSettled {
 		return ports.ErrAgentSettingsConflict
 	}
 	if previousBoot && (current.Harness != domain.HarnessCodex || old.ExecutionSettled || old.Receipt == nil || next.Receipt == nil || *old.Receipt != *next.Receipt) {
