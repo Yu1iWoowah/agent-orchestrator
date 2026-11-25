@@ -463,6 +463,10 @@ func (c *Controller) failAgentSettingsLocked(ctx context.Context, journal agentS
 			}
 		}
 		_, err := journal.FinishAgentSettingsOperationWithCode(ctx, c.sessionID, latest.ID, latest.Version, domain.AgentSettingsFailed, category, code, c.now())
+		if err == nil && c.settingsInitializationError != nil {
+			// The rejected intent no longer takes precedence over cold replay.
+			c.queueSettingsRecheck()
+		}
 		return err != nil, err
 	}
 	if latest.Phase == domain.AgentSettingsPending {
