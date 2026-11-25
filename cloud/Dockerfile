@@ -70,9 +70,9 @@ RUN apt-get update && \
         build-essential ca-certificates cmake curl debhelper fakeroot && \
     rm -rf /var/lib/apt/lists/*
 ADD --checksum=sha256:39b06802a852629132d549a7f7449dee7f435e801706714a4bc2ea2f15b28f36 \
-    https://deb.debian.org/debian/pool/main/b/brotli/brotli_1.1.0-2.dsc ./
+    https://snapshot.debian.org/archive/debian/20261006T024027Z/pool/main/b/brotli/brotli_1.1.0-2.dsc ./
 ADD --checksum=sha256:10973f4b4199eafa1d5735ef661ddb2ec2f97319ee9fd1824d4aabe08cff5265 \
-    https://deb.debian.org/debian/pool/main/b/brotli/brotli_1.1.0.orig.tar.gz ./
+    https://snapshot.debian.org/archive/debian/20261006T024027Z/pool/main/b/brotli/brotli_1.1.0.orig.tar.gz ./
 RUN archive=brotli_1.1.0-2.debian.tar.xz; \
     for delay in 0 2 4; do \
         if [ "$delay" -gt 0 ]; then \
@@ -80,7 +80,7 @@ RUN archive=brotli_1.1.0-2.debian.tar.xz; \
             sleep "$delay"; \
         fi; \
         if curl --fail --location --silent --show-error --output "$archive" \
-                "https://deb.debian.org/debian/pool/main/b/brotli/$archive" && \
+                "https://snapshot.debian.org/archive/debian/20261006T024027Z/pool/main/b/brotli/$archive" && \
             echo "3d913a3740bcad9a294007575a6beb1846beadbd62b44fb2bf9fdaeddea3236f  $archive" | sha256sum --check; then \
             exit 0; \
         fi; \
