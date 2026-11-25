@@ -256,8 +256,8 @@ const config: ForgeConfig = {
 		// and macOS reports the app as "damaged". owner/repo are baked from
 		// AO_RELEASE_REPO at build time.
 		prePackage: async (_forgeConfig, platform, arch) => {
-			if (appPackage.version === "0.15.3-woowah.6.u5" && process.env.AO_RELEASE_REPO !== "Yu1iWoowah/agent-orchestrator") {
-				throw new Error("The u5 package requires AO_RELEASE_REPO=Yu1iWoowah/agent-orchestrator");
+			if (appPackage.version.includes("-woowah.") && process.env.AO_RELEASE_REPO !== "Yu1iWoowah/agent-orchestrator") {
+				throw new Error(`The ${appPackage.version} package requires AO_RELEASE_REPO=Yu1iWoowah/agent-orchestrator`);
 			}
 			await prepareNativeDependencies(platform as NodeJS.Platform, arch);
 			if (platform === "darwin") {
