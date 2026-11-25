@@ -142,8 +142,7 @@ func decodeFailure(err error) *replyFailure {
 	case errors.As(err, &typed):
 		offset := typed.Offset
 		out.Code, out.Offset = "json_type_invalid", &offset
-		// Paths are struct-derived (unknown names fail earlier); indices are
-		// kept numerically and the remaining path must be a schema field.
+		// Keep numeric indices separately and require an allow-listed schema path.
 		kept := []string{}
 		for _, part := range strings.Split(typed.Field, ".") {
 			if n, err := strconv.Atoi(part); err == nil && n >= 0 {
@@ -159,14 +158,11 @@ func decodeFailure(err error) *replyFailure {
 		} else {
 			out.Index = nil
 		}
-	case strings.HasPrefix(err.Error(), "json: unknown field "):
-		out.Code = "json_unknown_field"
 	}
 	return out
 }
 
-// verifyReply keeps the original acceptance order; each refusal names only the
-// first check that actually failed. Later checks are not evaluated.
+// verifyReply reports only the first failed check.
 func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Profile, receipt Receipt, audit PayloadAudit, scope preparedScope, limit int) (ReadReply, *replyFailure, error) {
 	out := baseReply(execution, profile, receipt, audit, scope)
 	reject := func(reason string, failure *replyFailure) (ReadReply, *replyFailure, error) {
@@ -220,8 +216,13 @@ func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Pro
 		Findings []Finding          `json:"findings"`
 		Evidence []proposedEvidence `json:"evidence"`
 	}
+	// Keep any additional objects in the decoder's input so it can reject
+	// ambiguous replies. Discard surrounding prose or Markdown fences.
+	if start, end := strings.IndexByte(raw, '{'), strings.LastIndexByte(raw, '}'); start >= 0 && end > start {
+		raw = raw[start : end+1]
+	}
+	// Decode only the fields AO uses. Verify them before projecting the reply.
 	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&proposal); err != nil {
 		return reject("unverified", decodeFailure(err))
 	}
@@ -237,7 +238,7 @@ func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Pro
 	case proposal.Evidence == nil:
 		return reject("unverified", at("envelope", "evidence_null_or_missing", "evidence"))
 	}
-	if issue := outputStringsIssue(proposal); issue != "" {
+	if issue := outputStringsIssue(json.RawMessage(raw)); issue != "" {
 		return reject("unverified", at("envelope", "proposal_"+issue, ""))
 	}
 	if proposal.Status == "not_found" {

@@ -385,7 +385,7 @@ func Run(buildVersion string) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("initialize settings authority: %w", err)
 	}
-	hcgDelegation := hcgsvc.NewOwner(context.Background(), cfg.DataDir, store, dataDirLock != nil)
+	hcgDelegation := hcgsvc.NewOwner(context.Background(), cfg.DataDir, store, dataDirLock != nil, log)
 	defer hcgDelegation.Close()
 	settingsGrantEnv := agentsettings.NewGrantEnvironment(store, settingsGrantAuthority, time.Now)
 	if _, err := store.RequeueClaimedReports(context.Background()); err != nil {

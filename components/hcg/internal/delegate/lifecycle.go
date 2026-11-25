@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -109,10 +110,11 @@ type Coordinator struct {
 	canonical                        Recorder
 	provider                         func(Deployment) Transport
 	checkpoint                       func(context.Context, string)
+	logger                           *slog.Logger
 }
 
-func NewCoordinator(root string, canonical Recorder, provider func(Deployment) Transport, checkpoint func(context.Context, string)) *Coordinator {
-	c := &Coordinator{root: root, dir: filepath.Join(root, "hcg", "delegation"), epoch: rand.Text(), policies: map[string]PolicySnapshot{}, projectVersions: map[string]uint64{}, sessionVersions: map[string]uint64{}, jobs: map[string]delegationJob{}, canonical: canonical, provider: provider, checkpoint: checkpoint}
+func NewCoordinator(root string, canonical Recorder, provider func(Deployment) Transport, checkpoint func(context.Context, string), logger *slog.Logger) *Coordinator {
+	c := &Coordinator{root: root, dir: filepath.Join(root, "hcg", "delegation"), epoch: rand.Text(), policies: map[string]PolicySnapshot{}, projectVersions: map[string]uint64{}, sessionVersions: map[string]uint64{}, jobs: map[string]delegationJob{}, canonical: canonical, provider: provider, checkpoint: checkpoint, logger: logger}
 	c.state = deploymentState{Version: 1, Current: map[string]string{}, History: map[string]Deployment{}, Sessions: map[string]sessionOverride{}}
 	c.budget = &Budget{OwnerRoot: root, Dir: filepath.Join(c.dir, "budget")}
 	raw, err := os.ReadFile(filepath.Join(c.dir, "registry.json"))
@@ -443,7 +445,7 @@ func (c *Coordinator) Read(ctx context.Context, id Identity, p PolicySnapshot, r
 			}
 			return persist()
 		}}
-	result, err := (&Consumer{ApprovedScope: scope, Transport: bridge, Recorder: bridge, checkpoint: c.checkpoint}).DelegateRead(ctx, execution, d.Profile, r)
+	result, err := (&Consumer{ApprovedScope: scope, Transport: bridge, Recorder: bridge, checkpoint: c.checkpoint, logger: c.logger}).DelegateRead(ctx, execution, d.Profile, r)
 	c.mu.Lock()
 	valid := c.token(id) == revision
 	c.mu.Unlock()

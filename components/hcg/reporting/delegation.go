@@ -3,6 +3,7 @@ package reporting
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 
 	"github.com/aoagents/agent-orchestrator/components/hcg/internal/delegate"
 )
@@ -41,13 +42,13 @@ func (p fixedDelegationProvider) Do(ctx context.Context, r delegate.WireRequest)
 }
 
 // NewDelegation has no arbitrary executable/environment hooks. Its provider and
-// checkpoint dependencies are supplied by the daemon, never by HTTP/MCP data.
-func NewDelegation(root string, recorder DelegationUsageRecorder, provider DelegationProvider, checkpoint func(context.Context, string)) *DelegationConsumer {
+// checkpoint and logger dependencies are supplied by the daemon.
+func NewDelegation(root string, recorder DelegationUsageRecorder, provider DelegationProvider, checkpoint func(context.Context, string), logger *slog.Logger) *DelegationConsumer {
 	var factory func(delegate.Deployment) delegate.Transport
 	if provider != nil {
 		factory = func(d delegate.Deployment) delegate.Transport { return fixedDelegationProvider{provider, d} }
 	}
-	return &DelegationConsumer{core: delegate.NewCoordinator(root, delegationReceiptAdapter{recorder}, factory, checkpoint)}
+	return &DelegationConsumer{core: delegate.NewCoordinator(root, delegationReceiptAdapter{recorder}, factory, checkpoint, logger)}
 }
 func delegationWire(from, to any) error {
 	raw, err := json.Marshal(from)

@@ -4,6 +4,7 @@ package hcg
 
 import (
 	"context"
+	"log/slog"
 	"path/filepath"
 	"time"
 
@@ -29,17 +30,17 @@ type Service struct {
 
 // New builds the delegation service without a provider override.
 func New(ctx context.Context, root string, store Store) *Service {
-	return NewWithDelegationProvider(ctx, root, store, nil, nil)
+	return NewWithDelegationProvider(ctx, root, store, nil, nil, nil)
 }
 
 // NewWithDelegationProvider is a trusted constructor seam for the locked owner
 // and offline fixtures.
-func NewWithDelegationProvider(ctx context.Context, root string, store Store, provider reporting.DelegationProvider, checkpoint func(context.Context, string)) *Service {
+func NewWithDelegationProvider(ctx context.Context, root string, store Store, provider reporting.DelegationProvider, checkpoint func(context.Context, string), logger *slog.Logger) *Service {
 	s := &Service{store: store, root: root}
 	if writer, ok := store.(interface {
 		InsertExecutionUsage(context.Context, domain.ExecutionUsageReceipt, string) error
 	}); ok {
-		s.delegation = reporting.NewDelegation(root, delegationReceiptRecorder{canonical: usagesvc.NewExecutionRecorder(writer)}, provider, checkpoint)
+		s.delegation = reporting.NewDelegation(root, delegationReceiptRecorder{canonical: usagesvc.NewExecutionRecorder(writer)}, provider, checkpoint, logger)
 		recoveryCtx, recoveryCancel := context.WithTimeout(ctx, 5*time.Second)
 		// Failed projections retain their pending receipt and worst hold. Startup
 		// never retries the provider or changes native session/policy state.

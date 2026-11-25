@@ -49,7 +49,7 @@ func TestDispatchRevalidatesSameDescriptorExternalSpend(t *testing.T) {
 				if c.PolicyRevision(id) != before {
 					t.Fatal("fixture changed descriptor/revision instead of external knowledge only")
 				}
-			})
+			}, nil)
 			defer c.Close()
 			if err := c.Register(t.Context(), Registration{Deployment: deployment, ExternalSpend: spend(tc.beforeOpenAI, tc.beforeAnthropic, false)}); err != nil {
 				t.Fatal(err)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os/user"
 	"path/filepath"
@@ -46,7 +47,7 @@ func NewHTTPProvider(root string, transport http.RoundTripper) reporting.Delegat
 // NewOwner is called only after the daemon has acquired this data root's
 // exclusive lock. Creating the provider does not read any credential; each
 // call reads the user-placed key under ~/.ao/credentials/hcg.
-func NewOwner(ctx context.Context, root string, store Store, ownsDataLock bool) *Service {
+func NewOwner(ctx context.Context, root string, store Store, ownsDataLock bool, logger *slog.Logger) *Service {
 	if !ownsDataLock {
 		return New(ctx, root, store)
 	}
@@ -55,7 +56,7 @@ func NewOwner(ctx context.Context, root string, store Store, ownsDataLock bool) 
 		return New(ctx, root, store)
 	}
 	p := NewHTTPProvider(filepath.Join(u.HomeDir, ".ao", "credentials", "hcg"), nil)
-	return NewWithDelegationProvider(ctx, root, store, p, nil)
+	return NewWithDelegationProvider(ctx, root, store, p, nil, logger)
 }
 
 func (p *httpProvider) Call(ctx context.Context, r reporting.DelegationProviderRequest) (reporting.DelegationProviderResponse, error) {
