@@ -687,10 +687,9 @@ function SessionRow({
 }) {
 	const { t } = useTranslation();
 	const [compositionOpen, setCompositionOpen] = useState(false);
-	// This project's local Claude and Codex sessions (user scope rca-reset-1);
-	// the composition route reads this machine's session files.
+	// The composition route reads this machine's session files.
 	const canShowComposition =
-		session.workspaceId === "agent-orchestrator" && !session.hostId && (session.provider === "claude-code" || session.provider === "codex");
+		!session.hostId && (session.provider === "claude-code" || session.provider === "codex");
 	const working = session.activity?.state === "active";
 	const recent = reading.activity?.recent ?? [];
 	const canExpand = reading.processes.length > 0 || recent.length > 0;

@@ -191,7 +191,7 @@ describe("AppMemoryIndicator", () => {
 		expect(button).toHaveAttribute("data-memory-state", "unknown");
 	});
 
-	it("opens a window: stacked bar, rows largest first with no actions, AO pinned last", async () => {
+	it("opens a window: stacked bar, rows largest first with context composition, AO pinned last", async () => {
 		appMemoryMock.mockReturnValue(appReading(20, 0, 2, 40, 160));
 		renderButton();
 		await userEvent.click(screen.getByTestId("app-memory-indicator"));
@@ -235,8 +235,8 @@ describe("AppMemoryIndicator", () => {
 
 		// The window only measures: its rows copy, they never end a session.
 		expect(within(table).queryByRole("button", { name: /terminate|kill|pause/i })).not.toBeInTheDocument();
-		// The only buttons are the two sort headers.
-		expect(within(table).queryAllByRole("button").filter((button) => button.dataset.testid !== "session-memory-sort")).toHaveLength(0);
+		const rowButtons = within(table).getAllByRole("button").filter((button) => button.dataset.testid !== "session-memory-sort");
+		expect(rowButtons.map((button) => button.textContent)).toEqual(["Context composition", "Context composition"]);
 		expect(postMock).not.toHaveBeenCalled();
 	});
 
