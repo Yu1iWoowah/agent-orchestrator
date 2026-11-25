@@ -15,7 +15,9 @@ type SideCompactionStore interface {
 	SideCompactions(context.Context, bool) ([]domain.SideCompaction, error)
 	SideCompactionRecovery(context.Context) ([]domain.SideCompaction, error)
 	SideCompactionContent(context.Context, string) (json.RawMessage, error)
-	UnresolvedSideCompactionWithContent(context.Context, string) (domain.SideCompaction, bool, error)
+	// ListUnresolvedSideCompactionsWithContent reads the first unresolved record and content per side.
+	// A nil slice selects every side.
+	ListUnresolvedSideCompactionsWithContent(context.Context, []string) ([]domain.SideCompaction, error)
 	SideWithUnresolvedNativeCompaction(context.Context, string, string) (string, error)
 	HasUnresolvedSideCompaction(context.Context, string) (bool, error)
 	UnresolvedSideForClose(context.Context, string) (domain.SideConversation, bool, error)

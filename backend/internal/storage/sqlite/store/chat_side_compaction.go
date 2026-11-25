@@ -110,22 +110,23 @@ func (s *Store) SideCompactionContent(ctx context.Context, sideID string) (json.
 	return json.RawMessage(content), err
 }
 
-// UnresolvedSideCompactionWithContent reads both parts of the side's protection from one snapshot.
-func (s *Store) UnresolvedSideCompactionWithContent(ctx context.Context, sideID string) (domain.SideCompaction, bool, error) {
-	row, err := s.qr.UnresolvedSideCompactionWithContent(ctx, sideID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.SideCompaction{}, false, nil
-	}
+// ListUnresolvedSideCompactionsWithContent reads protection records and bodies from one snapshot.
+func (s *Store) ListUnresolvedSideCompactionsWithContent(ctx context.Context, sideIDs []string) ([]domain.SideCompaction, error) {
+	rows, err := s.qr.ListUnresolvedSideCompactionsWithContent(ctx, jsonArray(sideIDs))
 	if err != nil {
-		return domain.SideCompaction{}, false, err
+		return nil, err
 	}
-	var r domain.SideCompaction
-	if err := json.Unmarshal([]byte(row.RecordJson), &r); err != nil {
-		return domain.SideCompaction{}, false, err
+	out := make([]domain.SideCompaction, 0, len(rows))
+	for _, row := range rows {
+		var r domain.SideCompaction
+		if err := json.Unmarshal([]byte(row.RecordJson), &r); err != nil {
+			return nil, err
+		}
+		r.State, r.Historical, r.Closed = domain.SideCompactionState(row.State), row.Historical != 0, row.Closed != 0
+		r.Content = json.RawMessage(row.ContentJson)
+		out = append(out, r)
 	}
-	r.State, r.Historical, r.Closed = domain.SideCompactionState(row.State), row.Historical != 0, row.Closed != 0
-	r.Content = json.RawMessage(row.ContentJson)
-	return r, true, nil
+	return out, nil
 }
 
 // SideWithUnresolvedNativeCompaction returns the side protecting the native ID, if any.
