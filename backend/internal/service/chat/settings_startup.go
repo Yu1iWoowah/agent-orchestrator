@@ -15,11 +15,24 @@ import (
 func (c *Controller) initializeAgentSettings(ctx context.Context) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	_, c.settingsInitializationError = c.runSettingsAttemptLocked(ctx, true, func(ctx context.Context, journal agentSettingsJournal, op *domain.AgentSettingsOperation) (bool, error) {
+	var replayCommitted bool
+	initialize := func(ctx context.Context, journal agentSettingsJournal, op *domain.AgentSettingsOperation) (bool, error) {
 		blocked, err := c.initializeAgentSettingsLocked(ctx, journal, op)
 		c.scheduleSettingsRecheckLocked(blocked, err)
+		if !blocked && err == nil && op != nil && op.Phase == domain.AgentSettingsPending && op.StartedAt == nil {
+			saved, err := journal.AgentSettingsOperation(ctx, c.sessionID, op.ID)
+			if err != nil {
+				return true, err
+			}
+			replayCommitted = saved.Phase == domain.AgentSettingsFailed
+		}
 		return err != nil, err
-	})
+	}
+	_, c.settingsInitializationError = c.runSettingsAttemptLocked(ctx, true, initialize)
+	if replayCommitted && c.settingsInitializationError == nil {
+		// Rejecting an unstarted intent does not verify the committed settings.
+		_, c.settingsInitializationError = c.runSettingsAttemptLocked(ctx, true, initialize)
+	}
 	if c.settingsInitializationError != nil {
 		c.log.Warn("Chat settings initialization keeps dispatch fenced", "session", c.sessionID, "reason", "agent_settings_unavailable")
 	}
