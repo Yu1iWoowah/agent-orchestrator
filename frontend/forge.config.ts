@@ -281,7 +281,7 @@ const config: ForgeConfig = {
 			].join("\n");
 			writeFileSync("app-update.yml", yml);
 		},
-		packageAfterPrune: async (_forgeConfig, buildPath, _electronVersion, platform) => {
+		packageAfterPrune: async (_forgeConfig, buildPath) => {
 			const nativeModule = path.join(
 				buildPath,
 				"node_modules",
@@ -292,13 +292,6 @@ const config: ForgeConfig = {
 			);
 			if (!existsSync(nativeModule)) {
 				throw new Error("Packaged app is missing the better-sqlite3 native runtime");
-			}
-			if (platform === "linux") {
-				// Match the installed launcher without giving dev windows its identity.
-				const packagePath = path.join(buildPath, "package.json");
-				const packageJSON = JSON.parse(readFileSync(packagePath, "utf8"));
-				packageJSON.desktopName = `${EXECUTABLE_NAME}.desktop`;
-				writeFileSync(packagePath, `${JSON.stringify(packageJSON, null, 2)}\n`);
 			}
 		},
 		// Assert the native resource survived Electron Packager's copy/asar/sign
@@ -450,6 +443,7 @@ const config: ForgeConfig = {
 					// looks for the package name and fails with "could not find
 					// the Electron app binary". (Both are "agent-orchestrator".)
 					bin: EXECUTABLE_NAME,
+					desktopTemplate: path.resolve("assets/debian.desktop.ejs"),
 					icon: "assets/icon.png",
 					maintainer: appPackage.author,
 					homepage: "https://github.com/aoagents/agent-orchestrator",
