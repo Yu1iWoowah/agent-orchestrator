@@ -152,8 +152,15 @@ func (e env) startDaemon(t *testing.T) {
 
 func (e env) startDaemonWithShutdownCheck(t *testing.T, allowUnsettled bool) {
 	t.Helper()
+	stderr, err := os.Create(filepath.Join(t.TempDir(), "daemon-stderr.log"))
+	if err != nil {
+		t.Fatalf("create daemon stderr log: %v", err)
+	}
+	defer func() { _ = stderr.Close() }()
+
 	cmd := exec.Command(aoBin, "daemon")
 	cmd.Env = e.environ("")
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("spawn ao daemon: %v", err)
 	}
@@ -195,7 +202,13 @@ func (e env) startDaemonWithShutdownCheck(t *testing.T, allowUnsettled bool) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("daemon did not become ready within 10s; last status:\n%s", out)
+			const stderrTailBytes = 8 * 1024
+			output, err := os.ReadFile(stderr.Name())
+			if err != nil {
+				t.Fatalf("daemon did not become ready within 10s; last status:\n%s\ncould not read daemon stderr: %v", out, err)
+			}
+			tail := output[max(0, len(output)-stderrTailBytes):]
+			t.Fatalf("daemon did not become ready within 10s; last status:\n%s\ndaemon stderr (up to %d trailing bytes):\n%s", out, stderrTailBytes, tail)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
