@@ -128,6 +128,25 @@ func (s *Store) UnresolvedSideCompactionWithContent(ctx context.Context, sideID 
 	return r, true, nil
 }
 
+// ListUnresolvedSideCompactionsWithContent reads protection records and bodies from one snapshot.
+func (s *Store) ListUnresolvedSideCompactionsWithContent(ctx context.Context, sideIDs []string) ([]domain.SideCompaction, error) {
+	rows, err := s.qr.ListUnresolvedSideCompactionsWithContent(ctx, jsonArray(sideIDs))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.SideCompaction, 0, len(rows))
+	for _, row := range rows {
+		var r domain.SideCompaction
+		if err := json.Unmarshal([]byte(row.RecordJson), &r); err != nil {
+			return nil, err
+		}
+		r.State, r.Historical, r.Closed = domain.SideCompactionState(row.State), row.Historical != 0, row.Closed != 0
+		r.Content = json.RawMessage(row.ContentJson)
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 // SideWithUnresolvedNativeCompaction returns the side protecting the native ID, if any.
 func (s *Store) SideWithUnresolvedNativeCompaction(ctx context.Context, home, id string) (string, error) {
 	return s.qr.SideWithUnresolvedNativeCompaction(ctx, gen.SideWithUnresolvedNativeCompactionParams{NativeHome: home, NativeID: id})

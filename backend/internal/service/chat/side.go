@@ -362,11 +362,23 @@ func (s *Service) ListIndependentSideChats(ctx context.Context, session domain.S
 	if err != nil {
 		return nil, err
 	}
-	for i := range sides {
-		sides[i].Protection, err = s.sideProtection(ctx, sides[i].ID)
+	protectionBySide := make(map[string]*domain.SideProtection)
+	if len(sides) != 0 && s.nativeGuard.store != nil {
+		sideIDs := make([]string, 0, len(sides))
+		for _, side := range sides {
+			sideIDs = append(sideIDs, side.ID)
+		}
+		rows, err := s.nativeGuard.store.ListUnresolvedSideCompactionsWithContent(ctx, sideIDs)
 		if err != nil {
 			return nil, err
 		}
+		for _, row := range rows {
+			protection := s.sideProtectionStatus(ctx, row)
+			protectionBySide[row.SideID] = &protection
+		}
+	}
+	for i := range sides {
+		sides[i].Protection = protectionBySide[sides[i].ID]
 		turns, _, err := s.sides.store.SideTurns(ctx, sides[i].ID, time.Time{}, 0)
 		if err != nil {
 			return nil, err

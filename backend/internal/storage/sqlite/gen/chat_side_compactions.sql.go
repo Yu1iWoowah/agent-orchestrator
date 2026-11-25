@@ -168,6 +168,57 @@ func (q *Queries) ListSideCompactions(ctx context.Context, unresolvedOnly interf
 	return items, nil
 }
 
+const listUnresolvedSideCompactionsWithContent = `-- name: ListUnresolvedSideCompactionsWithContent :many
+SELECT c.state,c.historical,c.closed,c.record_json,COALESCE(s.content_json,'') AS content_json
+FROM chat_side_compactions c
+LEFT JOIN chat_side_contents s ON s.side_id=c.side_id
+WHERE c.rowid IN (
+    SELECT MIN(rowid) FROM chat_side_compactions
+    WHERE closed=0 AND state IN ('pending','unknown')
+      AND (CAST(?1 AS TEXT)='null'
+           OR side_id IN (SELECT CAST(value AS TEXT) FROM json_each(?1)))
+    GROUP BY side_id
+)
+ORDER BY c.rowid
+`
+
+type ListUnresolvedSideCompactionsWithContentRow struct {
+	State       string
+	Historical  int64
+	Closed      int64
+	RecordJson  string
+	ContentJson string
+}
+
+func (q *Queries) ListUnresolvedSideCompactionsWithContent(ctx context.Context, sideIds string) ([]ListUnresolvedSideCompactionsWithContentRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUnresolvedSideCompactionsWithContent, sideIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUnresolvedSideCompactionsWithContentRow{}
+	for rows.Next() {
+		var i ListUnresolvedSideCompactionsWithContentRow
+		if err := rows.Scan(
+			&i.State,
+			&i.Historical,
+			&i.Closed,
+			&i.RecordJson,
+			&i.ContentJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markSideCompactionHistorical = `-- name: MarkSideCompactionHistorical :exec
 UPDATE chat_side_compactions SET state='unknown',historical=1,record_json=? WHERE id=?
 `

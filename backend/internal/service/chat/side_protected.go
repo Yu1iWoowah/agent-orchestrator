@@ -36,23 +36,11 @@ func (s *Service) ListProtectedSides(ctx context.Context) ([]ProtectedSide, erro
 	if s.nativeGuard.store == nil {
 		return out, nil
 	}
-	rows, err := s.nativeGuard.store.SideCompactions(ctx, true)
+	rows, err := s.nativeGuard.store.ListUnresolvedSideCompactionsWithContent(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
-	for _, candidate := range rows {
-		if seen[candidate.SideID] {
-			continue
-		}
-		seen[candidate.SideID] = true
-		row, found, err := s.nativeGuard.store.UnresolvedSideCompactionWithContent(ctx, candidate.SideID)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			continue
-		}
+	for _, row := range rows {
 		orphan, err := s.protectedSideOrphan(ctx, row.SessionID)
 		if err != nil {
 			return nil, err

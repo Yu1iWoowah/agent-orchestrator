@@ -24,6 +24,19 @@ WHERE c.side_id=? AND c.closed=0 AND c.state IN ('pending','unknown')
 ORDER BY c.rowid
 LIMIT 1;
 
+-- name: ListUnresolvedSideCompactionsWithContent :many
+SELECT c.state,c.historical,c.closed,c.record_json,COALESCE(s.content_json,'') AS content_json
+FROM chat_side_compactions c
+LEFT JOIN chat_side_contents s ON s.side_id=c.side_id
+WHERE c.rowid IN (
+    SELECT MIN(rowid) FROM chat_side_compactions
+    WHERE closed=0 AND state IN ('pending','unknown')
+      AND (CAST(sqlc.arg(side_ids) AS TEXT)='null'
+           OR side_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(side_ids))))
+    GROUP BY side_id
+)
+ORDER BY c.rowid;
+
 -- name: SideWithUnresolvedNativeCompaction :one
 SELECT CAST(COALESCE((SELECT side_id FROM chat_side_compactions
 WHERE native_home=? AND native_id=? AND closed=0 AND state IN ('pending','unknown') LIMIT 1),'') AS TEXT);
