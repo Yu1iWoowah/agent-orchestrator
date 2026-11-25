@@ -81,7 +81,7 @@ type activityMark struct {
 	since    time.Time
 	at       time.Time
 
-	processExited bool
+	processExited bool // retained for this launch across activity updates
 }
 
 // pendingStop is a reviewer that must still be stopped although none of its
@@ -435,8 +435,11 @@ func (e *Engine) ObserveReviewActivity(ctx stdctx.Context, review domain.Review,
 	e.runs.mu.Lock()
 	mark := activityMark{launchID: launchID, state: state, since: now, at: now}
 	mark.processExited = event == "process-exited" && state == domain.ActivityExited && launchID != ""
-	if prev, ok := e.runs.activity[review.ID]; ok && prev.launchID == launchID && prev.state == state {
-		mark.since = prev.since
+	if prev, ok := e.runs.activity[review.ID]; ok && prev.launchID == launchID {
+		mark.processExited = mark.processExited || prev.processExited
+		if prev.state == state {
+			mark.since = prev.since
+		}
 	}
 	e.runs.activity[review.ID] = mark
 	e.runs.mu.Unlock()
@@ -479,7 +482,14 @@ func (e *Engine) activitySince(review domain.Review, state domain.ActivityState,
 	if ok && mark.state == state && mark.launchID == review.ReviewerLaunchID {
 		return mark.since
 	}
-	e.runs.activity[review.ID] = activityMark{launchID: review.ReviewerLaunchID, state: state, since: now, at: now}
+	// The review snapshot can predate a supervisor exit received during probing.
+	e.runs.activity[review.ID] = activityMark{
+		launchID:      review.ReviewerLaunchID,
+		state:         state,
+		since:         now,
+		at:            now,
+		processExited: mark.launchID == review.ReviewerLaunchID && mark.processExited,
+	}
 	return now
 }
 
