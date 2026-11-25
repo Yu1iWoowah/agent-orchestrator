@@ -205,6 +205,9 @@ func logDeliveryJournalFailure(log *slog.Logger, id domain.SessionID, attempt st
 	var journal *ports.ChatDeliveryJournalError
 	if errors.As(cause, &journal) {
 		stage, cause = journal.Stage, journal.Cause
+		if attempt == "" {
+			attempt = journal.AttemptID
+		}
 	} else if errors.Is(cause, ports.ErrAgentSettingsConflict) {
 		stage = "version_or_owner"
 	}
