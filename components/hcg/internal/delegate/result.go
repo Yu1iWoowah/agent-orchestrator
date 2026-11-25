@@ -329,6 +329,9 @@ func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Pro
 			return item("source_view", "source_quote_range_invalid", "evidence.line_end")
 		}
 		quote := original[ranges[e.LineStart-1].start:ranges[e.LineEnd-1].end]
+		if quote == "" {
+			return item("evidence", "quote_empty", "evidence.quote")
+		}
 		evidenceIDs[e.ID] = true
 		out.Evidence = append(out.Evidence, Evidence{
 			proposedEvidence: e,
