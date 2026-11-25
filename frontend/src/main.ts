@@ -322,6 +322,10 @@ const APP_DISPLAY_NAME = "Orchestrator.inc";
 // panel never impersonate the installed app (#3642).
 app.setName(app.isPackaged ? APP_DISPLAY_NAME : `${APP_DISPLAY_NAME} (dev)`);
 
+if (process.platform === "linux" && app.isPackaged && !process.env.APPIMAGE) {
+	app.setDesktopName("agent-orchestrator.desktop");
+}
+
 // An unsigned dev Electron is a new app to macOS whenever its binary changes, so Chromium's
 // keychain-held cookie key prompted on start. Dev runs use the stand-in key; packaged keep the keychain.
 if (!app.isPackaged && process.platform === "darwin") {
