@@ -89,7 +89,7 @@ jobs:
             echo "::error::Repository variable VITE_WORKOS_CLIENT_ID is required for desktop artifacts." >&2
             exit 1
           fi
-      # The fork's u5 inputs are part of its reviewed commit. Other conductor
+      # The fork's release inputs are part of its reviewed commit. Other conductor
       # builds still stamp the supplied version without +build metadata.
       - name: Resolve build version
         shell: bash
@@ -102,13 +102,13 @@ jobs:
           const { execFileSync } = require('node:child_process');
           const manifest = require('./package.json');
           const requested = process.env.BUILD_VERSION.split('+')[0];
-          const u5 = '0.15.3-woowah.6.u5';
-          if (process.env.GITHUB_REPOSITORY === 'Yu1iWoowah/agent-orchestrator' && (manifest.version === u5 || requested === u5)) {
+          const forkVersion = [manifest.version, requested].some(version => version.includes('-woowah.'));
+          if (process.env.GITHUB_REPOSITORY === 'Yu1iWoowah/agent-orchestrator' && forkVersion) {
             const lock = require('./package-lock.json');
             const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
             if (process.env.BUILD_REF !== head ||
-                [process.env.BUILD_VERSION, manifest.version, lock.version, lock.packages['']?.version].some(version => version !== u5)) {
-              throw new Error('The u5 build must use the full reviewed commit SHA and its committed manifest and lock versions');
+                [process.env.BUILD_VERSION, lock.version, lock.packages['']?.version].some(version => version !== manifest.version)) {
+              throw new Error('The fork build must use the full reviewed commit SHA and its committed manifest and lock versions');
             }
           } else {
             manifest.version = requested;
