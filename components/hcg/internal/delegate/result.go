@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"slices"
 	"strconv"
@@ -216,10 +215,9 @@ func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Pro
 		Findings []Finding          `json:"findings"`
 		Evidence []proposedEvidence `json:"evidence"`
 	}
-	// Keep any additional objects in the decoder's input so it can reject
-	// ambiguous replies. Discard surrounding prose or Markdown fences.
-	if start, end := strings.IndexByte(raw, '{'), strings.LastIndexByte(raw, '}'); start >= 0 && end > start {
-		raw = raw[start : end+1]
+	// Decode the first object. The raw text scan above covers its wrapper.
+	if start := strings.IndexByte(raw, '{'); start >= 0 {
+		raw = raw[start:]
 	}
 	// Decode only the fields AO uses. Verify them before projecting the reply.
 	decoder := json.NewDecoder(strings.NewReader(raw))
@@ -227,8 +225,6 @@ func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Pro
 		return reject("unverified", decodeFailure(err))
 	}
 	switch {
-	case decoder.Decode(new(any)) != io.EOF:
-		return reject("unverified", at("envelope", "json_trailing_value", ""))
 	case proposal.Schema != resultSchema:
 		return reject("unverified", at("envelope", "schema_mismatch", "schema"))
 	case proposal.Status != "ok" && proposal.Status != "not_found":
@@ -238,7 +234,7 @@ func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Pro
 	case proposal.Evidence == nil:
 		return reject("unverified", at("envelope", "evidence_null_or_missing", "evidence"))
 	}
-	if issue := outputStringsIssue(json.RawMessage(raw)); issue != "" {
+	if issue := outputStringsIssue(json.RawMessage(raw[:decoder.InputOffset()])); issue != "" {
 		return reject("unverified", at("envelope", "proposal_"+issue, ""))
 	}
 	if proposal.Status == "not_found" {

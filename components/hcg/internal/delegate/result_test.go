@@ -30,7 +30,8 @@ func TestReadReplyEvidenceAndScope(t *testing.T) {
 	}
 	for name, variant := range map[string]string{
 		"markdown_fence":   "```json\n" + raw + "\n```",
-		"surrounding_text": "Here is the result:\n" + raw + "\nThese are the relevant lines.",
+		"surrounding_text": "Here is the result:\n" + raw + "\nThese are the relevant lines up to the } marker.",
+		"trailing_json":    raw + " {}",
 		"unknown_fields":   `{"coverage_status":"partial",` + strings.Replace(raw[1:], `"kind":"fact"`, `"kind":"fact","confidence":"high"`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -152,7 +153,6 @@ func TestVerifyReplyNamesFirstFailurePrivately(t *testing.T) {
 		"json_syntax_invalid":      {raw: `{"schema" 1}`, want: replyFailure{Stage: "decode", Code: "json_syntax_invalid", Offset: offset(11)}},
 		"json_type_invalid":        {raw: mutate(func(v map[string]any) { evidence(v)["line_start"] = "1" }), want: replyFailure{Stage: "decode", Code: "json_type_invalid", Field: "evidence.line_start", Index: intp(0)}},
 		"json_decode_failed":       {raw: `{"schema":`, want: replyFailure{Stage: "decode", Code: "json_decode_failed"}},
-		"json_trailing_value":      {raw: validProposal(source) + " {}", want: replyFailure{Stage: "envelope", Code: "json_trailing_value"}},
 		"schema_mismatch":          {raw: mutate(func(v map[string]any) { v["schema"] = "other" }), want: replyFailure{Stage: "envelope", Code: "schema_mismatch", Field: "schema"}},
 		"status_invalid":           {raw: mutate(func(v map[string]any) { v["status"] = "maybe" }), want: replyFailure{Stage: "envelope", Code: "status_invalid", Field: "status"}},
 		"findings_null":            {raw: mutate(func(v map[string]any) { v["findings"] = nil }), want: replyFailure{Stage: "envelope", Code: "findings_null_or_missing", Field: "findings"}},
