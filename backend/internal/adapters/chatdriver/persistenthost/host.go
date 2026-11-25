@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -235,6 +236,36 @@ func lockPath(dataDir, sessionID string) (string, error) {
 // Each detached host gets its own spawn record, named by its PID and available
 // process identity, so cleanup leaves later launches' records alone.
 const spawnRecordPrefix = "host.spawn-"
+
+const waitForSpawnRecordEnv = "AO_CHAT_HOST_WAIT_FOR_SPAWN_RECORD"
+
+func startDetachedHost(cmd *exec.Cmd, cfg Config) error {
+	read, notify, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("create detached chat host startup pipe: %w", err)
+	}
+	defer func() { _ = notify.Close() }()
+	cmd.Stdin = read
+	cmd.Env = append(cmd.Environ(), waitForSpawnRecordEnv+"=1")
+	startErr := cmd.Start()
+	// Let the notification fail if the child has already closed its end.
+	_ = read.Close()
+	if startErr != nil {
+		return fmt.Errorf("spawn detached chat host: %w", startErr)
+	}
+	pid := cmd.Process.Pid
+	err = recordSpawn(cfg.DataDir, cfg.SessionID, pid)
+	if err == nil {
+		_, err = notify.Write([]byte{1})
+	}
+	if err != nil {
+		_ = cmd.Process.Kill()
+		clearSpawnRecord(cfg.DataDir, cfg.SessionID, pid)
+		_ = releaseDetachedHost(cmd)
+		return fmt.Errorf("publish detached chat host spawn record: %w", err)
+	}
+	return releaseDetachedHost(cmd)
+}
 
 func hostProcessIdentity(pid int, bootID string) string {
 	if ticks := processscope.StartTicks(pid); bootID != "" && ticks != "" {
@@ -1043,8 +1074,22 @@ func Run(ctx context.Context, cfg Config) error {
 	if len(cfg.Argv) == 0 || !filepath.IsAbs(cfg.Workdir) {
 		return errors.New("chat host requires provider argv and absolute workdir")
 	}
+	if os.Getenv(waitForSpawnRecordEnv) == "1" {
+		var ready [1]byte
+		_, err := io.ReadFull(os.Stdin, ready[:])
+		_ = os.Stdin.Close()
+		if err != nil {
+			clearSpawnRecord(cfg.DataDir, cfg.SessionID, os.Getpid())
+			return fmt.Errorf("wait for detached chat host spawn record: %w", err)
+		}
+		_ = os.Unsetenv(waitForSpawnRecordEnv)
+		cfg.Env = slices.DeleteFunc(cfg.Env, func(entry string) bool {
+			return strings.HasPrefix(entry, waitForSpawnRecordEnv+"=")
+		})
+	}
 	releaseLock, err := acquireHostLock(cfg.DataDir, cfg.SessionID)
 	if err != nil {
+		clearSpawnRecord(cfg.DataDir, cfg.SessionID, os.Getpid())
 		return err
 	}
 	defer releaseLock()

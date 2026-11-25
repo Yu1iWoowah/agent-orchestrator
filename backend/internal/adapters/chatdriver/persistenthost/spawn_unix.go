@@ -4,7 +4,6 @@ package persistenthost
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
@@ -25,20 +24,14 @@ func spawnDetached(ctx context.Context, cfg Config) error {
 	cmd := exec.Command(exe, args...) //nolint:forbidigo // detached chat host has specialized lifetime and session ownership
 	cmd.Dir = cfg.Workdir
 	cmd.Env = cfg.Env
-	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("spawn detached chat host: %w", err)
-	}
-	// Setsid detaches the host from our session, but it remains our child until
-	// Wait reaps it. Record its identity first so the PID cannot be reused.
-	recordErr := recordSpawn(cfg.DataDir, cfg.SessionID, cmd.Process.Pid)
+	return startDetachedHost(cmd, cfg)
+}
+
+func releaseDetachedHost(cmd *exec.Cmd) error {
+	// Setsid detaches the host from our session. Wait still reaps our child.
 	go func() { _ = cmd.Wait() }()
-	if recordErr != nil {
-		_ = cmd.Process.Kill()
-		return fmt.Errorf("record detached chat host: %w", recordErr)
-	}
 	return nil
 }
