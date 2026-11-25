@@ -44,7 +44,7 @@ const codexCompositionFixture = `{"timestamp":"t0","type":"session_meta","payloa
 `
 
 func TestCodexCompositionUsesTokenCountAndAdditionalTools(t *testing.T) {
-	reqs, err := ReadCodexComposition(strings.NewReader(codexCompositionFixture))
+	reqs, err := ReadCodexComposition(t.Context(), strings.NewReader(codexCompositionFixture))
 	if err != nil || len(reqs) != 2 {
 		t.Fatalf("requests = %d, err = %v", len(reqs), err)
 	}

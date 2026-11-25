@@ -2,6 +2,7 @@ package usage
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -30,14 +31,32 @@ type claudeCompositionLine struct {
 
 type claudeAPIRequest struct {
 	id, shapeHash, timestamp string
-	hashes                   []string
+	base                     *claudeAPIRequest
+	keep                     int
+	tail                     []string
 	unresolved               int
+	prefix                   claudeMessageCounts
+}
+
+type claudeMessageCounts struct {
+	counts     CompositionCounts
+	unresolved int
+}
+
+func (c *claudeMessageCounts) addMessages(hashes []string, messages map[string]CompositionCounts) {
+	for _, hash := range hashes {
+		if counts, ok := messages[hash]; ok {
+			c.counts.add(counts)
+		} else {
+			c.unresolved++
+		}
+	}
 }
 
 // readClaudeComposition rebuilds each api-request's messages from its
 // base/keep/tail chain. Tail entries name api-request-blob records or
 // transcript messages by Claude Code's canonical message hash.
-func readClaudeComposition(r io.Reader) ([]CompositionRequest, error) {
+func readClaudeComposition(ctx context.Context, r io.Reader) ([]CompositionRequest, error) {
 	messages := map[string]CompositionCounts{}
 	shapes := map[string]CompositionCounts{}
 	usage := map[string]int64{}
@@ -50,7 +69,7 @@ func readClaudeComposition(r io.Reader) ([]CompositionRequest, error) {
 		counts   CompositionCounts
 		active   bool
 	}
-	err := EachLine(r, func(raw []byte) {
+	err := EachLine(ctx, r, func(raw []byte) {
 		var line claudeCompositionLine
 		if json.Unmarshal(raw, &line) != nil {
 			return
@@ -72,16 +91,15 @@ func readClaudeComposition(r io.Reader) ([]CompositionRequest, error) {
 			if line.ID == "" {
 				return
 			}
-			req := &claudeAPIRequest{id: line.ID, shapeHash: line.ShapeHash, timestamp: line.Timestamp}
+			req := &claudeAPIRequest{id: line.ID, shapeHash: line.ShapeHash, timestamp: line.Timestamp, tail: line.Tail}
 			if line.Keep > 0 {
-				if parent := requests[line.Base]; parent != nil && len(parent.hashes) >= line.Keep {
-					req.hashes = append(req.hashes, parent.hashes[:line.Keep]...)
+				if parent := requests[line.Base]; parent != nil && parent.keep+len(parent.tail) >= line.Keep {
+					req.base, req.keep = parent, line.Keep
 					req.unresolved = parent.unresolved
 				} else {
 					req.unresolved += line.Keep
 				}
 			}
-			req.hashes = append(req.hashes, line.Tail...)
 			requests[line.ID] = req
 			order = append(order, req)
 		case "user", "assistant":
@@ -112,16 +130,25 @@ func readClaudeComposition(r io.Reader) ([]CompositionRequest, error) {
 	}
 	out := make([]CompositionRequest, 0, len(order))
 	for _, req := range order {
-		row := CompositionRequest{Timestamp: req.timestamp, Unresolved: req.unresolved}
-		row.Counts.add(shapes[req.shapeHash])
-		for _, hash := range req.hashes {
-			counts, ok := messages[hash]
-			if !ok {
-				row.Unresolved++
-				continue
-			}
-			row.Counts.add(counts)
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
+		if base := req.base; base != nil {
+			// Bases are earlier requests. Reuse their resolved prefix counts,
+			// following the chain only when keep cuts into a retained prefix.
+			for req.keep < base.keep {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				base = base.base
+			}
+			req.prefix = base.prefix
+			req.prefix.addMessages(base.tail[:req.keep-base.keep], messages)
+		}
+		total := req.prefix
+		total.addMessages(req.tail, messages)
+		row := CompositionRequest{Timestamp: req.timestamp, Unresolved: req.unresolved + total.unresolved, Counts: total.counts}
+		row.Counts.add(shapes[req.shapeHash])
 		if input, ok := usage[req.id]; ok {
 			row.Input = &input
 		}
