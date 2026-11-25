@@ -123,7 +123,7 @@ type acpRelay struct {
 	stallCancelledAt time.Time
 	// abandonedPrompts holds provider ids of prompts the watchdog failed. The
 	// adapter's own late answer to one is dropped, not forwarded.
-	abandonedPrompts map[string]*acpDeferredPromptError
+	abandonedPrompts map[string]acpAbandonedPrompt
 	mainPromptError  *acpDeferredPromptError
 	// heldResult is the answer that settles the turn, kept back while a steer
 	// command (keepsTurn) is still running. See providerFrame.
@@ -144,6 +144,11 @@ type acpDeferredPromptError struct {
 	remaining  int
 }
 
+type acpAbandonedPrompt struct {
+	mainError *acpDeferredPromptError
+	keepsTurn bool
+}
+
 func newACPRelay(ctx context.Context, journalPath string) (*acpRelay, error) {
 	identity, err := randomToken()
 	if err != nil {
@@ -162,7 +167,7 @@ func newACPRelay(ctx context.Context, journalPath string) (*acpRelay, error) {
 		identity: identity,
 		pending:  make(map[string]acpClientRequest), serverRequests: make(map[string]acpServerRequest),
 		commands:          make(map[string]acpInteractionCommand),
-		abandonedPrompts:  make(map[string]*acpDeferredPromptError),
+		abandonedPrompts:  make(map[string]acpAbandonedPrompt),
 		promptJournal:     journal,
 		unpromptedJournal: unprompted,
 	}, nil
@@ -555,12 +560,13 @@ func (r *acpRelay) providerFrame(
 	if len(id) == 0 {
 		return frame, false, nil
 	}
-	if main, ok := r.abandonedPrompts[string(id)]; ok {
+	if abandoned, ok := r.abandonedPrompts[string(id)]; ok {
 		delete(r.abandonedPrompts, string(id))
-		if main != nil {
+		if main := abandoned.mainError; main != nil {
 			main.remaining--
 			// A refusal can clear a steer gap without proving the turn ended.
-			if main.remaining == 0 && len(envelope["error"]) == 0 && hasACPStopReason(envelope["result"]) {
+			if main.remaining == 0 && !abandoned.keepsTurn &&
+				len(envelope["error"]) == 0 && hasACPStopReason(envelope["result"]) {
 				if err := r.delivery.settleStalledPromptError(main.id, main.params, main.through); err != nil {
 					_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
 				}
@@ -759,6 +765,7 @@ func (r *acpRelay) failStalledPrompt(
 	}
 	var client []byte
 	for _, providerID := range stalled {
+		abandoned := acpAbandonedPrompt{mainError: main, keepsTurn: keepsTurn(r.pending[providerID].params)}
 		failure := rpcErrorFrame(json.RawMessage(providerID), -32603, fmt.Sprintf(
 			"provider stopped responding: no ACP output for %s and no answer to the cancel; failing the stalled prompt",
 			promptStallTimeout), nil)
@@ -766,7 +773,7 @@ func (r *acpRelay) failStalledPrompt(
 		if err != nil {
 			return acpClientFrames{}, err
 		}
-		r.abandonedPrompts[providerID] = main
+		r.abandonedPrompts[providerID] = abandoned
 		client = append(client, completion...)
 	}
 	return acpClientFrames{client: client}, nil
