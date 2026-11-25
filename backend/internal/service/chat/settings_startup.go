@@ -24,13 +24,13 @@ func (c *Controller) initializeAgentSettings(ctx context.Context) {
 			if err != nil {
 				return true, err
 			}
-			replayCommitted = saved.Phase == domain.AgentSettingsFailed
+			replayCommitted = saved.Phase == domain.AgentSettingsFailed || saved.Phase == domain.AgentSettingsCancelled
 		}
 		return err != nil, err
 	}
 	_, c.settingsInitializationError = c.runSettingsAttemptLocked(ctx, true, initialize)
 	if replayCommitted && c.settingsInitializationError == nil {
-		// Rejecting an unstarted intent does not verify the committed settings.
+		// Recheck the committed settings after rejection or cancellation.
 		_, c.settingsInitializationError = c.runSettingsAttemptLocked(ctx, true, initialize)
 	}
 	if c.settingsInitializationError != nil {
