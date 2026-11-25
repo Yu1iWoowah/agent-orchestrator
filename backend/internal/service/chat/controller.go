@@ -2750,7 +2750,8 @@ func (c *Controller) drainOnceLocked(ctx context.Context, allowDispatch bool, li
 	if !allowDispatch {
 		return rejected, nil
 	}
-	if blocked, err := c.reconcileAgentSettingsLocked(ctx); err != nil || blocked {
+	// A rejected settings change can finish its attempt while cold replay still fences dispatch.
+	if blocked, err := c.reconcileAgentSettingsLocked(ctx); err != nil || blocked || c.settingsInitializationError != nil {
 		return rejected, err
 	}
 
