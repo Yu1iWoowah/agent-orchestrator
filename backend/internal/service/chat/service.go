@@ -1581,12 +1581,8 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		cfg.ExpectedControllerOwner.ControllerGeneration = controller.Generation()
 	}
 	controller.settingsObservationOwner = controller.observationOwner(executionAccount)
-	// A reconnect can deduplicate the watchdog result on replay. Restore the
-	// hold from the attempt on this same ACP host before publishing.
-	if liveReconnect && controller.reviewID == "" && controller.acpDeliveryEpoch() != "" {
-		if journal, ok := s.store.(chatDeliveryJournal); ok {
-			_, _ = controller.installDeliveryHold(ctx, journal, "")
-		}
+	if liveReconnect {
+		controller.restoreACPDeliveryHold(ctx, liveRows.Turns)
 	}
 	s.configureAgentSettingsController(controller)
 	tentativeAccount := owner.Kind == domain.ConversationOwnerSession && executionAccount != settingsAccount

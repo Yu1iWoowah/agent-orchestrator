@@ -1040,7 +1040,7 @@ func (c *conversation) finishPrompt(
 			state = domain.TurnStateInterrupted
 		} else {
 			state = domain.TurnStateFailed
-			turnErr = normalizeACPError("ACP session/prompt", err)
+			turnErr = normalizeACPError(promptOperation, err)
 			if c.promptErrorFailure != nil && !errors.Is(turnErr, ports.ErrChatAuthRequired) && !errors.Is(turnErr, ports.ErrChatPromptStalled) {
 				if failure := c.promptErrorFailure(err, answered); failure != nil {
 					turnErr = failure

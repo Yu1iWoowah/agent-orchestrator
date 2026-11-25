@@ -288,8 +288,9 @@ func (c *Controller) installDeliveryHold(ctx context.Context, journal chatDelive
 			if a.ConversationID != c.conversation.ID || a.Owner.BranchID != c.conversation.ActiveBranchID {
 				continue
 			}
+			savedEpoch := deliveryLookup(a).ProviderEpoch
 			if preparedTurn != "" && a.PreparedTurnID != preparedTurn ||
-				preparedTurn == "" && epoch != "" && (a.Receipt == nil || a.Receipt.ProviderEpoch != epoch) {
+				epoch != "" && savedEpoch != "" && savedEpoch != epoch {
 				continue
 			}
 			id = a.ID
@@ -340,6 +341,34 @@ func (c *Controller) acpDeliveryEpoch() string {
 		return ""
 	}
 	return reporter.OutboundProviderEpoch()
+}
+
+// Reconnect can deduplicate an already projected completion. Recover its hold
+// using the last AO dispatch, including when its first host receipt is unsaved.
+func (c *Controller) restoreACPDeliveryHold(ctx context.Context, turns []domain.ConversationTurn) {
+	journal, ok := c.store.(chatDeliveryJournal)
+	if !ok || c.reviewID != "" || c.acpDeliveryEpoch() == "" {
+		return
+	}
+	var last *domain.ConversationTurn
+	for i := range turns {
+		turn := &turns[i]
+		if turn.HandledBySessionID != c.sessionID || turn.BranchID != c.conversation.ActiveBranchID ||
+			turn.AgentSettings == nil || turn.ProviderTurnID == "" || turn.StartedAt == nil || turn.RolledBackAt != nil {
+			continue
+		}
+		if last == nil || !turn.StartedAt.Before(*last.StartedAt) {
+			last = turn
+		}
+	}
+	if last == nil {
+		return
+	}
+	stalls, _ := c.conv.(interface{ IsArchivedPromptStall(string) bool })
+	if last.State == domain.TurnStateCompleted ||
+		last.State == domain.TurnStateFailed && stalls != nil && stalls.IsArchivedPromptStall(last.ErrorMessage) {
+		_, _ = c.installDeliveryHold(ctx, journal, last.ProviderTurnID)
+	}
 }
 
 // releasePendingDelivery resumes queued work held behind a now-settled original.
@@ -447,6 +476,9 @@ func (c *Controller) queryDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 	queryCtx, cancel := c.deadlineContext(ctx, 10*time.Second)
 	defer cancel()
 	key := deliveryLookup(a)
+	if key.ProviderEpoch == "" {
+		key.ProviderEpoch = c.acpDeliveryEpoch()
+	}
 	if c.deliveryMonitorStopping() {
 		return a, context.Canceled
 	}
@@ -784,8 +816,8 @@ func (c *Controller) monitorDeliveries() {
 					c.mu.Lock()
 					recheckHeld := c.pendingDeliveryID == a.ID
 					c.mu.Unlock()
-					recheckHeld = recheckHeld && a.Receipt != nil && a.Receipt.ProviderEpoch != "" &&
-						a.Receipt.ProviderEpoch == c.acpDeliveryEpoch()
+					epoch, savedEpoch := c.acpDeliveryEpoch(), deliveryLookup(a).ProviderEpoch
+					recheckHeld = recheckHeld && epoch != "" && (savedEpoch == "" || savedEpoch == epoch)
 					if a.BlockedSince != nil && a.AttentionID != "" {
 						if !recheckHeld && !force && !firstSweep {
 							continue
