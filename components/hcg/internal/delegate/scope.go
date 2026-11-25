@@ -148,33 +148,24 @@ func prepareScope(ctx context.Context, approved ApprovedScope, question string, 
 		if err != nil {
 			return out, scopeFailure("blocked", id, "source_unavailable")
 		}
-		// OpenRoot follows symlinks inside the root, so the real target must
-		// pass the same sensitive-path rules as the requested path.
-		real, realErr := filepath.EvalSymlinks(filepath.Join(base, rel))
-		baseReal, baseErr := filepath.EvalSymlinks(base)
-		if realErr != nil || baseErr != nil {
-			_ = root.Close()
-			return out, scopeFailure("blocked", id, "source_unavailable")
-		}
-		target, err := filepath.Rel(baseReal, real)
-		if err != nil || !filepath.IsLocal(target) || !safeSourcePath(target) {
-			_ = root.Close()
-			return out, scopeFailure("blocked", id, "outside_scope")
-		}
-		f, err := root.OpenFile(rel, sourceOpenFlags, 0)
+		targetFile, expected, err := openScopeTarget(root, rel, id)
 		if err != nil {
 			_ = root.Close()
+			return out, err
+		}
+		// Keep the approved file open until the original open completes.
+		f, err := root.OpenFile(rel, sourceOpenFlags, 0)
+		_ = targetFile.Close()
+		_ = root.Close()
+		if err != nil {
 			return out, scopeFailure("blocked", id, "source_unavailable")
 		}
 		info, statErr := f.Stat()
 		if statErr != nil || !info.Mode().IsRegular() {
-			_ = root.Close()
 			f.Close()
 			return out, scopeFailure("blocked", id, "source_not_regular")
 		}
-		expected, targetErr := scopeTargetInfo(root, target)
-		_ = root.Close()
-		if targetErr != nil || !os.SameFile(info, expected) {
+		if !os.SameFile(info, expected) {
 			_ = f.Close()
 			return out, scopeFailure("blocked", id, "source_unavailable")
 		}
@@ -211,30 +202,103 @@ func prepareScope(ctx context.Context, approved ApprovedScope, question string, 
 	return out, nil
 }
 
-// scopeTargetInfo walks the checked target through pinned directories. A
-// single Lstat on the whole path would still follow intermediate symlinks.
-func scopeTargetInfo(root *os.Root, target string) (os.FileInfo, error) {
-	name, rest, nested := strings.Cut(target, string(filepath.Separator))
-	info, err := root.Lstat(name)
-	if err != nil || !nested {
-		return info, err
+type scopeDirectory struct {
+	root *os.Root
+	path string
+}
+
+// openScopeTarget resolves and checks the target within the opened root.
+// Each parent is pinned before resolving the next component.
+func openScopeTarget(root *os.Root, rel, id string) (*os.File, os.FileInfo, error) {
+	dirs := []scopeDirectory{{root: root}}
+	defer func() {
+		for _, dir := range dirs[1:] {
+			_ = dir.root.Close()
+		}
+	}()
+	pending := filepath.ToSlash(rel)
+	links := 0
+	for {
+		name, rest, nested := strings.Cut(pending, "/")
+		pending = rest
+		switch name {
+		case "", ".":
+			if nested {
+				continue
+			}
+			name = "."
+		case "..":
+			if len(dirs) == 1 {
+				return nil, nil, scopeFailure("blocked", id, "outside_scope")
+			}
+			_ = dirs[len(dirs)-1].root.Close()
+			dirs = dirs[:len(dirs)-1]
+			if nested {
+				continue
+			}
+			name = "."
+		}
+		parent := dirs[len(dirs)-1]
+		info, err := parent.root.Lstat(name)
+		if err != nil {
+			return nil, nil, scopeFailure("blocked", id, "source_unavailable")
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			links++
+			// Match the link limit of os.Root when reopening the original path.
+			if links > 8 {
+				return nil, nil, scopeFailure("blocked", id, "source_unavailable")
+			}
+			link, err := parent.root.Readlink(name)
+			if err != nil {
+				return nil, nil, scopeFailure("blocked", id, "source_unavailable")
+			}
+			pending = filepath.ToSlash(link)
+			if filepath.VolumeName(link) != "" || strings.HasPrefix(pending, "/") {
+				return nil, nil, scopeFailure("blocked", id, "outside_scope")
+			}
+			if nested {
+				pending += "/" + rest
+			}
+			continue
+		}
+		target := filepath.Join(parent.path, name)
+		if !nested {
+			return openScopeLeaf(parent.root, name, target, id, info)
+		}
+		if !info.IsDir() {
+			return nil, nil, scopeFailure("blocked", id, "source_unavailable")
+		}
+		child, err := parent.root.OpenRoot(name)
+		if err != nil {
+			return nil, nil, scopeFailure("blocked", id, "source_unavailable")
+		}
+		opened, err := child.Stat(".")
+		if err != nil || !os.SameFile(info, opened) {
+			_ = child.Close()
+			return nil, nil, scopeFailure("blocked", id, "source_unavailable")
+		}
+		dirs = append(dirs, scopeDirectory{root: child, path: target})
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, os.ErrNotExist
+}
+
+func openScopeLeaf(parent *os.Root, name, target, id string, info os.FileInfo) (*os.File, os.FileInfo, error) {
+	if !filepath.IsLocal(target) || !safeSourcePath(target) {
+		return nil, nil, scopeFailure("blocked", id, "outside_scope")
 	}
-	child, err := root.OpenRoot(name)
+	if !info.Mode().IsRegular() {
+		return nil, nil, scopeFailure("blocked", id, "source_not_regular")
+	}
+	f, err := parent.OpenFile(name, sourceOpenFlags, 0)
 	if err != nil {
-		return nil, err
+		return nil, nil, scopeFailure("blocked", id, "source_unavailable")
 	}
-	defer func() { _ = child.Close() }()
-	opened, err := child.Stat(".")
-	if err != nil {
-		return nil, err
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		_ = f.Close()
+		return nil, nil, scopeFailure("blocked", id, "source_unavailable")
 	}
-	if !os.SameFile(info, opened) {
-		return nil, os.ErrNotExist
-	}
-	return scopeTargetInfo(child, rest)
+	return f, opened, nil
 }
 
 // readSource stops one byte past limit so an oversized file is detected.
