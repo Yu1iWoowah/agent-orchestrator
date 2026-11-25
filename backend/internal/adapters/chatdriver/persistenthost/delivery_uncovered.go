@@ -113,6 +113,13 @@ func (j *deliveryJournal) observeSteeringResponse(id string, gap nativeDeliveryG
 	}
 }
 
+func hasACPStopReason(result json.RawMessage) bool {
+	var response struct {
+		StopReason string `json:"stopReason"`
+	}
+	return json.Unmarshal(result, &response) == nil && response.StopReason != ""
+}
+
 func (j *deliveryJournal) observeUncoveredResponse(id string, result, rpcError json.RawMessage) {
 	gap, ok := j.unsettled[id]
 	delete(j.uncovered, id)
@@ -152,10 +159,7 @@ func (j *deliveryJournal) observeUncoveredResponse(id string, result, rpcError j
 	j.unsettled[id] = gap
 	switch gap.Method {
 	case "session/prompt":
-		var response struct {
-			StopReason string `json:"stopReason"`
-		}
-		if json.Unmarshal(result, &response) == nil && response.StopReason != "" {
+		if hasACPStopReason(result) {
 			delete(j.unsettled, id)
 			j.promptEnded(id)
 		}

@@ -559,7 +559,8 @@ func (r *acpRelay) providerFrame(
 		delete(r.abandonedPrompts, string(id))
 		if main != nil {
 			main.remaining--
-			if main.remaining == 0 {
+			// A refusal can clear a steer gap without proving the turn ended.
+			if main.remaining == 0 && len(envelope["error"]) == 0 && hasACPStopReason(envelope["result"]) {
 				if err := r.delivery.settleStalledPromptError(main.id, main.params, main.through); err != nil {
 					_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
 				}
