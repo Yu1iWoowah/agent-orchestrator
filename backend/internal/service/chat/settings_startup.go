@@ -33,6 +33,7 @@ func (c *Controller) initializeAgentSettingsLocked(ctx context.Context, journal 
 		c.settingsAwaitingAccountCommit = false
 	}
 	if op == nil {
+		c.settingsInitializationError = nil
 		return false, nil
 	}
 	if op.Phase != domain.AgentSettingsApplied {
@@ -50,6 +51,7 @@ func (c *Controller) restoreAppliedAgentSettingsLocked(ctx context.Context, jour
 	if bindingChanged && !c.harness.SupportsFastMode() {
 		// The switched adapter owns its existing launch/turn settings contract.
 		// A historical Codex/Claude wire plan cannot fence another provider.
+		c.settingsInitializationError = nil
 		return nil
 	}
 	current, err := c.settingsContext(ctx, journal)
@@ -129,6 +131,7 @@ func (c *Controller) restoreAppliedAgentSettingsLocked(ctx context.Context, jour
 		return err
 	}
 	c.adoptAgentSettings(current.Settings)
+	c.settingsInitializationError = nil
 	return nil
 }
 
