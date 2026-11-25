@@ -6,7 +6,7 @@
 
 1. 取得使用者換主控的授權，並請使用者確認一次新主控的 harness、帳號、model、effort。
 2. 確認涉及的 worker 都停在安全點。
-3. 把交接文件 `handoff/orchestrator-handoff.md` 寫到最新，含在途決定與存活 worker。kill 之後舊主控就不能再寫。
+3. 把交接文件 `handoff/orchestrator-handoff.md` 寫到最新，含在途決定與存活 worker，並標記因本次換手暫停、接手後應恢復的 worker。kill 之後舊主控就不能再寫。
 4. 告訴使用者 log 位置：`$AO_DATA_DIR/artifacts/<舊主控 id>/handoff/manual-handoff.log`。
 5. 把腳本複製到自己 artifact 的 `handoff/`，再以 `setsid nohup` 啟動，作為本回合最後一個動作：
 
@@ -34,7 +34,7 @@ cd "$AO_DATA_DIR/artifacts/$AO_SESSION_ID/handoff" && \
 新主控依序做下面四步（前三步依使用者 2026-11-23 manual-handoff-trim-1＝three；第 4 步依使用者 2026-11-23 補換手缺口的指示）。任何一步失敗就停下，回報失敗的步驟與錯誤，不做後面的步驟。
 
 1. 用 `cp -a` 把舊主控 artifact 複製到自己的 artifact。
-2. 用 `ao project documents read … --json` 讀交接文件，向使用者回報已接手與現況；以回應的 `.file.content` 擬草稿，把 §A 更新為由自己接手，再以自己的身分用 `ao project documents write handoff/orchestrator-handoff.md --file <草稿> --project <專案> --expected-hash <.file.hash>` 寫回。寫入成功就表示已拿到共用資料夾的 lease；被拒就回報使用者。
+2. 用 `ao project documents read … --json` 讀交接文件，以回應的 `.file.content` 擬草稿，把 §A 更新為由自己接手，再以自己的身分用 `ao project documents write handoff/orchestrator-handoff.md --file <草稿> --project <專案> --expected-hash <.file.hash>` 寫回。寫入成功即取得共用資料夾 lease，此時才向使用者回報已接手與現況，再繼續第 3、4 步。寫入被拒時，向使用者回報失敗並停下。
 3. 依交接文件親自通知存活 worker；因本次換手而暫停的 worker，一併告知恢復原工作。
 4. 同一回合依交接文件 §A 執行使用者已核准的新主控待辦，不等與其無關的題目。
 
