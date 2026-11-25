@@ -4498,10 +4498,14 @@ func (s *Store) loadConversationSnapshotRange(
 			}
 		}
 	}
-	return s.loadConversationSnapshotPage(ctx, conv, "", s.conversationHistoryPresentation(ctx, conversationID), beforeSequence, afterSequence, limit)
+	visibleAfter, err := s.conversationVisibleAfterSequence(ctx, conv)
+	if err != nil {
+		return ConversationSnapshot{}, err
+	}
+	return s.loadConversationSnapshotPage(ctx, conv, "", s.conversationHistoryPresentation(ctx, conversationID), beforeSequence, afterSequence, visibleAfter, limit)
 }
 
-func (s *Store) loadConversationSnapshotPage(ctx context.Context, conv gen.Conversation, rootBranchID string, presentation conversationHistoryPresentation, beforeSequence, afterSequence, limit int64) (ConversationSnapshot, error) {
+func (s *Store) loadConversationSnapshotPage(ctx context.Context, conv gen.Conversation, rootBranchID string, presentation conversationHistoryPresentation, beforeSequence, afterSequence, visibleAfterSequence, limit int64) (ConversationSnapshot, error) {
 	conversationID := conv.ID
 	if limit <= 0 {
 		limit = DefaultConversationPageSize
@@ -4512,12 +4516,8 @@ func (s *Store) loadConversationSnapshotPage(ctx context.Context, conv gen.Conve
 	if beforeSequence <= 0 || beforeSequence > conv.LatestSequence+1 {
 		beforeSequence = conv.LatestSequence + 1
 	}
-	visibleAfterSequence, err := s.conversationVisibleAfterSequence(ctx, conv)
-	if err != nil {
-		return ConversationSnapshot{}, err
-	}
 	// The floor bounds the rows; visibleAfterSequence alone still decides which
-	// turns are visible, because a positive value there means a context reset.
+	// turns belong to the visible session context.
 	floor := visibleAfterSequence
 	if afterSequence <= 0 || afterSequence < visibleAfterSequence {
 		afterSequence = 0
