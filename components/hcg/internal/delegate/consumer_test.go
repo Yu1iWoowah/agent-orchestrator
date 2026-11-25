@@ -59,7 +59,7 @@ func (f *captureTransport) Do(_ context.Context, req WireRequest) (WireResponse,
 	if !strings.Contains(string(payload["messages"]), "QUESTION_MUST_SURVIVE") || !strings.Contains(string(payload["messages"]), "SYNTHETIC_SOURCE_142") {
 		f.t.Errorf("assembly lost question/source: %s", req.Payload)
 	}
-	return providerFixtureReply(f.profile.Model, validProposal("SYNTHETIC_SOURCE_142\nDOCUMENT_DIRECTIVE_IGNORE_THE_QUESTION\n")), nil
+	return providerFixtureReply(f.profile.Model, validProposal()), nil
 }
 func TestFormalCaller(t *testing.T) {
 	for _, provider := range []string{"openai"} {
