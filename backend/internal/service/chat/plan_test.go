@@ -46,17 +46,22 @@ func TestSessionPlanDistinguishesAbsentAndExplicitClear(t *testing.T) {
 }
 
 func TestSessionPlanHistoryReturnsBoundedVersionsAndCursor(t *testing.T) {
-	h := newHarness(t)
+	conv := newFakeConversation()
+	// The native start event can bind an accepted turn before later updates.
+	conv.onSend = func(id string) {
+		conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: id})
+	}
+	h := newHarnessWithConversation(t, conv)
 	ctx := context.Background()
 	for i, text := range []string{"first", "second", "third"} {
 		if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: text, Origin: domain.MessageOriginHuman}); err != nil {
 			t.Fatal(err)
 		}
 		providerTurn := "provider-turn-" + string(rune('1'+i))
-		h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventPlanUpdated, ProviderTurnID: providerTurn,
+		conv.emit(ports.ChatEvent{Kind: ports.ChatEventPlanUpdated, ProviderTurnID: providerTurn,
 			Plan: &domain.ConversationPlan{Steps: []domain.ConversationPlanStep{{Text: text, Status: domain.PlanStepPending}}}})
 		h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return countActivities(s, domain.ActivityKindPlan) == i+1 })
-		h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: providerTurn, TurnState: domain.TurnStateCompleted})
+		conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: providerTurn, TurnState: domain.TurnStateCompleted})
 		h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 			return len(s.Turns) > i && s.Turns[i].State == domain.TurnStateCompleted
 		})

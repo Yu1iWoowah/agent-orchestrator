@@ -168,7 +168,8 @@ func TestHarnessBackgroundReadySerializesConcurrentSend(t *testing.T) {
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		for _, r := range s.Turns {
 			if r.ID == fresh.turn.ID {
-				return r.State == domain.TurnStateRunning
+				// A queue claim can mark the turn running before SendTurn emits turn.started.
+				return r.State == domain.TurnStateRunning && !h.ctrl.SendMuHeldForTest()
 			}
 		}
 		return false
