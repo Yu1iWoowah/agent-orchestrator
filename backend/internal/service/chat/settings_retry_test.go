@@ -278,8 +278,29 @@ func TestSettingsRestartKeepsUnknownActionAndSafeNumericFailure(t *testing.T) {
 	}
 }
 
+type settingsAttemptCompletionStore struct {
+	*sqlite.Store
+	operationID string
+	ready       chan struct{}
+}
+
+func (s *settingsAttemptCompletionStore) SaveAgentSettingsReconciliation(ctx context.Context, next domain.AgentSettingsReconciliation, version int64, executor string) (domain.AgentSettingsReconciliation, error) {
+	saved, err := s.Store.SaveAgentSettingsReconciliation(ctx, next, version, executor)
+	if err == nil && saved.OperationID == s.operationID && saved.Phase == "ready" {
+		select {
+		case s.ready <- struct{}{}:
+		default:
+		}
+	}
+	return saved, err
+}
+
 func TestCancelledIntentCannotLendItsAttemptToNextPreference(t *testing.T) {
-	h, conv, _, commands := journalHarness(t)
+	const secondID = "after-cancel"
+	ready := make(chan struct{}, 1)
+	h, conv, _, commands := journalHarnessWithStore(t, func(st *sqlite.Store) chatsvc.Store {
+		return &settingsAttemptCompletionStore{Store: st, operationID: secondID, ready: ready}
+	})
 	conv.quiet.Store(false)
 	first, err := commands.QueueAgentSettings(t.Context(), journalIntent(t, h))
 	if err != nil || first.Phase != domain.AgentSettingsPending {
@@ -289,11 +310,19 @@ func TestCancelledIntentCannotLendItsAttemptToNextPreference(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := journalIntent(t, h)
-	second.ID = "after-cancel"
+	second.ID = secondID
 	second.IdempotencyKey = "after-cancel-key"
 	second.Target.Model = "second-model"
 	conv.quiet.Store(true)
-	applied, err := commands.QueueAgentSettings(t.Context(), second)
+	if _, err := commands.QueueAgentSettings(t.Context(), second); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second settings attempt did not finish")
+	}
+	applied, err := h.st.AgentSettingsOperation(t.Context(), testSession, second.ID)
 	if err != nil || applied.Phase != domain.AgentSettingsApplied {
 		t.Fatalf("new intent reused cancelled work: %+v %v", applied, err)
 	}

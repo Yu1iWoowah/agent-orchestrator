@@ -15,8 +15,9 @@ import (
 func (c *Controller) initializeAgentSettings(ctx context.Context) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	_, c.settingsInitializationError = c.runSettingsAttemptLocked(ctx, true, func(ctx context.Context) (bool, error) {
-		err := c.initializeAgentSettingsLocked(ctx)
+	_, c.settingsInitializationError = c.runSettingsAttemptLocked(ctx, true, func(ctx context.Context, journal agentSettingsJournal, op *domain.AgentSettingsOperation) (bool, error) {
+		blocked, err := c.initializeAgentSettingsLocked(ctx, journal, op)
+		c.scheduleSettingsRecheckLocked(blocked, err)
 		return err != nil, err
 	})
 	if c.settingsInitializationError != nil {
@@ -24,32 +25,24 @@ func (c *Controller) initializeAgentSettings(ctx context.Context) {
 	}
 }
 
-func (c *Controller) initializeAgentSettingsLocked(ctx context.Context) error {
-	journal, ok := c.store.(agentSettingsJournal)
-	if !ok || c.reviewID != "" {
-		return nil
-	}
+func (c *Controller) initializeAgentSettingsLocked(ctx context.Context, journal agentSettingsJournal, op *domain.AgentSettingsOperation) (bool, error) {
 	if c.settingsAwaitingAccountCommit {
 		if _, err := c.settingsContext(ctx, journal); err != nil {
-			return err
+			return true, err
 		}
 		c.settingsAwaitingAccountCommit = false
 	}
-	_, pending, err := journal.PendingAgentSettingsOperation(ctx, c.sessionID)
-	if err != nil {
-		return err
+	if op == nil {
+		return false, nil
 	}
-	if pending {
-		_, err := c.reconcileAgentSettingsLocked(ctx)
-		return err
+	if op.Phase != domain.AgentSettingsApplied {
+		return c.reconcileAgentSettingsWorkLocked(ctx, journal, *op)
 	}
-	op, found, err := journal.LatestAppliedAgentSettingsOperation(ctx, c.sessionID)
-	if err != nil {
-		return err
-	}
-	if !found || op.Execution == nil {
-		return nil
-	} // Legacy operations did not install typed wire.
+	err := c.restoreAppliedAgentSettingsLocked(ctx, journal, *op)
+	return err != nil, err
+}
+
+func (c *Controller) restoreAppliedAgentSettingsLocked(ctx context.Context, journal agentSettingsJournal, op domain.AgentSettingsOperation) error {
 	bindingChanged, err := c.settingsProviderBindingChanged(ctx, op)
 	if err != nil {
 		return err
