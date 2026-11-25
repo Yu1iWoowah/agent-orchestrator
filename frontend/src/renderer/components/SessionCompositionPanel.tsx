@@ -19,9 +19,10 @@ export const SessionCompositionPanel = memo(function SessionCompositionPanel({ s
 	const { t } = useTranslation();
 	const query = useQuery({
 		queryKey: ["session-composition", sessionId],
-		queryFn: async (): Promise<Composition> => {
+		queryFn: async ({ signal }): Promise<Composition> => {
 			const { data, error } = await apiClient.GET("/api/v1/usage/sessions/{sessionId}/composition", {
 				params: { path: { sessionId } },
+				signal,
 			});
 			if (error || !data) throw error ?? new Error("composition unavailable");
 			return data;

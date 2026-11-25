@@ -35,6 +35,22 @@ type claudeAPIRequest struct {
 	keep                     int
 	tail                     []string
 	unresolved               int
+	prefix                   claudeMessageCounts
+}
+
+type claudeMessageCounts struct {
+	counts     CompositionCounts
+	unresolved int
+}
+
+func (c *claudeMessageCounts) addMessages(hashes []string, messages map[string]CompositionCounts) {
+	for _, hash := range hashes {
+		if counts, ok := messages[hash]; ok {
+			c.counts.add(counts)
+		} else {
+			c.unresolved++
+		}
+	}
 }
 
 // readClaudeComposition rebuilds each api-request's messages from its
@@ -117,24 +133,22 @@ func readClaudeComposition(ctx context.Context, r io.Reader) ([]CompositionReque
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		row := CompositionRequest{Timestamp: req.timestamp, Unresolved: req.unresolved}
-		row.Counts.add(shapes[req.shapeHash])
-		// Each prefix consists of up to keep hashes from base, then its tail.
-		// The counts can be added from the newest segment back to the oldest.
-		remaining := req.keep + len(req.tail)
-		for part := req; remaining > 0; part = part.base {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			for _, hash := range part.tail[:max(0, remaining-part.keep)] {
-				if counts, ok := messages[hash]; ok {
-					row.Counts.add(counts)
-				} else {
-					row.Unresolved++
+		if base := req.base; base != nil {
+			// Bases are earlier requests. Reuse their resolved prefix counts,
+			// following the chain only when keep cuts into a retained prefix.
+			for req.keep < base.keep {
+				if err := ctx.Err(); err != nil {
+					return nil, err
 				}
+				base = base.base
 			}
-			remaining = min(remaining, part.keep)
+			req.prefix = base.prefix
+			req.prefix.addMessages(base.tail[:req.keep-base.keep], messages)
 		}
+		total := req.prefix
+		total.addMessages(req.tail, messages)
+		row := CompositionRequest{Timestamp: req.timestamp, Unresolved: req.unresolved + total.unresolved, Counts: total.counts}
+		row.Counts.add(shapes[req.shapeHash])
 		if input, ok := usage[req.id]; ok {
 			row.Input = &input
 		}
