@@ -44,25 +44,26 @@ func (e *Engine) reviewerAccountRequest(ctx context.Context, worker domain.Sessi
 	}, nil
 }
 
-// rebindReviewerAccount moves a new pass to a fresh execution when the
-// reviewer's bound account can no longer be used. The old conversation lives
-// in that account's profile, so it cannot be resumed under another one. The
-// old reviewer is stopped before its row is archived; the old review,
-// conversation, passes and binding stay as they were.
-func (e *Engine) rebindReviewerAccount(ctx context.Context, worker domain.SessionRecord, review domain.Review, override string) (domain.Review, error) {
+func (e *Engine) reviewerRebindTarget(ctx context.Context, worker domain.SessionRecord, review domain.Review, override string) (domain.ResolvedAgentAccount, error) {
 	rebinder, ok := e.accounts.(ports.ReviewerAccountRebinder)
-	replacer, replaceable := e.store.(ports.ReviewerExecutionReplacer)
-	if !ok || !replaceable {
-		return review, nil
+	if !ok {
+		return domain.ResolvedAgentAccount{}, nil
 	}
 	request, err := e.reviewerAccountRequest(ctx, worker, review, override)
 	if err != nil {
-		return review, err
+		return domain.ResolvedAgentAccount{}, err
 	}
 	selected, rebind, err := rebinder.ReviewerRebindTarget(ctx, review.ID, request)
 	if err != nil || !rebind {
-		return review, err
+		return domain.ResolvedAgentAccount{}, err
 	}
+	return selected, nil
+}
+
+// rebindReviewerAccount gives the new pass its own execution because the old
+// conversation belongs to a different account. The caller holds the target's
+// account-use lock through this write and the rest of pass admission.
+func (e *Engine) rebindReviewerAccount(ctx context.Context, replacer ports.ReviewerExecutionReplacer, review domain.Review, selected domain.ResolvedAgentAccount) (domain.Review, error) {
 	if err := e.stopReviewChatWork(ctx, review); err != nil {
 		return review, err
 	}
