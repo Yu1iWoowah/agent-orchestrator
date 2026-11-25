@@ -246,7 +246,11 @@ func startDetachedHost(cmd *exec.Cmd, cfg Config) error {
 	}
 	defer func() { _ = notify.Close() }()
 	cmd.Stdin = read
-	cmd.Env = append(cmd.Environ(), waitForSpawnRecordEnv+"=1")
+	env := cmd.Env
+	if env == nil {
+		env = cmd.Environ()
+	}
+	cmd.Env = append(slices.Clip(env), waitForSpawnRecordEnv+"=1")
 	startErr := cmd.Start()
 	// Let the notification fail if the child has already closed its end.
 	_ = read.Close()
