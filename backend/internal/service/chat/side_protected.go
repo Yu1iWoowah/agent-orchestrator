@@ -84,11 +84,11 @@ func (s *Service) sideProtection(ctx context.Context, sideID string) (*domain.Si
 	if s.nativeGuard.store == nil {
 		return nil, nil
 	}
-	rows, err := s.nativeGuard.store.ListUnresolvedSideCompactionsWithContent(ctx, []string{sideID})
-	if err != nil || len(rows) == 0 {
+	row, found, err := s.nativeGuard.store.UnresolvedSideCompactionWithContent(ctx, sideID)
+	if err != nil || !found {
 		return nil, err
 	}
-	protection := s.sideProtectionStatus(ctx, rows[0])
+	protection := s.sideProtectionStatus(ctx, row)
 	return &protection, nil
 }
 

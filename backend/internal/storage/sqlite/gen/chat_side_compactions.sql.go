@@ -276,6 +276,36 @@ func (q *Queries) SideWithUnresolvedNativeCompaction(ctx context.Context, arg Si
 	return column_1, err
 }
 
+const unresolvedSideCompactionWithContent = `-- name: UnresolvedSideCompactionWithContent :one
+SELECT c.state,c.historical,c.closed,c.record_json,COALESCE(s.content_json,'') AS content_json
+FROM chat_side_compactions c
+LEFT JOIN chat_side_contents s ON s.side_id=c.side_id
+WHERE c.side_id=? AND c.closed=0 AND c.state IN ('pending','unknown')
+ORDER BY c.rowid
+LIMIT 1
+`
+
+type UnresolvedSideCompactionWithContentRow struct {
+	State       string
+	Historical  int64
+	Closed      int64
+	RecordJson  string
+	ContentJson string
+}
+
+func (q *Queries) UnresolvedSideCompactionWithContent(ctx context.Context, sideID string) (UnresolvedSideCompactionWithContentRow, error) {
+	row := q.db.QueryRowContext(ctx, unresolvedSideCompactionWithContent, sideID)
+	var i UnresolvedSideCompactionWithContentRow
+	err := row.Scan(
+		&i.State,
+		&i.Historical,
+		&i.Closed,
+		&i.RecordJson,
+		&i.ContentJson,
+	)
+	return i, err
+}
+
 const unresolvedSideForClose = `-- name: UnresolvedSideForClose :one
 SELECT native_id,
        CAST(COALESCE(json_extract(record_json,'$.SessionID'),'') AS TEXT) AS session_id,
