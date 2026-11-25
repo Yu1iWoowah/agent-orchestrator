@@ -27,7 +27,7 @@ func TestCallerFaultPhaseCancellationBounds(t *testing.T) {
 					c := Consumer{Recorder: sink,
 						Transport: transportFunc(func(context.Context, WireRequest) (WireResponse, error) {
 							calls.Add(1)
-							return providerFixtureReply("fixture-model", validProposal(body)), nil
+							return providerFixtureReply("fixture-model", validProposal()), nil
 						}),
 						checkpoint: func(_ context.Context, at string) {
 							if at == point {

@@ -22,7 +22,7 @@ func TestReadReplyDecodedStringsCannotEscapeSafetyScan(t *testing.T) {
 		{"escaped_finding_id", `"id":"f1"`, `"id":"\u0048CG_CANARY_DO_NOT_SEND"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			raw := strings.Replace(validProposal(source), tc.old, tc.replacement, 1)
+			raw := strings.Replace(validProposal(), tc.old, tc.replacement, 1)
 			if !safeText(raw) {
 				t.Fatal("fixture was blocked before JSON decoding")
 			}
@@ -34,7 +34,7 @@ func TestReadReplyDecodedStringsCannotEscapeSafetyScan(t *testing.T) {
 	}
 	execution := testExecution
 	execution.SessionID = "HCG_CANARY_DO_NOT_SEND"
-	out, _, err := verifyReply(time.Unix(0, 0), validProposal(source), execution, profile, Receipt{}, audit, scope, 0)
+	out, _, err := verifyReply(time.Unix(0, 0), validProposal(), execution, profile, Receipt{}, audit, scope, 0)
 	if err == nil || out.Status != "blocked" || out.SessionID != "" {
 		t.Fatal("final reply metadata bypassed safety scan")
 	}
@@ -53,7 +53,7 @@ func TestNormalizedLinesReconstructOriginalQuotes(t *testing.T) {
 				if err := os.WriteFile(source, []byte(raw), 0600); err != nil {
 					t.Fatal(err)
 				}
-				proposal, _ := json.Marshal(map[string]any{"schema": resultSchema, "status": "ok", "findings": []Finding{{ID: "f1", Kind: "fact", Text: "public finding", EvidenceIDs: []string{"e1"}}}, "evidence": []proposedEvidence{{ID: "e1", SourceID: "s0000", Revision: scopeRevision, ContentSHA256: textHash(raw), LineStart: 1, LineEnd: 2, Quote: "alpha\nbeta", QuoteSHA256: textHash("alpha\nbeta")}}})
+				proposal, _ := json.Marshal(map[string]any{"schema": resultSchema, "status": "ok", "findings": []Finding{{ID: "f1", Kind: "fact", Text: "public finding", EvidenceIDs: []string{"e1"}}}, "evidence": []proposedEvidence{{ID: "e1", SourceID: "s0000", LineStart: 1, LineEnd: 2}}})
 				sink := &receiptSink{}
 				calls := 0
 				profile := budgetProfile(family)
@@ -63,7 +63,7 @@ func TestNormalizedLinesReconstructOriginalQuotes(t *testing.T) {
 				})}
 				out, err := consumer.DelegateRead(t.Context(), testExecution, profile, approvedRequest(t, &consumer, "QUESTION_MUST_SURVIVE", source))
 				if err != nil || out.Reply.Status != "ok" || calls != 1 || len(out.Reply.Evidence) != 1 {
-					t.Fatalf("valid displayed-line quote rejected: status=%s calls=%d err=%v", out.Reply.Status, calls, err)
+					t.Fatalf("valid line-range proposal rejected: status=%s calls=%d err=%v", out.Reply.Status, calls, err)
 				}
 				evidence := out.Reply.Evidence[0]
 				original := "alpha" + newline + "beta"

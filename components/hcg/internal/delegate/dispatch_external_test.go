@@ -36,7 +36,7 @@ func TestDispatchRevalidatesSameDescriptorExternalSpend(t *testing.T) {
 			c = NewCoordinator(root, sink, func(d Deployment) Transport {
 				return transportFunc(func(context.Context, WireRequest) (WireResponse, error) {
 					calls++
-					return providerFixtureReply(d.Profile.Model, validProposal(body)), nil
+					return providerFixtureReply(d.Profile.Model, validProposal()), nil
 				})
 			}, func(ctx context.Context, point string) {
 				if point != "reserved" {

@@ -162,7 +162,7 @@ func TestCoordinatorStartupReceiptRecoveryNeverCallsProvider(t *testing.T) {
 			factory := func(d Deployment) Transport {
 				return transportFunc(func(context.Context, WireRequest) (WireResponse, error) {
 					calls++
-					return providerFixtureReply(d.Profile.Model, validProposal(body)), nil
+					return providerFixtureReply(d.Profile.Model, validProposal()), nil
 				})
 			}
 			c := NewCoordinator(root, sink, factory, nil, nil)
