@@ -127,7 +127,8 @@ const args = process.argv.slice(2);
 if (args[0] === '-test.list') {
   process.stdout.write([...JSON.parse(process.env.TESTS)[name], 'BenchmarkIgnored'].join('\\n') + '\\n');
 } else {
-  fs.appendFileSync(process.env.CAPTURE, JSON.stringify({ name, run: args[args.indexOf('-test.run') + 1] }) + '\\n');
+  const run = args.find(arg => arg.startsWith('-test.run=')).slice('-test.run='.length);
+  fs.appendFileSync(process.env.CAPTURE, JSON.stringify({ name, run }) + '\\n');
 }
 `);
   writeFileSync(join(dir, 'go'), `#!/usr/bin/env node
