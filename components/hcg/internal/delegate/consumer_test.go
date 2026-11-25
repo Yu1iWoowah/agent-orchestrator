@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -207,14 +209,24 @@ func TestCallerNeverReturnsUnverifiedText(t *testing.T) {
 	for _, provider := range []string{"openai"} {
 		t.Run(provider, func(t *testing.T) {
 			recorder := &memoryRecorder{}
-			c := Consumer{Recorder: recorder, Transport: transportFunc(func(_ context.Context, r WireRequest) (WireResponse, error) {
+			var logs strings.Builder
+			c := Consumer{logger: slog.New(slog.NewJSONHandler(&logs, nil)), Recorder: recorder, Transport: transportFunc(func(_ context.Context, r WireRequest) (WireResponse, error) {
 				return providerFixtureReply(r.Model, "unverified free-form prose"), nil
 			})}
 			request := approvedRequest(t, &c, "inspect")
 			p := Profile{ID: provider + "-fixture", Revision: "r1", BillingProvider: provider, Model: "fixture-model", ContextTokens: 200000, MaxOutputTokens: 16384, OutputTokens: 128}
 			out, err := c.DelegateRead(t.Context(), testExecution, p, request)
-			if err == nil || out.Reply.Status != "blocked" || out.Reply.Answer != "" || len(recorder.receipts) != 1 {
+			if err == nil || out.Reply.Status != "blocked" || out.Reply.Reason != "unverified" || out.Reply.Answer != "" || len(recorder.receipts) != 1 {
 				t.Fatalf("unverified answer crossed boundary: %+v %v", out, err)
+			}
+			var entry map[string]string
+			if err := json.Unmarshal([]byte(logs.String()), &entry); err != nil {
+				t.Fatalf("expected exactly one structured rejection warning: %v", err)
+			}
+			delete(entry, slog.TimeKey)
+			want := map[string]string{slog.LevelKey: "WARN", slog.MessageKey: "HCG delegation reply rejected", "stage": "decode", "code": "json_syntax_invalid", "attempt_id": out.Reply.UsageRef.AttemptID}
+			if !maps.Equal(entry, want) {
+				t.Fatal("rejection warning did not contain exactly the safe diagnostic fields")
 			}
 		})
 	}

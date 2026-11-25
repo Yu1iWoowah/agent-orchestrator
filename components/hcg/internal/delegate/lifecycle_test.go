@@ -44,7 +44,7 @@ func TestCoordinatorFixedRegistryPolicyAndCaller(t *testing.T) {
 					calls++
 					return (&captureTransport{t: t, profile: d.Profile}).Do(ctx, r)
 				})
-			}, nil)
+			}, nil, nil)
 			defer c.Close()
 			approveFixture(t, c, deployment)
 			policy := delegationPolicy(deployment.Profile)
@@ -165,7 +165,7 @@ func TestCoordinatorStartupReceiptRecoveryNeverCallsProvider(t *testing.T) {
 					return providerFixtureReply(d.Profile.Model, validProposal(body)), nil
 				})
 			}
-			c := NewCoordinator(root, sink, factory, nil)
+			c := NewCoordinator(root, sink, factory, nil, nil)
 			approveFixture(t, c, deployment)
 			policy := delegationPolicy(deployment.Profile)
 			c.ProjectPolicyChanged("p", policy)
@@ -176,7 +176,7 @@ func TestCoordinatorStartupReceiptRecoveryNeverCallsProvider(t *testing.T) {
 			}
 			c.Close()
 			sink.err = nil
-			restarted := NewCoordinator(root, sink, factory, nil)
+			restarted := NewCoordinator(root, sink, factory, nil, nil)
 			defer restarted.Close()
 			if err := restarted.RecoverReceipts(t.Context()); err != nil {
 				t.Fatal(err)

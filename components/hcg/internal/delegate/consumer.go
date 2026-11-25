@@ -3,6 +3,7 @@ package delegate
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 )
 
@@ -21,6 +22,7 @@ type Request struct {
 }
 type Consumer struct {
 	checkpoint    func(context.Context, string)
+	logger        *slog.Logger
 	ApprovedScope ApprovedScope
 	Transport     Transport
 	Recorder      Recorder
@@ -66,8 +68,11 @@ func (c *Consumer) DelegateRead(ctx context.Context, execution Execution, profil
 	if err := c.atCheckpoint(ctx, "answer_validation"); err != nil {
 		return Result{Receipt: result.Receipt}, err
 	}
-	reply, _, err := verifyReply(result.Receipt.ObservedAt, result.text, execution, profile, result.Receipt, result.Audit, scope, request.OutputLimit)
+	reply, failure, err := verifyReply(result.Receipt.ObservedAt, result.text, execution, profile, result.Receipt, result.Audit, scope, request.OutputLimit)
 	result.text = ""
+	if failure != nil && c.logger != nil {
+		c.logger.WarnContext(ctx, "HCG delegation reply rejected", "stage", failure.Stage, "code", failure.Code, "attempt_id", execution.AttemptID)
+	}
 	if cancelErr := ctx.Err(); cancelErr != nil {
 		return Result{Receipt: result.Receipt}, cancelErr
 	}

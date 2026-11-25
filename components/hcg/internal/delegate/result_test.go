@@ -28,6 +28,19 @@ func TestReadReplyEvidenceAndScope(t *testing.T) {
 	if err != nil || out.Status != "ok" || out.Answer != "[fact] fixture-answer" || out.Evidence[0].Path != "prompt.txt" || out.Evidence[0].Verification != "machine_checked" || out.ProjectID != testExecution.ProjectID || out.Coverage.Status != "complete" || out.Coverage.RequestedScopeDigest != out.Coverage.InjectedScopeDigest {
 		t.Fatalf("reply=%+v %v", out, err)
 	}
+	for name, variant := range map[string]string{
+		"markdown_fence":   "```json\n" + raw + "\n```",
+		"surrounding_text": "The function starts with `{`. Here is the result:\n" + raw + "\nThese are the relevant lines up to the } marker.",
+		"trailing_json":    raw + " {}",
+		"unknown_fields":   `{"coverage_status":"partial",` + strings.Replace(raw[1:], `"kind":"fact"`, `"kind":"fact","confidence":"high"`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, failure, err := verifyReply(time.Unix(0, 0), variant, testExecution, p, receipt, audit, scope, 0)
+			if err != nil || !reflect.DeepEqual(got, out) {
+				t.Fatalf("format variant changed the verified reply: failure=%+v err=%v", failure, err)
+			}
+		})
+	}
 	for name, mutate := range map[string]func(map[string]any){
 		"fake_source":    func(v map[string]any) { v["evidence"].([]any)[0].(map[string]any)["source_id"] = "s9999" },
 		"wrong_revision": func(v map[string]any) { v["evidence"].([]any)[0].(map[string]any)["revision"] = "r2" },
@@ -40,10 +53,9 @@ func TestReadReplyEvidenceAndScope(t *testing.T) {
 			e["quote"] = "fabricated"
 			e["quote_sha256"] = textHash("fabricated")
 		},
-		"no_evidence":           func(v map[string]any) { v["findings"].([]any)[0].(map[string]any)["evidence_ids"] = []string{} },
-		"fake_evidence_ref":     func(v map[string]any) { v["findings"].([]any)[0].(map[string]any)["evidence_ids"] = []string{"fake"} },
-		"self_claimed_coverage": func(v map[string]any) { v["coverage_status"] = "complete" },
-		"sensitive_answer":      func(v map[string]any) { v["findings"].([]any)[0].(map[string]any)["text"] = "HCG_CANARY_DO_NOT_SEND" },
+		"no_evidence":       func(v map[string]any) { v["findings"].([]any)[0].(map[string]any)["evidence_ids"] = []string{} },
+		"fake_evidence_ref": func(v map[string]any) { v["findings"].([]any)[0].(map[string]any)["evidence_ids"] = []string{"fake"} },
+		"sensitive_answer":  func(v map[string]any) { v["findings"].([]any)[0].(map[string]any)["text"] = "HCG_CANARY_DO_NOT_SEND" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			var v map[string]any
@@ -52,7 +64,7 @@ func TestReadReplyEvidenceAndScope(t *testing.T) {
 			}
 			mutate(v)
 			b, _ := json.Marshal(v)
-			out, err := verify(string(b), 0)
+			out, err := verify("```json\n"+string(b)+"\n```", 0)
 			if err == nil || out.Status != "blocked" || out.Answer != "" || len(out.Evidence) != 0 {
 				t.Fatalf("unsafe proposal accepted: %+v %v", out, err)
 			}
@@ -140,14 +152,13 @@ func TestVerifyReplyNamesFirstFailurePrivately(t *testing.T) {
 		"payload_coverage":         {raw: validProposal(source), audit: func(a *PayloadAudit) { a.Coverage = "partial" }, want: replyFailure{Stage: "precheck", Code: "payload_coverage_incomplete", Coverage: "partial"}},
 		"json_syntax_invalid":      {raw: `{"schema" 1}`, want: replyFailure{Stage: "decode", Code: "json_syntax_invalid", Offset: offset(11)}},
 		"json_type_invalid":        {raw: mutate(func(v map[string]any) { evidence(v)["line_start"] = "1" }), want: replyFailure{Stage: "decode", Code: "json_type_invalid", Field: "evidence.line_start", Index: intp(0)}},
-		"json_unknown_field":       {raw: mutate(func(v map[string]any) { v["HCG_SECRET_FIELD_NAME"] = 1 }), want: replyFailure{Stage: "decode", Code: "json_unknown_field"}},
 		"json_decode_failed":       {raw: `{"schema":`, want: replyFailure{Stage: "decode", Code: "json_decode_failed"}},
-		"json_trailing_value":      {raw: validProposal(source) + " {}", want: replyFailure{Stage: "envelope", Code: "json_trailing_value"}},
 		"schema_mismatch":          {raw: mutate(func(v map[string]any) { v["schema"] = "other" }), want: replyFailure{Stage: "envelope", Code: "schema_mismatch", Field: "schema"}},
 		"status_invalid":           {raw: mutate(func(v map[string]any) { v["status"] = "maybe" }), want: replyFailure{Stage: "envelope", Code: "status_invalid", Field: "status"}},
 		"findings_null":            {raw: mutate(func(v map[string]any) { v["findings"] = nil }), want: replyFailure{Stage: "envelope", Code: "findings_null_or_missing", Field: "findings"}},
 		"evidence_missing":         {raw: mutate(func(v map[string]any) { delete(v, "evidence") }), want: replyFailure{Stage: "envelope", Code: "evidence_null_or_missing", Field: "evidence"}},
 		"proposal_sensitive":       {raw: strings.Replace(validProposal(source), "fixture-answer", jsonEscape("H")+"CG_CANARY_DO_NOT_SEND", 1), want: replyFailure{Stage: "envelope", Code: "proposal_sensitive_pattern"}},
+		"ignored_field_sensitive":  {raw: `{"extra":"` + jsonEscape("H") + `CG_CANARY_DO_NOT_SEND",` + validProposal(source)[1:], want: replyFailure{Stage: "envelope", Code: "proposal_sensitive_pattern"}},
 		"proposal_control":         {raw: strings.Replace(validProposal(source), "fixture-answer", jsonEscape("\x01"), 1), want: replyFailure{Stage: "envelope", Code: "proposal_control_character"}},
 		"not_found_findings":       {raw: mutate(func(v map[string]any) { v["status"] = "not_found" }), want: replyFailure{Stage: "not_found", Code: "not_found_findings_nonempty", Field: "findings", Count: intp(1)}},
 		"not_found_evidence":       {raw: mutate(func(v map[string]any) { v["status"], v["findings"] = "not_found", []any{} }), want: replyFailure{Stage: "not_found", Code: "not_found_evidence_nonempty", Field: "evidence", Count: intp(1)}},
@@ -227,7 +238,7 @@ func TestVerifyReplyNamesFirstFailurePrivately(t *testing.T) {
 				reason = "unverified"
 			}
 			encoded, _ := json.Marshal(out)
-			if out.Reason != reason || (want.Code != reason && strings.Contains(string(encoded), want.Code)) || strings.Contains(string(encoded), "HCG_SECRET_FIELD_NAME") {
+			if out.Reason != reason || (want.Code != reason && strings.Contains(string(encoded), want.Code)) {
 				t.Fatalf("private diagnostic crossed public reply: %s", encoded)
 			}
 		})

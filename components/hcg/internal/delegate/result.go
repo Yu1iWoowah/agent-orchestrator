@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"slices"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 )
 
 const resultSchema = "hcg.delegate-read/1"
+const maxReplyObjectCandidates = 32
 const responseInstructions = `HCG delegate-read instructions v1.
 Return only a JSON object with schema="hcg.delegate-read/1", status="ok" or "not_found", findings=[], evidence=[].
 Each finding: id, kind (fact or hypothesis), text, evidence_ids (nonempty).
@@ -39,6 +39,12 @@ type proposedEvidence struct {
 	LineEnd       int    `json:"line_end"`
 	Quote         string `json:"quote"`
 	QuoteSHA256   string `json:"quote_sha256"`
+}
+type replyProposal struct {
+	Schema   string             `json:"schema"`
+	Status   string             `json:"status"`
+	Findings []Finding          `json:"findings"`
+	Evidence []proposedEvidence `json:"evidence"`
 }
 type Evidence struct {
 	proposedEvidence
@@ -142,8 +148,7 @@ func decodeFailure(err error) *replyFailure {
 	case errors.As(err, &typed):
 		offset := typed.Offset
 		out.Code, out.Offset = "json_type_invalid", &offset
-		// Paths are struct-derived (unknown names fail earlier); indices are
-		// kept numerically and the remaining path must be a schema field.
+		// Keep numeric indices separately and require an allow-listed schema path.
 		kept := []string{}
 		for _, part := range strings.Split(typed.Field, ".") {
 			if n, err := strconv.Atoi(part); err == nil && n >= 0 {
@@ -159,14 +164,41 @@ func decodeFailure(err error) *replyFailure {
 		} else {
 			out.Index = nil
 		}
-	case strings.HasPrefix(err.Error(), "json: unknown field "):
-		out.Code = "json_unknown_field"
 	}
 	return out
 }
 
-// verifyReply keeps the original acceptance order; each refusal names only the
-// first check that actually failed. Later checks are not evaluated.
+// decodeReplyProposal finds the first object that decodes into a proposal.
+func decodeReplyProposal(raw string) (replyProposal, string, error) {
+	if start := strings.IndexByte(raw, '{'); start >= 0 {
+		raw = raw[start:]
+	}
+	var firstErr error
+	for range maxReplyObjectCandidates {
+		var proposal replyProposal
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		err := decoder.Decode(&proposal)
+		if err == nil {
+			return proposal, raw[:decoder.InputOffset()], nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		if !strings.HasPrefix(raw, "{") {
+			break
+		}
+		// A type error may have consumed a complete object. Skip its nested braces.
+		rest := raw[max(decoder.InputOffset(), 1):]
+		start := strings.IndexByte(rest, '{')
+		if start < 0 {
+			break
+		}
+		raw = rest[start:]
+	}
+	return replyProposal{}, "", firstErr
+}
+
+// verifyReply reports only the first failed check.
 func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Profile, receipt Receipt, audit PayloadAudit, scope preparedScope, limit int) (ReadReply, *replyFailure, error) {
 	out := baseReply(execution, profile, receipt, audit, scope)
 	reject := func(reason string, failure *replyFailure) (ReadReply, *replyFailure, error) {
@@ -214,20 +246,11 @@ func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Pro
 	if audit.Coverage != "complete" {
 		return reject("unverified", &replyFailure{Stage: "precheck", Code: "payload_coverage_incomplete", Coverage: audit.Coverage})
 	}
-	var proposal struct {
-		Schema   string             `json:"schema"`
-		Status   string             `json:"status"`
-		Findings []Finding          `json:"findings"`
-		Evidence []proposedEvidence `json:"evidence"`
-	}
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&proposal); err != nil {
+	proposal, object, err := decodeReplyProposal(raw)
+	if err != nil {
 		return reject("unverified", decodeFailure(err))
 	}
 	switch {
-	case decoder.Decode(new(any)) != io.EOF:
-		return reject("unverified", at("envelope", "json_trailing_value", ""))
 	case proposal.Schema != resultSchema:
 		return reject("unverified", at("envelope", "schema_mismatch", "schema"))
 	case proposal.Status != "ok" && proposal.Status != "not_found":
@@ -237,7 +260,7 @@ func verifyReply(ctxTime time.Time, raw string, execution Execution, profile Pro
 	case proposal.Evidence == nil:
 		return reject("unverified", at("envelope", "evidence_null_or_missing", "evidence"))
 	}
-	if issue := outputStringsIssue(proposal); issue != "" {
+	if issue := outputStringsIssue(json.RawMessage(object)); issue != "" {
 		return reject("unverified", at("envelope", "proposal_"+issue, ""))
 	}
 	if proposal.Status == "not_found" {
