@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func TestACPRelayCapturesIndependentForkForReconnect(t *testing.T) {
@@ -567,7 +570,9 @@ func TestACPRelayDeliveryFlushAfterStalledPromptCancelError(t *testing.T) {
 	session := relayClientFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}`+"\n"), 1)
 	relayProviderFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":`+frameID(t, session)+`,"result":{"sessionId":"session-live"}}`+"\n"), 1, true)
 	prompt := relayClientFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"session-live","prompt":[],"_meta":{"aoDeliveryAttempt":"managed"}}}`+"\n"), 1)
-	deliveryFrame(t, journal, string(prompt), true)
+	if _, err := journal.prepareRequest(prompt, true); err != nil {
+		t.Fatal(err)
+	}
 	steer := relayClientFrame(t, relay, []byte(`{"jsonrpc":"2.0","id":3,"method":"_session/steering","params":{"sessionId":"session-live","prompt":[],"_meta":{"steering":{"idleBehavior":"promptRequired"}}}}`+"\n"), 1)
 	deliveryFrame(t, journal, string(steer), true)
 	injected := `{"jsonrpc":"2.0","id":` + frameID(t, steer) + `,"result":{"outcome":"injected"}}` + "\n"
@@ -602,6 +607,49 @@ func TestACPRelayDeliveryFlushAfterStalledPromptCancelError(t *testing.T) {
 	}
 	if !response.OK {
 		t.Fatalf("delivery-flush after cancelled prompt: %q", response.Error)
+	}
+}
+
+func TestACPDeliverySettlesAfterSteerTerminalBeforeGraceExpires(t *testing.T) {
+	relay := newTestACPRelay(t)
+	journal := recoveryJournal(t)
+	relay.delivery = journal
+	send := func(frame string) string {
+		t.Helper()
+		forwarded := relayClientFrame(t, relay, []byte(frame+"\n"), 1)
+		if _, err := journal.prepareRequest(forwarded, true); err != nil {
+			t.Fatal(err)
+		}
+		return frameID(t, forwarded)
+	}
+	receive := func(id, response string) {
+		t.Helper()
+		frame := []byte(`{"jsonrpc":"2.0","id":` + id + `,` + response + "}\n")
+		deliveryFrame(t, journal, string(frame), false)
+		relayProviderFrame(t, relay, frame, 1, true)
+	}
+	root := send(`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"s","prompt":[],"_meta":{"aoDeliveryAttempt":"attempt"}}}`)
+	first := send(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":` + steerPromptParams + `}`)
+	last := send(`{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":` + steerPromptParams + `}`)
+
+	stalledAt := time.Now().Add(2 * promptStallTimeout)
+	failStalled(t, relay, 1, stalledAt)
+	receive(root, `"error":{"code":-32603,"message":"cancelled"}`)
+	receive(first, `"result":{"stopReason":"cancelled"}`)
+	failStalled(t, relay, 1, stalledAt.Add(promptStallCancelGrace))
+
+	key := ports.ChatDeliveryLookup{AttemptID: "attempt", ProviderEpoch: "epoch", ProviderRequestID: root}
+	receipts, err := journal.query([]ports.ChatDeliveryLookup{key}, false)
+	if err != nil || receipts[0].ExecutionSettled {
+		t.Fatalf("watchdog alone settled the delivery: receipts=%+v err=%v", receipts, err)
+	}
+	receive(last, `"error":{"code":-32601,"message":"method not found"}`)
+	receipts, err = journal.query([]ports.ChatDeliveryLookup{key}, true)
+	if err != nil || !receipts[0].ExecutionSettled || receipts[0].Disposition != domain.ChatDeliveryUnknown {
+		t.Fatalf("late refusal did not settle the original delivery: receipts=%+v err=%v", receipts, err)
+	}
+	if replay := relayReplayFrames(t, relay); len(replay) != 1 || !bytes.Contains(replay[0], []byte(ACPPromptResultMethod)) {
+		t.Fatalf("replay = %q, want one prompt result", replay)
 	}
 }
 

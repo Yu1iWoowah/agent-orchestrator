@@ -1519,8 +1519,8 @@ func (h *host) handle(conn net.Conn) {
 		if len(frame) > 0 {
 			providerFrame := frame
 			var clientFrame []byte
-			h.mu.Lock()
 			if h.acp != nil {
+				h.mu.Lock()
 				var relayErr error
 				var relayed acpClientFrames
 				relayed, relayErr = h.acp.clientFrame(h.ctx, frame, generation)
@@ -1533,17 +1533,19 @@ func (h *host) handle(conn net.Conn) {
 					return
 				}
 			}
-			h.mu.Unlock()
+			var deliveryErr error
 			if len(providerFrame) > 0 && h.delivery != nil {
-				var deliveryErr error
-				providerFrame, deliveryErr = h.delivery.prepare(providerFrame)
-				if errors.Is(deliveryErr, errDuplicateDeliveryAttempt) {
-					h.detach(conn)
-					return
-				}
-				if deliveryErr != nil {
-					_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
-				}
+				providerFrame, deliveryErr = h.delivery.prepareRequest(providerFrame, h.acp != nil)
+			}
+			if h.acp != nil {
+				h.mu.Unlock()
+			}
+			if errors.Is(deliveryErr, errDuplicateDeliveryAttempt) {
+				h.detach(conn)
+				return
+			}
+			if deliveryErr != nil {
+				_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
 			}
 			if len(providerFrame) > 0 {
 				if _, err := h.stdin.Write(providerFrame); err != nil {
@@ -1709,12 +1711,19 @@ func (h *host) forwardProvider(stdout io.Reader) error {
 	for {
 		frame, err := reader.ReadBytes('\n')
 		if len(frame) > 0 {
+			// ACP admission, raw evidence and the watchdog share this lock.
+			// The order is h.mu then delivery.mu, with provider writes outside.
+			if h.acp != nil {
+				h.mu.Lock()
+			}
 			if h.delivery != nil {
 				if err := h.delivery.observe(frame); err != nil {
 					_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
 				}
 			}
-			h.mu.Lock()
+			if h.acp == nil {
+				h.mu.Lock()
+			}
 			retainedByACP := false
 			if h.acp != nil {
 				var relayErr error

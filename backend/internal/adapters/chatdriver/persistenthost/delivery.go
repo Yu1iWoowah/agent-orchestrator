@@ -41,6 +41,19 @@ type deliveryRecord struct {
 	Receipt       domain.ChatDeliveryReceipt `json:"receipt"`
 	Method        string                     `json:"method"`
 	NativeTurn    string                     `json:"nativeTurn,omitempty"`
+	acpTurn       *acpDeliveryTurn
+}
+
+// The host admits steers into one active turn. A sealed turn can still receive
+// native replies after the relay stopped waiting for it.
+type acpDeliveryTurn struct {
+	attempt     string
+	steers      []string
+	terminal    bool
+	rootError   bool
+	cancelError bool
+	cancelling  bool
+	sealed      bool
 }
 
 type deliveryJournal struct {
@@ -59,6 +72,7 @@ type deliveryJournal struct {
 	unsettled       map[string]nativeDeliveryGap
 	readChecks      map[string]nativeDeliveryRead
 	uncovered       map[string]string
+	acpTurn         *acpDeliveryTurn
 }
 
 func newDeliveryJournal(path, epoch string) (*deliveryJournal, error) {
@@ -129,6 +143,10 @@ func (j *deliveryJournal) append(r deliveryRecord) (resultErr error) {
 
 // prepare is called after ACP ID rewriting but before any native frame write.
 func (j *deliveryJournal) prepare(frame []byte) ([]byte, error) {
+	return j.prepareRequest(frame, false)
+}
+
+func (j *deliveryJournal) prepareRequest(frame []byte, acp bool) ([]byte, error) {
 	var e struct {
 		ID     json.RawMessage            `json:"id"`
 		Method string                     `json:"method"`
@@ -193,7 +211,17 @@ func (j *deliveryJournal) prepare(frame []byte) ([]byte, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if attempt == "" {
-		j.trackUncovered(string(e.ID), e.Method, e.Params)
+		id := string(e.ID)
+		j.trackUncovered(id, e.Method, e.Params)
+		// The relay admitted this prompt while the managed root still owned
+		// the turn, so the only additional prompt it can be is a steer.
+		if acp && e.Method == "session/prompt" && j.acpTurn != nil {
+			gap := j.unsettled[id]
+			gap.acpTurn = j.acpTurn
+			_ = json.Unmarshal(meta[ACPSteerKeepsTurnMetaKey], &gap.keepsTurn)
+			j.unsettled[id] = gap
+			j.acpTurn.steers = append(j.acpTurn.steers, id)
+		}
 		return clean, nil
 	}
 	if _, exists := j.records[attempt]; exists {
@@ -230,6 +258,10 @@ func (j *deliveryJournal) prepare(frame []byte) ([]byte, error) {
 		return clean, ports.ErrChatDeliveryUnverified
 	}
 	record := deliveryRecord{Receipt: receipt, Method: e.Method, NativeSession: session, NativeThread: thread}
+	if acp && e.Method == "session/prompt" {
+		j.acpTurn = &acpDeliveryTurn{attempt: attempt}
+		record.acpTurn = j.acpTurn
+	}
 	// Retain the correlation in memory even if its durable checkpoint fails.
 	j.records[attempt], j.requests[string(e.ID)] = record, attempt
 	return clean, j.append(record)
@@ -274,15 +306,40 @@ func (j *deliveryJournal) observe(frame []byte) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if e.Method == "" && len(e.ID) > 0 {
-		j.observeDeliveryRead(string(e.ID), e.Result, e.Error)
-		j.observeUncoveredResponse(string(e.ID), e.Result, e.Error)
-		attempt, ok := j.requests[string(e.ID)]
-		delete(j.requests, string(e.ID))
+		id := string(e.ID)
+		j.observeDeliveryRead(id, e.Result, e.Error)
+		gap := j.unsettled[id]
+		j.observeUncoveredResponse(id, e.Result, e.Error)
+		if turn := gap.acpTurn; turn != nil {
+			if _, unsettled := j.unsettled[id]; !unsettled {
+				if len(e.Error) == 0 && !gap.keepsTurn {
+					turn.terminal = true
+				}
+				return j.settleACPTurn(turn)
+			}
+			return nil
+		}
+		attempt, ok := j.requests[id]
+		delete(j.requests, id)
 		if !ok {
 			return nil
 		}
 		record := j.records[attempt]
 		if len(e.Result) == 0 || string(e.Result) == "null" || len(e.Error) > 0 {
+			if turn := record.acpTurn; turn != nil && len(e.Error) > 0 && e.Error[0] == '{' {
+				turn.rootError = true
+				turn.cancelError = turn.cancelling && !turn.sealed
+				// Keep the existing watchdog rule for the turn's own
+				// reply. A pending handoff still needs native terminal
+				// proof, even if its last reply is a refusal.
+				for _, steer := range turn.steers {
+					if gap, pending := j.unsettled[steer]; pending && !gap.keepsTurn {
+						turn.cancelError = false
+						break
+					}
+				}
+				return j.settleACPTurn(turn)
+			}
 			return nil
 		}
 		var result struct {
@@ -308,13 +365,18 @@ func (j *deliveryJournal) observe(frame []byte) error {
 		record.Receipt.Source = "provider_response"
 		record.Receipt.Complete = true
 		record.Receipt.ProviderTurnID = result.Turn.ID
-		record.Receipt.ExecutionSettled = record.Method == "session/prompt"
+		record.Receipt.ExecutionSettled = record.Method == "session/prompt" && record.acpTurn == nil
 		record.Receipt.ObservedAt = time.Now().UTC()
 		record.Receipt.ProgressSequence++
 		j.records[attempt] = record
 		if record.Receipt.ExecutionSettled {
 			j.clearWaiting(attempt, record.NativeTurn)
-			j.promptEnded(string(e.ID))
+			j.promptEnded(id)
+		}
+		if turn := record.acpTurn; turn != nil {
+			if err := j.settleACPTurn(turn); err != nil || j.records[attempt].Receipt.ExecutionSettled {
+				return err
+			}
 		}
 		return j.append(record)
 	}
@@ -409,38 +471,55 @@ func (j *deliveryJournal) observe(frame []byte) error {
 	return nil
 }
 
-// The relay still has the original attempt key after observe retired the RPC.
-// The error proves execution ended, while acceptance remains unknown.
-func (j *deliveryJournal) settleStalledPromptError(id, params json.RawMessage, through int64) error {
-	var request struct {
-		Meta map[string]json.RawMessage `json:"_meta"`
-	}
-	_ = json.Unmarshal(params, &request)
-	var attempt string
-	_ = json.Unmarshal(request.Meta[DeliveryMetaKey], &attempt)
+func (j *deliveryJournal) cancelACPTurn() {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	record, ok := j.records[attempt]
-	if !ok || record.Receipt.ProviderRequestID != rpcCorrelation(id) {
+	if j.acpTurn != nil {
+		j.acpTurn.cancelling = true
+	}
+}
+
+func (j *deliveryJournal) hasACPTurn() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.acpTurn != nil
+}
+
+func (j *deliveryJournal) sealACPTurn() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	turn := j.acpTurn
+	j.acpTurn = nil
+	if turn == nil {
 		return nil
 	}
-	if through != 0 {
-		// ACP assigns increasing IDs. Include steers that replied before the
-		// grace expired, since an RPC error can still leave execution uncertain.
-		first, _ := strconv.ParseInt(string(id), 10, 64)
-		for request, gap := range j.unsettled {
-			n, _ := strconv.ParseInt(request, 10, 64)
-			if gap.Method == "session/prompt" && first < n && n <= through {
-				return nil
-			}
+	turn.sealed = true
+	return j.settleACPTurn(turn)
+}
+
+// settleACPTurn runs with j.mu held. Only real provider replies update its
+// evidence, even when the relay already emitted a synthetic failure.
+func (j *deliveryJournal) settleACPTurn(turn *acpDeliveryTurn) error {
+	if !turn.sealed {
+		return nil
+	}
+	record := j.records[turn.attempt]
+	endedAfterError := turn.rootError && (turn.terminal || turn.cancelError)
+	if record.Receipt.Disposition != domain.ChatDeliveryAccepted && !endedAfterError {
+		return nil
+	}
+	for _, id := range turn.steers {
+		if _, unsettled := j.unsettled[id]; unsettled {
+			return nil
 		}
 	}
+	record.acpTurn = nil
 	record.Receipt.ExecutionSettled = true
 	record.Receipt.ObservedAt = time.Now().UTC()
 	record.Receipt.ProgressSequence++
-	j.records[attempt] = record
-	j.clearWaiting(attempt, record.NativeTurn)
-	j.promptEnded(string(id))
+	j.records[turn.attempt] = record
+	j.clearWaiting(turn.attempt, record.NativeTurn)
+	j.promptEnded(record.Receipt.ProviderRequestID)
 	return j.append(record)
 }
 

@@ -260,6 +260,7 @@ type Controller struct {
 	deliveryAcks                  map[string]ports.ChatDeliveryLookup // guarded by mu; durable settled receipts awaiting host GC
 	deliveryAckRetryAt            time.Time                           // guarded by mu
 	pendingDeliveryID             string                              // guarded by mu; original primary execution
+	pendingDeliveryPreparedTurn   string                              // guarded by mu; while the delivery lookup is unavailable
 	// workspacePath is the worktree used for turn snapshots and rollback.
 	workspacePath string
 
@@ -4509,8 +4510,11 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		// provider never answered, so the queued messages get their own turns.
 		// A stalled prompt whose execution is still unverified keeps the queue
 		// until the delivery settles.
-		releaseQueue := settledTurnState(event) == domain.TurnStateCompleted ||
-			errors.Is(event.Err, ports.ErrChatPromptStalled) && !c.holdForUnsettledDelivery(ctx)
+		stalled := errors.Is(event.Err, ports.ErrChatPromptStalled)
+		releaseQueue := settledTurnState(event) == domain.TurnStateCompleted || stalled
+		if releaseQueue && (stalled || c.acpDeliveryEpoch() != "") {
+			releaseQueue = !c.holdForUnsettledDelivery(ctx, event.ProviderTurnID)
+		}
 		_ = c.drainLocked(ctx, releaseQueue) // drain logs failures.
 	case ports.ChatEventProviderState:
 		c.reportProviderState(ctx, event.ThreadState, now)

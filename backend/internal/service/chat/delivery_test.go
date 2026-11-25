@@ -849,6 +849,15 @@ func TestACPFirstProgressBeforeLimitFollowsNativeProgress(t *testing.T) {
 // queued input onto the provider; settlement then lets it go.
 func TestStalledPromptWithUnsettledDeliveryHoldsQueueUntilSettled(t *testing.T) {
 	h, conv, clock, a := firstProgressHarness(t, true)
+	h.ctrl.AdvanceDeliveryClockForTest(func() { clock.advance(5 * time.Minute) })
+	awaitDeliveryQuery(t, conv, a.ID)
+	blocked := awaitDeliveryDecision(t, h, clock, a.ID)
+	if blocked.AttentionID == "" || blocked.Receipt == nil {
+		t.Fatalf("original prompt did not enter the blocked state: %+v", blocked)
+	}
+	conv.mu.Lock()
+	conv.outboundEpoch = blocked.Receipt.ProviderEpoch
+	conv.mu.Unlock()
 	if _, err := h.svc.Send(t.Context(), testSession, ports.ChatUserMessage{Text: "queued", ClientMessageID: "queued", Origin: domain.MessageOriginHuman}); err != nil {
 		t.Fatal(err)
 	}
@@ -864,10 +873,17 @@ func TestStalledPromptWithUnsettledDeliveryHoldsQueueUntilSettled(t *testing.T) 
 	if sent := conv.sentTexts(); len(sent) != 1 {
 		t.Fatalf("provider received %v while the stalled prompt's execution was unverified", sent)
 	}
+	awaitDeliveryQuery(t, conv, a.ID)
+	clock.awaitTimer(t, 30*time.Second)
 
-	// The monitor can start the queue recheck as soon as it sees settlement.
+	// A late reply updates the host receipt without replaying a completion.
 	h.ctrl.AdvanceDeliveryClockForTest(func() {
-		conv.settleHostReceipt(a.ID)
+		conv.mu.Lock()
+		receipt := conv.deliveryReceipts[a.ID]
+		receipt.ExecutionSettled = true
+		receipt.ProgressSequence++
+		conv.deliveryReceipts[a.ID] = receipt
+		conv.mu.Unlock()
 		clock.advance(30 * time.Second)
 	})
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {

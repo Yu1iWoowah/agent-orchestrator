@@ -25,6 +25,8 @@ type nativeDeliveryGap struct {
 	// SteerJoined records an injected (or errored) steering answer: the gap
 	// settles once every prompt in SteerPrompts has settled.
 	SteerJoined bool
+	acpTurn     *acpDeliveryTurn
+	keepsTurn   bool
 }
 
 // acpSteeringMethod is ACP's _session/steering extension. AO always sends it
@@ -145,10 +147,14 @@ func (j *deliveryJournal) observeUncoveredResponse(id string, result, rpcError j
 		}
 		decoded := json.Unmarshal(rpcError, &refusal) == nil
 		steerRejected := decoded && gap.Method == "turn/steer" && refusal.Code == -32600 && (refusal.Message == "no active turn to steer" || refusal.Message == "cannot steer a compact turn")
-		if steerRejected || gap.Method == "turn/steer" && gap.TerminalObserved || decoded && (refusal.Code == -32601 || refusal.Code == -32600 && strings.Contains(refusal.Message, "unknown variant `"+gap.Method+"`")) {
+		acpSteerRejected := decoded && gap.acpTurn != nil && refusal.Code == -32600 && refusal.Message == "a prompt is already running"
+		if steerRejected || acpSteerRejected || gap.Method == "turn/steer" && gap.TerminalObserved || decoded && (refusal.Code == -32601 || refusal.Code == -32600 && strings.Contains(refusal.Message, "unknown variant `"+gap.Method+"`")) {
 			// Native method-not-found explicitly proves the handler never ran;
 			// ordinary RPC/transport/validation errors do not provide that proof.
 			delete(j.unsettled, id)
+			if gap.acpTurn != nil {
+				j.promptEnded(id)
+			}
 		}
 		return
 	}
