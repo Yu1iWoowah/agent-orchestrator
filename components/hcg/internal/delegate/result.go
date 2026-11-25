@@ -1,11 +1,11 @@
 package delegate
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
-	"slices"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -396,38 +396,27 @@ func sourceObservedAt(s sourceSnapshot, fallback time.Time) time.Time {
 // JSON escaping cannot conceal a sentinel, assignment pattern or control byte.
 func safeOutputStrings(value any) bool { return outputStringsIssue(value) == "" }
 
-// outputStringsIssue walks keys in sorted order so the named issue is stable.
+// outputStringsIssue checks keys and string values in JSON order, including
+// every value for a repeated key.
 func outputStringsIssue(value any) string {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return "encode_failed"
 	}
-	var decoded any
-	if json.Unmarshal(raw, &decoded) != nil {
-		return "encode_failed"
-	}
-	var visit func(any) string
-	visit = func(v any) string {
-		switch x := v.(type) {
-		case string:
-			return textIssue(x)
-		case []any:
-			for _, item := range x {
-				if issue := visit(item); issue != "" {
-					return issue
-				}
-			}
-		case map[string]any:
-			for _, key := range slices.Sorted(maps.Keys(x)) {
-				if issue := textIssue(key); issue != "" {
-					return issue
-				}
-				if issue := visit(x[key]); issue != "" {
-					return issue
-				}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return ""
+		}
+		if err != nil {
+			return "encode_failed"
+		}
+		if value, ok := token.(string); ok {
+			if issue := textIssue(value); issue != "" {
+				return issue
 			}
 		}
-		return ""
 	}
-	return visit(decoded)
 }
