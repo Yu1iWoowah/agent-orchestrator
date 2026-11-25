@@ -2308,7 +2308,7 @@ WHERE conversation_id = sqlc.arg(conversation_id)
   AND json_extract(payload_json, '$.providerTurnId') <> ''
   AND json_extract(payload_json, '$.providerConversationId') <> '';
 
--- A completed turn proves usable authentication only for the current controller
+-- A live completed turn proves usable authentication only for the current controller
 -- and active provider branch, after the last rejection/account change.
 -- name: SelectVerifiedAuthenticationTurn :one
 SELECT t.* FROM conversation_turns t
@@ -2328,6 +2328,7 @@ WHERE t.conversation_id = sqlc.arg(conversation_id)
       AND e.method = 'turn.completed'
       AND json_extract(e.payload_json, '$.providerTurnId') = t.provider_turn_id
       AND json_extract(e.payload_json, '$.turnState') = 'completed'
+      AND COALESCE(json_extract(e.payload_json, '$.historical'), 0) = 0
       AND json_extract(e.payload_json, '$.error') IS NULL
       AND COALESCE(json_extract(e.payload_json, '$.providerConversationId'), '') IN ('', b.provider_conversation_id)
   )

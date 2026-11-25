@@ -195,11 +195,11 @@ func (c *Controller) projectDeltas(ctx context.Context, run []ports.ChatEvent) (
 	}
 	merged.ProviderEventID = ""
 	for i, head := range run {
-		projected, err := c.archive(ctx, head, func(txCtx context.Context) error {
+		projected, err := c.archive(ctx, head, false, func(txCtx context.Context) error {
 			var text strings.Builder
 			text.WriteString(head.Delta)
 			for _, next := range run[i+1:] {
-				fresh, err := c.archive(txCtx, next, func(context.Context) error { return nil })
+				fresh, err := c.archive(txCtx, next, false, func(context.Context) error { return nil })
 				if err != nil {
 					return err
 				}
