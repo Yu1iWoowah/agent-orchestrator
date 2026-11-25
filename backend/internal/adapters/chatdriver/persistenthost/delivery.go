@@ -411,7 +411,7 @@ func (j *deliveryJournal) observe(frame []byte) error {
 
 // The relay still has the original attempt key after observe retired the RPC.
 // The error proves execution ended, while acceptance remains unknown.
-func (j *deliveryJournal) settleStalledPromptError(id, params json.RawMessage) error {
+func (j *deliveryJournal) settleStalledPromptError(id, params json.RawMessage, through int64) error {
 	var request struct {
 		Meta map[string]json.RawMessage `json:"_meta"`
 	}
@@ -423,6 +423,17 @@ func (j *deliveryJournal) settleStalledPromptError(id, params json.RawMessage) e
 	record, ok := j.records[attempt]
 	if !ok || record.Receipt.ProviderRequestID != rpcCorrelation(id) {
 		return nil
+	}
+	if through != 0 {
+		// ACP assigns increasing IDs. Include steers that replied before the
+		// grace expired, since an RPC error can still leave execution uncertain.
+		first, _ := strconv.ParseInt(string(id), 10, 64)
+		for request, gap := range j.unsettled {
+			n, _ := strconv.ParseInt(request, 10, 64)
+			if gap.Method == "session/prompt" && first < n && n <= through {
+				return nil
+			}
+		}
 	}
 	record.Receipt.ExecutionSettled = true
 	record.Receipt.ObservedAt = time.Now().UTC()
