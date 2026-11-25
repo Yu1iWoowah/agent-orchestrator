@@ -105,22 +105,25 @@ func (c *Controller) continueSettingsAttemptLocked(ctx context.Context, journal 
 	return nil, nil
 }
 
-func (c *Controller) selectSettingsOperationLocked(ctx context.Context, journal agentSettingsJournal, cold bool) (*domain.AgentSettingsOperation, error) {
+func (c *Controller) beginSelectedSettingsAttemptLocked(ctx context.Context, journal agentSettingsJournal, cold bool) (*domain.AgentSettingsOperation, error) {
 	active, err := c.continueSettingsAttemptLocked(ctx, journal)
-	if err != nil || active != nil {
-		return active, err
+	if err != nil {
+		return nil, err
+	}
+	if active != nil {
+		return c.beginSettingsAttemptLocked(ctx, journal, active, cold)
 	}
 	op, found, err := journal.PendingAgentSettingsOperation(ctx, c.sessionID)
 	if err != nil {
 		return nil, err
 	}
 	if !found {
-		return c.settingsOperationToRestoreLocked(ctx, journal, cold)
+		return c.beginSettingsRestoreLocked(ctx, journal, cold)
 	}
-	return &op, nil
+	return c.beginSettingsAttemptLocked(ctx, journal, &op, cold)
 }
 
-func (c *Controller) settingsOperationToRestoreLocked(ctx context.Context, journal agentSettingsJournal, cold bool) (*domain.AgentSettingsOperation, error) {
+func (c *Controller) beginSettingsRestoreLocked(ctx context.Context, journal agentSettingsJournal, cold bool) (*domain.AgentSettingsOperation, error) {
 	if !cold && c.settingsInitializationError == nil {
 		return nil, nil
 	}
@@ -128,12 +131,12 @@ func (c *Controller) settingsOperationToRestoreLocked(ctx context.Context, journ
 	if err != nil || !found || op.Execution == nil {
 		return nil, err
 	}
-	return &op, nil
+	return c.beginSettingsAttemptLocked(ctx, journal, &op, cold)
 }
 
 func (c *Controller) beginSettingsAttemptLocked(ctx context.Context, journal agentSettingsJournal, op *domain.AgentSettingsOperation, cold bool) (*domain.AgentSettingsOperation, error) {
 	attempts, durable := c.store.(settingsReconciliationJournal)
-	if !durable || op == nil {
+	if !durable {
 		return op, nil
 	}
 	current, err := c.settingsContext(ctx, journal)
@@ -148,24 +151,30 @@ func (c *Controller) beginSettingsAttemptLocked(ctx context.Context, journal age
 		if a.EffectPending {
 			return nil, ports.ErrAgentSettingsConflict
 		}
-		if a.OperationID == op.ID && c.codexSettingsReadWaiting(a) && !a.Deadline.After(c.now()) && op.Phase == domain.AgentSettingsPending && op.StartedAt == nil {
-			if expirer, ok := c.store.(interface {
-				ExpireAgentSettingsRead(context.Context, domain.AgentSettingsReconciliation, int64, time.Time) error
-			}); ok {
-				if err := expirer.ExpireAgentSettingsRead(ctx, *a, op.Version, c.now()); err != nil {
-					return nil, err
+		if a.HistoricalApplied == nil || a.OperationID == op.ID {
+			if a.OperationID == op.ID && c.codexSettingsReadWaiting(a) && !a.Deadline.After(c.now()) && op.Phase == domain.AgentSettingsPending && op.StartedAt == nil {
+				if expirer, ok := c.store.(interface {
+					ExpireAgentSettingsRead(context.Context, domain.AgentSettingsReconciliation, int64, time.Time) error
+				}); ok {
+					if err := expirer.ExpireAgentSettingsRead(ctx, *a, op.Version, c.now()); err != nil {
+						return nil, err
+					}
+					c.settingsAttempt = nil
+					return c.beginSettingsRestoreLocked(ctx, journal, cold)
 				}
-				c.settingsAttempt = nil
-				return c.settingsOperationToRestoreLocked(ctx, journal, cold)
 			}
+			if a.Phase == "blocked" && a.RetryCount >= 3 {
+				return nil, ports.ErrAgentSettingsCapabilitiesUnavailable
+			}
+			if a.Phase != "waiting_idle" && !a.Deadline.After(c.now()) {
+				return nil, context.DeadlineExceeded
+			}
+			return op, nil
 		}
-		if a.Phase == "blocked" && a.RetryCount >= 3 {
-			return nil, ports.ErrAgentSettingsCapabilitiesUnavailable
+		// Release the historical replay's slot before beginning the new intent.
+		if err := c.retrySettingsAttemptLocked(ctx); err != nil {
+			return nil, err
 		}
-		if a.Phase != "waiting_idle" && !a.Deadline.After(c.now()) {
-			return nil, context.DeadlineExceeded
-		}
-		return op, nil
 	}
 	previous, err := attempts.ListAgentSettingsReconciliations(ctx, c.sessionID)
 	if err != nil {
@@ -209,11 +218,7 @@ func (c *Controller) runSettingsAttemptLocked(ctx context.Context, cold bool, wo
 	if !ok || c.reviewID != "" {
 		return false, nil
 	}
-	op, err := c.selectSettingsOperationLocked(ctx, journal, cold)
-	if err != nil {
-		return true, err
-	}
-	op, err = c.beginSettingsAttemptLocked(ctx, journal, op, cold)
+	op, err := c.beginSelectedSettingsAttemptLocked(ctx, journal, cold)
 	if err != nil {
 		return true, err
 	}

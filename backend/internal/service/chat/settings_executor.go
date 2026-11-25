@@ -344,9 +344,7 @@ func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, er
 	blocked, err := c.runSettingsAttemptLocked(ctx, false, func(ctx context.Context, journal agentSettingsJournal, op *domain.AgentSettingsOperation) (bool, error) {
 		if c.settingsInitializationError != nil {
 			// Retry initialization under the same gate when another event arrives.
-			blocked, err := c.initializeAgentSettingsLocked(ctx, journal, op)
-			c.settingsInitializationError = err
-			return blocked, err
+			return c.initializeAgentSettingsLocked(ctx, journal, op)
 		}
 		if op == nil {
 			return false, nil
@@ -435,6 +433,7 @@ func (c *Controller) reconcileAgentSettingsWorkLocked(ctx context.Context, journ
 		return c.failAgentSettingsLocked(ctx, journal, op, domain.AgentSettingsErrorStorage, err)
 	}
 	c.adoptAgentSettings(applied.Target)
+	c.settingsInitializationError = nil
 	return false, nil
 }
 
@@ -447,6 +446,7 @@ func (c *Controller) failAgentSettingsLocked(ctx context.Context, journal agentS
 	}
 	if latest.Phase == domain.AgentSettingsApplied {
 		c.adoptAgentSettings(latest.Target)
+		c.settingsInitializationError = nil
 		return false, nil
 	} // Commit acknowledgement was lost.
 	if latest.Phase == domain.AgentSettingsFailed || latest.Phase == domain.AgentSettingsCancelled {
