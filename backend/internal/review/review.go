@@ -471,6 +471,8 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 	if err != nil {
 		return TriggerResult{}, err
 	}
+	var rebindTarget domain.ResolvedAgentAccount
+	replacer, replaceable := e.store.(ports.ReviewerExecutionReplacer)
 	if hasReview {
 		if err := e.checkReviewerStopFence(ctx, reviewRow); err != nil {
 			return TriggerResult{}, err
@@ -478,18 +480,20 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		if (hasConfigOverride || mode != "" && mode != reviewRow.InterfaceMode) && HasRunningRun(runs, harness) {
 			return TriggerResult{}, ports.ErrAgentSettingsConflict
 		}
-		if !HasRunningRun(runs, harness) {
-			if reviewRow, err = e.rebindReviewerAccount(ctx, worker, reviewRow, opts.AgentAccountID); err != nil {
+		if replaceable && !HasRunningRun(runs, harness) {
+			if rebindTarget, err = e.reviewerRebindTarget(ctx, worker, reviewRow, opts.AgentAccountID); err != nil {
 				return TriggerResult{}, err
 			}
 		}
-		ctx, err = e.reviewerAccountContext(ctx, worker, reviewRow, opts.AgentAccountID)
-		if err != nil {
-			return TriggerResult{}, err
+		if rebindTarget.AccountID == "" {
+			ctx, err = e.reviewerAccountContext(ctx, worker, reviewRow, opts.AgentAccountID)
+			if err != nil {
+				return TriggerResult{}, err
+			}
 		}
 	}
 	selectionChanged := false
-	if settingsStore, supported := e.store.(ports.ReviewerAgentSettingsStore); supported && hasReview {
+	if settingsStore, supported := e.store.(ports.ReviewerAgentSettingsStore); supported && hasReview && rebindTarget.AccountID == "" {
 		state, readErr := settingsStore.ReviewerAgentSettings(ctx, reviewRow.ID)
 		if readErr != nil {
 			return TriggerResult{}, readErr
@@ -596,29 +600,7 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		}
 	}
 
-	now := e.clock()
-	reviewRow, err = e.upsertReview(ctx, worker, harness, reviewRow.ReviewerHandleID, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID, domain.ActivityActive, now)
-	if err != nil {
-		return TriggerResult{}, err
-	}
-	ctx, err = e.reviewerAccountContext(ctx, worker, reviewRow, opts.AgentAccountID)
-	if err != nil {
-		return TriggerResult{}, err
-	}
-
-	releaseAccount, err := e.holdReviewerAccount(ctx)
-	if err != nil {
-		return TriggerResult{}, err
-	}
-	defer releaseAccount()
-	if err := e.validateReviewerModels(ctx, harness, config); err != nil {
-		return TriggerResult{}, err
-	}
-
-	var created []domain.ReviewRun
-	var restarted []domain.ReviewRun
-	batchID := ""
-	for _, reviewState := range reviews {
+	wantsPass := func(reviewState PRReviewState) bool {
 		// A PR that is already up to date has nothing due — unless the caller asked
 		// for a different reviewer than the one that produced that verdict. Picking
 		// another agent is precisely a request for a second opinion on this commit,
@@ -630,20 +612,74 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		}
 		switch {
 		case reviewState.Status == ReviewStateIneligible:
-			continue
+			return false
 		case opts.Rerun:
 			// An explicit rerun reviews the head again, except that one reviewer
 			// is never started twice on the same head concurrently.
-			if headRunningForHarness(runs, reviewState.PRURL, reviewState.TargetSHA, harness) {
-				continue
-			}
+			return !headRunningForHarness(runs, reviewState.PRURL, reviewState.TargetSHA, harness)
 		case opts.RejectReviewedHead:
 			// Any pass on this head, running or complete, by any reviewer, means
 			// it is not due; the caller asked to hear about that, not reuse it.
-			if headHasReview(runs, reviewState.PRURL, reviewState.TargetSHA) {
-				continue
+			return !headHasReview(runs, reviewState.PRURL, reviewState.TargetSHA)
+		default:
+			return eligible || secondOpinionWanted(reviewState, hasHarnessOverride, secondOpinionOverride, harness)
+		}
+	}
+
+	now := e.clock()
+	if rebindTarget.AccountID == "" || slices.ContainsFunc(reviews, wantsPass) {
+		if rebindTarget.AccountID != "" {
+			ctx = ports.WithAgentAccount(ctx, rebindTarget)
+			release, err := e.holdReviewerAccount(ctx)
+			if err != nil {
+				return TriggerResult{}, err
 			}
-		case !eligible && !secondOpinionWanted(reviewState, hasHarnessOverride, secondOpinionOverride, harness):
+			defer release()
+			// Logout may have completed between target selection and the lease.
+			if _, err := e.accounts.ResolveAccount(ctx, ports.AgentAccountResolutionRequest{
+				Harness: domain.AgentHarness(harness), Role: domain.AgentAccountRoleReviewer, AccountID: rebindTarget.AccountID,
+			}); err != nil {
+				return TriggerResult{}, err
+			}
+			if err := e.validateReviewerModels(ctx, harness, config); err != nil {
+				return TriggerResult{}, err
+			}
+			reviewRow, err = e.rebindReviewerAccount(ctx, replacer, reviewRow, rebindTarget)
+			if err != nil {
+				return TriggerResult{}, err
+			}
+			previousReview = reviewRow
+			now = e.clock()
+			ctx, err = e.reviewerAccountContext(ctx, worker, reviewRow, opts.AgentAccountID)
+			if err != nil {
+				return TriggerResult{}, err
+			}
+		}
+		reviewRow, err = e.upsertReview(ctx, worker, harness, reviewRow.ReviewerHandleID, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID, domain.ActivityActive, now)
+		if err != nil {
+			return TriggerResult{}, err
+		}
+		if rebindTarget.AccountID == "" {
+			ctx, err = e.reviewerAccountContext(ctx, worker, reviewRow, opts.AgentAccountID)
+			if err != nil {
+				return TriggerResult{}, err
+			}
+			release, err := e.holdReviewerAccount(ctx)
+			if err != nil {
+				return TriggerResult{}, err
+			}
+			defer release()
+			if err := e.validateReviewerModels(ctx, harness, config); err != nil {
+				return TriggerResult{}, err
+			}
+		}
+	}
+
+	var created []domain.ReviewRun
+	var restarted []domain.ReviewRun
+	batchID := ""
+	for _, reviewState := range reviews {
+		if !wantsPass(reviewState) {
 			continue
 		}
 		if hasConfigOverride {
