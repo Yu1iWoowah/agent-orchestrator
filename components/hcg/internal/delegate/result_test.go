@@ -157,6 +157,13 @@ func TestVerifyReplyNamesFirstFailurePrivately(t *testing.T) {
 		"evidence_id_duplicate": {raw: mutate(func(v map[string]any) {
 			v["evidence"] = append(v["evidence"].([]any), evidence(v))
 		}), want: replyFailure{Stage: "evidence", Code: "evidence_id_duplicate", Field: "evidence.id", Index: intp(1), SourceID: "s0000"}},
+		"quote_empty": {
+			raw: mutate(func(v map[string]any) {
+				e := evidence(v)
+				e["line_start"], e["line_end"] = 3, 3
+			}),
+			want: replyFailure{Stage: "evidence", Code: "quote_empty", Field: "evidence.quote", Index: intp(0), SourceID: "s0000"},
+		},
 		"line_start_invalid":       {raw: mutate(func(v map[string]any) { evidence(v)["line_start"] = 0 }), want: replyFailure{Stage: "evidence", Code: "line_start_invalid", Field: "evidence.line_start", Index: intp(0), SourceID: "s0000"}},
 		"line_end_before_start":    {raw: mutate(func(v map[string]any) { evidence(v)["line_start"] = 2 }), want: replyFailure{Stage: "evidence", Code: "line_end_before_start", Field: "evidence.line_end", Index: intp(0), SourceID: "s0000"}},
 		"line_end_out_of_range":    {raw: mutate(func(v map[string]any) { evidence(v)["line_end"] = 4 }), want: replyFailure{Stage: "evidence", Code: "line_end_out_of_range", Field: "evidence.line_end", Index: intp(0), SourceID: "s0000"}},
