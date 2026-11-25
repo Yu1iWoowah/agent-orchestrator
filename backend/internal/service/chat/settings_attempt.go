@@ -148,24 +148,30 @@ func (c *Controller) beginSettingsAttemptLocked(ctx context.Context, journal age
 		if a.EffectPending {
 			return nil, ports.ErrAgentSettingsConflict
 		}
-		if a.OperationID == op.ID && c.codexSettingsReadWaiting(a) && !a.Deadline.After(c.now()) && op.Phase == domain.AgentSettingsPending && op.StartedAt == nil {
-			if expirer, ok := c.store.(interface {
-				ExpireAgentSettingsRead(context.Context, domain.AgentSettingsReconciliation, int64, time.Time) error
-			}); ok {
-				if err := expirer.ExpireAgentSettingsRead(ctx, *a, op.Version, c.now()); err != nil {
-					return nil, err
+		if a.HistoricalApplied == nil || a.OperationID == op.ID {
+			if a.OperationID == op.ID && c.codexSettingsReadWaiting(a) && !a.Deadline.After(c.now()) && op.Phase == domain.AgentSettingsPending && op.StartedAt == nil {
+				if expirer, ok := c.store.(interface {
+					ExpireAgentSettingsRead(context.Context, domain.AgentSettingsReconciliation, int64, time.Time) error
+				}); ok {
+					if err := expirer.ExpireAgentSettingsRead(ctx, *a, op.Version, c.now()); err != nil {
+						return nil, err
+					}
+					c.settingsAttempt = nil
+					return c.settingsOperationToRestoreLocked(ctx, journal, cold)
 				}
-				c.settingsAttempt = nil
-				return c.settingsOperationToRestoreLocked(ctx, journal, cold)
 			}
+			if a.Phase == "blocked" && a.RetryCount >= 3 {
+				return nil, ports.ErrAgentSettingsCapabilitiesUnavailable
+			}
+			if a.Phase != "waiting_idle" && !a.Deadline.After(c.now()) {
+				return nil, context.DeadlineExceeded
+			}
+			return op, nil
 		}
-		if a.Phase == "blocked" && a.RetryCount >= 3 {
-			return nil, ports.ErrAgentSettingsCapabilitiesUnavailable
+		// Release the historical replay's slot before beginning the new intent.
+		if err := c.retrySettingsAttemptLocked(ctx); err != nil {
+			return nil, err
 		}
-		if a.Phase != "waiting_idle" && !a.Deadline.After(c.now()) {
-			return nil, context.DeadlineExceeded
-		}
-		return op, nil
 	}
 	previous, err := attempts.ListAgentSettingsReconciliations(ctx, c.sessionID)
 	if err != nil {
