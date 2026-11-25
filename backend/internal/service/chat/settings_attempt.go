@@ -74,106 +74,109 @@ func (c *Controller) saveSettingsAttemptLocked(ctx context.Context, next domain.
 	return err
 }
 
-type settingsAttemptOperationReader interface {
-	AgentSettingsOperation(context.Context, domain.SessionID, string) (domain.AgentSettingsOperation, error)
-}
-
-// A completed/cancelled business operation cannot lend its work record to the
-// next intent. An uncertain external effect remains fenced regardless of phase.
-func (c *Controller) finishObsoleteSettingsAttemptLocked(ctx context.Context) error {
+// Keep an unfinished attempt on its own operation even if cancellation and
+// intake replace the pending operation before this pass completes.
+func (c *Controller) continueSettingsAttemptLocked(ctx context.Context, journal agentSettingsJournal) (*domain.AgentSettingsOperation, error) {
 	a := c.settingsAttempt
 	if a == nil || a.EffectPending || a.Phase == "ready" || a.Phase == "cancelled" || a.OperationID == "" {
-		return nil
+		return nil, nil
 	}
-	reader, ok := c.store.(settingsAttemptOperationReader)
-	if !ok {
-		return nil
-	}
-	op, err := reader.AgentSettingsOperation(ctx, c.sessionID, a.OperationID)
+	op, err := journal.AgentSettingsOperation(ctx, c.sessionID, a.OperationID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	next := *a
 	switch {
+	case op.Phase == domain.AgentSettingsPending || op.Phase == domain.AgentSettingsRecoveryRequired:
+		return &op, nil
 	case op.Phase == domain.AgentSettingsCancelled || op.Phase == domain.AgentSettingsFailed:
 		next.Phase = "cancelled"
 	case op.Phase == domain.AgentSettingsApplied && op.BaseRevision == a.Revision:
 		next.Phase = "ready"
 	default:
-		return nil
+		return nil, nil
 	}
 	next.LastProgressAt = laterChatTime(c.now(), next.LastProgressAt)
 	next.RecoveryActions = []string{}
 	if err := c.saveSettingsAttemptLocked(ctx, next); err != nil {
-		return err
+		return nil, err
 	}
 	c.settingsAttempt = nil
-	return nil
+	return nil, nil
 }
 
-func (c *Controller) beginSettingsAttemptLocked(ctx context.Context, cold bool) error {
-	if err := c.finishObsoleteSettingsAttemptLocked(ctx); err != nil {
-		return err
-	}
-	journal, ok := c.store.(agentSettingsJournal)
-	attempts, durable := c.store.(settingsReconciliationJournal)
-	if !ok || !durable || c.reviewID != "" {
-		return nil
+func (c *Controller) selectSettingsOperationLocked(ctx context.Context, journal agentSettingsJournal, cold bool) (*domain.AgentSettingsOperation, error) {
+	active, err := c.continueSettingsAttemptLocked(ctx, journal)
+	if err != nil || active != nil {
+		return active, err
 	}
 	op, found, err := journal.PendingAgentSettingsOperation(ctx, c.sessionID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !found {
-		if !cold && c.settingsInitializationError == nil {
-			return nil
-		}
-		op, found, err = journal.LatestAppliedAgentSettingsOperation(ctx, c.sessionID)
-		if err != nil || !found || op.Execution == nil {
-			return err
-		}
+		return c.settingsOperationToRestoreLocked(ctx, journal, cold)
+	}
+	return &op, nil
+}
+
+func (c *Controller) settingsOperationToRestoreLocked(ctx context.Context, journal agentSettingsJournal, cold bool) (*domain.AgentSettingsOperation, error) {
+	if !cold && c.settingsInitializationError == nil {
+		return nil, nil
+	}
+	op, found, err := journal.LatestAppliedAgentSettingsOperation(ctx, c.sessionID)
+	if err != nil || !found || op.Execution == nil {
+		return nil, err
+	}
+	return &op, nil
+}
+
+func (c *Controller) beginSettingsAttemptLocked(ctx context.Context, journal agentSettingsJournal, op *domain.AgentSettingsOperation, cold bool) (*domain.AgentSettingsOperation, error) {
+	attempts, durable := c.store.(settingsReconciliationJournal)
+	if !durable || op == nil {
+		return op, nil
 	}
 	current, err := c.settingsContext(ctx, journal)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if c.settingsAttempt != nil && c.settingsAttempt.Phase != "ready" && c.settingsAttempt.Phase != "cancelled" {
 		a := c.settingsAttempt
 		if a.Owner != ownerForSettings(current) || a.Revision != current.Revision {
-			return ports.ErrAgentSettingsConflict
+			return nil, ports.ErrAgentSettingsConflict
 		}
 		if a.EffectPending {
-			return ports.ErrAgentSettingsConflict
+			return nil, ports.ErrAgentSettingsConflict
 		}
 		if a.OperationID == op.ID && c.codexSettingsReadWaiting(a) && !a.Deadline.After(c.now()) && op.Phase == domain.AgentSettingsPending && op.StartedAt == nil {
 			if expirer, ok := c.store.(interface {
 				ExpireAgentSettingsRead(context.Context, domain.AgentSettingsReconciliation, int64, time.Time) error
 			}); ok {
 				if err := expirer.ExpireAgentSettingsRead(ctx, *a, op.Version, c.now()); err != nil {
-					return err
+					return nil, err
 				}
 				c.settingsAttempt = nil
-				return nil
+				return c.settingsOperationToRestoreLocked(ctx, journal, cold)
 			}
 		}
 		if a.Phase == "blocked" && a.RetryCount >= 3 {
-			return ports.ErrAgentSettingsCapabilitiesUnavailable
+			return nil, ports.ErrAgentSettingsCapabilitiesUnavailable
 		}
 		if a.Phase != "waiting_idle" && !a.Deadline.After(c.now()) {
-			return context.DeadlineExceeded
+			return nil, context.DeadlineExceeded
 		}
-		return nil
+		return op, nil
 	}
 	previous, err := attempts.ListAgentSettingsReconciliations(ctx, c.sessionID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, a := range previous {
 		if a.OperationID == op.ID && a.EffectPending {
 			// A new controller cannot infer that an unacknowledged effect did not run.
 			// Keep its original action key; only qualified observation can unlock it.
 			c.settingsAttempt = &a
-			return ports.ErrAgentSettingsConflict
+			return nil, ports.ErrAgentSettingsConflict
 		}
 	}
 	if c.settingsExecutorID == "" {
@@ -195,22 +198,28 @@ func (c *Controller) beginSettingsAttemptLocked(ctx context.Context, cold bool) 
 	}
 	saved, err := attempts.BeginAgentSettingsReconciliation(ctx, r)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	c.settingsAttempt = &saved
-	return nil
+	return op, nil
 }
 
-func (c *Controller) runSettingsAttemptLocked(ctx context.Context, cold bool, work func(context.Context) (bool, error)) (bool, error) {
-	if c.settingsAttemptRunning {
-		return work(ctx)
+func (c *Controller) runSettingsAttemptLocked(ctx context.Context, cold bool, work func(context.Context, agentSettingsJournal, *domain.AgentSettingsOperation) (bool, error)) (bool, error) {
+	journal, ok := c.store.(agentSettingsJournal)
+	if !ok || c.reviewID != "" {
+		return false, nil
 	}
-	if err := c.beginSettingsAttemptLocked(ctx, cold); err != nil {
+	op, err := c.selectSettingsOperationLocked(ctx, journal, cold)
+	if err != nil {
+		return true, err
+	}
+	op, err = c.beginSettingsAttemptLocked(ctx, journal, op, cold)
+	if err != nil {
 		return true, err
 	}
 	c.settingsAttemptRunning = true
 	defer func() { c.settingsAttemptRunning = false }()
-	blocked, runErr := work(ctx)
+	blocked, runErr := work(ctx, journal, op)
 	if c.settingsAttempt == nil || c.settingsAttempt.Phase == "ready" || c.settingsAttempt.Phase == "cancelled" {
 		return blocked, runErr
 	}
@@ -239,15 +248,13 @@ func (c *Controller) runSettingsAttemptLocked(ctx context.Context, cold bool, wo
 		setSettingsAttemptFailure(&next, runErr, c.now())
 	}
 	if !next.EffectPending && next.OperationID != "" {
-		if reader, ok := c.store.(settingsAttemptOperationReader); ok {
-			op, err := reader.AgentSettingsOperation(ctx, c.sessionID, next.OperationID)
-			if err == nil && op.Phase == domain.AgentSettingsFailed {
-				next.RecoveryActions = []string{"submit_new_settings"}
-			}
-			if err == nil && op.Phase == domain.AgentSettingsCancelled {
-				next.Phase = "cancelled"
-				next.RecoveryActions = []string{}
-			}
+		savedOp, err := journal.AgentSettingsOperation(ctx, c.sessionID, next.OperationID)
+		if err == nil && savedOp.Phase == domain.AgentSettingsFailed {
+			next.RecoveryActions = []string{"submit_new_settings"}
+		}
+		if err == nil && savedOp.Phase == domain.AgentSettingsCancelled {
+			next.Phase = "cancelled"
+			next.RecoveryActions = []string{}
 		}
 	}
 	// Persist the diagnosis even after request cancellation. A failed outcome

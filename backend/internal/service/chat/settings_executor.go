@@ -341,7 +341,23 @@ func (c *Controller) executionStillQualified(ctx context.Context, journal agentS
 // reconcileAgentSettingsLocked runs only with sendMu. blocked means durable
 // unfinished work still fences dispatch, including errors or unknown liveness.
 func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, error) {
-	blocked, err := c.runSettingsAttemptLocked(ctx, false, c.reconcileAgentSettingsWorkLocked)
+	blocked, err := c.runSettingsAttemptLocked(ctx, false, func(ctx context.Context, journal agentSettingsJournal, op *domain.AgentSettingsOperation) (bool, error) {
+		if c.settingsInitializationError != nil {
+			// Retry initialization under the same gate when another event arrives.
+			blocked, err := c.initializeAgentSettingsLocked(ctx, journal, op)
+			c.settingsInitializationError = err
+			return blocked, err
+		}
+		if op == nil {
+			return false, nil
+		}
+		return c.reconcileAgentSettingsWorkLocked(ctx, journal, *op)
+	})
+	c.scheduleSettingsRecheckLocked(blocked, err)
+	return blocked, err
+}
+
+func (c *Controller) scheduleSettingsRecheckLocked(blocked bool, err error) {
 	if (blocked || err != nil) && c.codexSettingsReadWaiting(c.settingsAttempt) && c.settingsRetryDelayLocked() > 0 {
 		c.mu.Lock()
 		scheduled := c.settingsRecheckQueued
@@ -350,31 +366,9 @@ func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, er
 			c.queueSettingsRecheck()
 		}
 	}
-	return blocked, err
 }
 
-func (c *Controller) reconcileAgentSettingsWorkLocked(ctx context.Context) (bool, error) {
-	journal, ok := c.store.(agentSettingsJournal)
-	if !ok || c.reviewID != "" {
-		return false, nil
-	}
-	if c.settingsInitializationError != nil {
-		// A terminal event or a new send can arrive after the provider's
-		// baseline becomes available. Retry under the same gate before claiming
-		// any queued receipt; initialization recursion sees a cleared error.
-		c.settingsInitializationError = nil
-		c.settingsInitializationError = c.initializeAgentSettingsLocked(ctx)
-		if c.settingsInitializationError != nil {
-			return true, c.settingsInitializationError
-		}
-	}
-	op, found, err := journal.PendingAgentSettingsOperation(ctx, c.sessionID)
-	if err != nil {
-		return true, err
-	}
-	if !found {
-		return false, nil
-	}
+func (c *Controller) reconcileAgentSettingsWorkLocked(ctx context.Context, journal agentSettingsJournal, op domain.AgentSettingsOperation) (bool, error) {
 	quiet, err := c.settingsQuiescent(ctx)
 	if err != nil || !quiet {
 		return true, err
