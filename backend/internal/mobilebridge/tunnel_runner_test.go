@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -606,15 +608,30 @@ func TestTunnelRunnerRechecksAFixedTunnelWhenNudged(t *testing.T) {
 // again at once: the fixed tunnel keeps serving through that, and is given up
 // only when no link comes.
 func TestTunnelRunnerWaitsForARelinkAfterANewPassword(t *testing.T) {
+	const newDigest = "new-account-digest"
 	for _, relinked := range []bool{true, false} {
-		cloud, src := newFixedSource(t)
+		cloud := &fakeAOCloud{}
+		cloudRelinked := make(chan struct{})
+		confirmRelink := sync.OnceFunc(func() { close(cloudRelinked) })
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			cloud.ServeHTTP(w, req)
+			if req.Header.Get("Authorization") == "Bearer "+newDigest {
+				confirmRelink()
+			}
+		}))
+		t.Cleanup(server.Close)
+		src := NewFixedTunnelSource(server.URL, t.TempDir())
+		link(t, src, "account-digest")
 		bin, _ := fakeCloudflared(t, registeredLine)
 		r := namedRunner(t, bin, src)
 		r.recheckEvery, r.relinkWait = time.Hour, 300*time.Millisecond
+		if relinked {
+			r.relinkWait = 5 * time.Second
+		}
 		nudge := make(chan struct{}, 1)
 		r.nudge = nudge
 
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 		done := make(chan error, 1)
 		go func() { done <- r.runOnce(ctx) }()
 		for deadline := time.Now().Add(10 * time.Second); r.Runtime.UnsettledHostname() == ""; time.Sleep(20 * time.Millisecond) {
@@ -622,26 +639,43 @@ func TestTunnelRunnerWaitsForARelinkAfterANewPassword(t *testing.T) {
 				t.Fatal("fixed connector never registered")
 			}
 		}
+		if relinked {
+			if _, err := os.Stat(src.CachePath); err != nil {
+				t.Fatalf("initial fixed tunnel cache: %v", err)
+			}
+		}
 		link(t, src, "") // the new password
 		nudge <- struct{}{}
-		time.Sleep(100 * time.Millisecond)
+		observeFor := 2 * time.Second
 		if relinked {
-			link(t, src, "new-account-digest")
+			// The watcher clears the cached tunnel when it reads the revoked link.
+			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+				if _, err := os.Stat(src.CachePath); errors.Is(err, os.ErrNotExist) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("revoked link did not clear the cached tunnel")
+				}
+			}
+			link(t, src, newDigest)
+			select {
+			case <-cloudRelinked:
+				// A successful relink must keep serving past the withdrawal deadline.
+				observeFor = r.relinkWait + time.Second
+			case err := <-done:
+				t.Fatalf("fixed connector stopped before Cloud received the new link: %v", err)
+			case <-time.After(r.relinkWait + time.Second):
+				t.Fatal("Cloud did not receive the new link")
+			}
 		}
 		select {
 		case err := <-done:
 			if relinked || !errors.Is(err, errFixedTunnelChanged) {
 				t.Fatalf("relinked %v: runOnce = %v", relinked, err)
 			}
-		case <-time.After(time.Second):
+		case <-time.After(observeFor):
 			if !relinked {
 				t.Fatal("kept the fixed address with no link")
-			}
-			cloud.mu.Lock()
-			got := cloud.digests[len(cloud.digests)-1]
-			cloud.mu.Unlock()
-			if got != "new-account-digest" {
-				t.Fatalf("asked with %q", got)
 			}
 			cancel()
 			<-done

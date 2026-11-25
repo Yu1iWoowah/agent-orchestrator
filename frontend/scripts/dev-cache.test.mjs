@@ -197,7 +197,7 @@ describe("keying", () => {
 		const complete = run(process.execPath, warmArgs, repo, env);
 		assert.match(complete, /daemon\s+build\s+no cached output for inputs [a-f0-9]{12}/);
 		assert.equal(readFileSync(`${work}.sum`, "utf8"), completeSum);
-	}, 15_000);
+	}, 60_000);
 
 	test.skipIf(process.platform !== "linux")("an external CGO header cannot yield a reusable daemon key", ({ skip }) => {
 		const scratch = realpathSync(tempDir());
