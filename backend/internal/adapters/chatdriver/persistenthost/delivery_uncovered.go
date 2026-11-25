@@ -142,12 +142,23 @@ func (j *deliveryJournal) observeUncoveredResponse(id string, result, rpcError j
 	}
 	if len(rpcError) > 0 {
 		var refusal struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
+			Code    int             `json:"code"`
+			Message string          `json:"message"`
+			Data    json.RawMessage `json:"data"`
 		}
 		decoded := json.Unmarshal(rpcError, &refusal) == nil
 		steerRejected := decoded && gap.Method == "turn/steer" && refusal.Code == -32600 && (refusal.Message == "no active turn to steer" || refusal.Message == "cannot steer a compact turn")
-		acpSteerRejected := decoded && gap.acpTurn != nil && refusal.Code == -32600 && refusal.Message == "a prompt is already running"
+		var acpSteerRejected bool
+		if decoded && gap.acpTurn != nil && refusal.Code == -32600 {
+			const promptAlreadyRunning = "a prompt is already running"
+			acpSteerRejected = refusal.Message == promptAlreadyRunning
+			if refusal.Message == "Invalid request" {
+				var detail struct {
+					Error string `json:"error"`
+				}
+				acpSteerRejected = json.Unmarshal(refusal.Data, &detail) == nil && detail.Error == promptAlreadyRunning
+			}
+		}
 		if steerRejected || acpSteerRejected || gap.Method == "turn/steer" && gap.TerminalObserved || decoded && (refusal.Code == -32601 || refusal.Code == -32600 && strings.Contains(refusal.Message, "unknown variant `"+gap.Method+"`")) {
 			// Native method-not-found explicitly proves the handler never ran;
 			// ordinary RPC/transport/validation errors do not provide that proof.
