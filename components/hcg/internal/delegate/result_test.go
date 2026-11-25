@@ -30,7 +30,7 @@ func TestReadReplyEvidenceAndScope(t *testing.T) {
 	}
 	for name, variant := range map[string]string{
 		"markdown_fence":   "```json\n" + raw + "\n```",
-		"surrounding_text": "Here is the result:\n" + raw + "\nThese are the relevant lines up to the } marker.",
+		"surrounding_text": "The function starts with `{`. Here is the result:\n" + raw + "\nThese are the relevant lines up to the } marker.",
 		"trailing_json":    raw + " {}",
 		"unknown_fields":   `{"coverage_status":"partial",` + strings.Replace(raw[1:], `"kind":"fact"`, `"kind":"fact","confidence":"high"`, 1),
 	} {
