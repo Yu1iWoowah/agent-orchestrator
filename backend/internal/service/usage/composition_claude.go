@@ -19,7 +19,7 @@ type claudeCompositionLine struct {
 	Subtype    string          `json:"subtype"`
 	Message    json.RawMessage `json:"message"`
 	Hash       string          `json:"hash"`
-	ShapeHash  string          `json:"shapeHash"`
+	ShapeHash  json.RawMessage `json:"shapeHash"`
 	Shape      json.RawMessage `json:"shape"`
 	ID         string          `json:"id"`
 	Base       string          `json:"base"`
@@ -74,6 +74,11 @@ func readClaudeComposition(ctx context.Context, r io.Reader) ([]CompositionReque
 		if json.Unmarshal(raw, &line) != nil {
 			return
 		}
+		// An invalid shape reference leaves the request and its messages usable.
+		var shapeHash string
+		if line.ShapeHash != nil {
+			_ = json.Unmarshal(line.ShapeHash, &shapeHash)
+		}
 		switch line.Type {
 		case "system":
 			if line.Subtype == "compact_boundary" {
@@ -84,14 +89,14 @@ func readClaudeComposition(ctx context.Context, r io.Reader) ([]CompositionReque
 				messages[line.Hash] = claudeBlockCounts(role, blocks)
 			}
 		case "api-request-shape":
-			if line.ShapeHash != "" {
-				shapes[line.ShapeHash] = claudeShapeCounts(line.Shape)
+			if counts, ok := claudeShapeCounts(line.Shape); ok && shapeHash != "" {
+				shapes[shapeHash] = counts
 			}
 		case "api-request":
 			if line.ID == "" {
 				return
 			}
-			req := &claudeAPIRequest{id: line.ID, shapeHash: line.ShapeHash, timestamp: line.Timestamp, tail: line.Tail}
+			req := &claudeAPIRequest{id: line.ID, shapeHash: shapeHash, timestamp: line.Timestamp, tail: line.Tail}
 			if line.Keep > 0 {
 				if parent := requests[line.Base]; parent != nil && parent.keep+len(parent.tail) >= line.Keep {
 					req.base, req.keep = parent, line.Keep
@@ -148,7 +153,13 @@ func readClaudeComposition(ctx context.Context, r io.Reader) ([]CompositionReque
 		total := req.prefix
 		total.addMessages(req.tail, messages)
 		row := CompositionRequest{Timestamp: req.timestamp, Unresolved: req.unresolved + total.unresolved, Counts: total.counts}
-		row.Counts.add(shapes[req.shapeHash])
+		if shape, ok := shapes[req.shapeHash]; ok {
+			row.Counts.add(shape)
+		} else {
+			row.Counts[CategorySystem] = -1
+			row.Counts[CategoryTools] = -1
+			row.Counts[CategoryMCPTools] = -1
+		}
 		if input, ok := usage[req.id]; ok {
 			row.Input = &input
 		}
@@ -246,7 +257,7 @@ func claudeBlockCounts(role string, blocks []json.RawMessage) CompositionCounts 
 		case block.Type == "thinking":
 			c[CategoryThinking] += int64(len(block.Thinking))
 		case block.Type == "redacted_thinking":
-			c[CategoryThinking] += int64(len(block.Data))
+			c[CategoryThinkingEncrypted] += int64(len(block.Data))
 		case block.Type == "tool_addition":
 			if strings.Contains(string(raw), `"mcp__`) {
 				c[CategoryMCPTools] += canonicalLen(raw)
@@ -279,14 +290,14 @@ func claudeResultBytes(raw json.RawMessage) int64 {
 	return canonicalLen(raw)
 }
 
-func claudeShapeCounts(raw json.RawMessage) CompositionCounts {
+func claudeShapeCounts(raw json.RawMessage) (CompositionCounts, bool) {
 	var c CompositionCounts
-	var shape struct {
+	var shape *struct {
 		System json.RawMessage   `json:"system"`
 		Tools  []json.RawMessage `json:"tools"`
 	}
-	if json.Unmarshal(raw, &shape) != nil {
-		return c
+	if json.Unmarshal(raw, &shape) != nil || shape == nil {
+		return c, false
 	}
 	c[CategorySystem] = claudeResultBytes(shape.System)
 	for _, tool := range shape.Tools {
@@ -300,7 +311,7 @@ func claudeShapeCounts(raw json.RawMessage) CompositionCounts {
 			c[CategoryTools] += canonicalLen(tool)
 		}
 	}
-	return c
+	return c, true
 }
 
 func canonicalLen(raw json.RawMessage) int64 {
