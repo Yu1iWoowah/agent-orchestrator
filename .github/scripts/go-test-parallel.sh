@@ -51,7 +51,7 @@ done
 printf '%s\n' "${groups[@]}" | xargs -P "$procs" -L 1 bash -c '
 	set -o pipefail
 	label=$1 dir=$2 bin=$3 run=$4
-	cd "$dir" && "$bin" -test.timeout=20m -test.run "$run" 2>&1 | sed -u "s/^/[$label] /" && exit
+	cd "$dir" && "$bin" -test.timeout=20m -test.run="$run" 2>&1 | sed -u "s/^/[$label] /" && exit
 	echo "FAIL [$label]"
 	exit 1
 ' _
