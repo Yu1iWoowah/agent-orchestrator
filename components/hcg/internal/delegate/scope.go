@@ -144,29 +144,39 @@ func prepareScope(ctx context.Context, approved ApprovedScope, question string, 
 			return out, scopeFailure("blocked", id, "outside_scope")
 		}
 		seen[filepath.Join(base, rel)] = true
+		root, err := os.OpenRoot(base)
+		if err != nil {
+			return out, scopeFailure("blocked", id, "source_unavailable")
+		}
 		// OpenRoot follows symlinks inside the root, so the real target must
 		// pass the same sensitive-path rules as the requested path.
 		real, realErr := filepath.EvalSymlinks(filepath.Join(base, rel))
 		baseReal, baseErr := filepath.EvalSymlinks(base)
 		if realErr != nil || baseErr != nil {
+			_ = root.Close()
 			return out, scopeFailure("blocked", id, "source_unavailable")
 		}
-		if target, err := filepath.Rel(baseReal, real); err != nil || !filepath.IsLocal(target) || !safeSourcePath(target) {
+		target, err := filepath.Rel(baseReal, real)
+		if err != nil || !filepath.IsLocal(target) || !safeSourcePath(target) {
+			_ = root.Close()
 			return out, scopeFailure("blocked", id, "outside_scope")
 		}
-		root, err := os.OpenRoot(base)
-		if err != nil {
-			return out, scopeFailure("blocked", id, "source_unavailable")
-		}
 		f, err := root.OpenFile(rel, sourceOpenFlags, 0)
-		root.Close()
 		if err != nil {
+			_ = root.Close()
 			return out, scopeFailure("blocked", id, "source_unavailable")
 		}
 		info, statErr := f.Stat()
 		if statErr != nil || !info.Mode().IsRegular() {
+			_ = root.Close()
 			f.Close()
 			return out, scopeFailure("blocked", id, "source_not_regular")
+		}
+		expected, targetErr := scopeTargetInfo(root, target)
+		_ = root.Close()
+		if targetErr != nil || !os.SameFile(info, expected) {
+			_ = f.Close()
+			return out, scopeFailure("blocked", id, "source_unavailable")
 		}
 		if total+info.Size() > limit {
 			f.Close()
@@ -199,6 +209,32 @@ func prepareScope(ctx context.Context, approved ApprovedScope, question string, 
 		out.Sources = append(out.Sources, sourceSnapshot{SourceRange: SourceRange{ID: id, Path: display, Revision: approved.Revision, SHA256: textHash(string(body)), Start: 1, End: len(lines)}, text: text, originalText: string(body), observedAt: time.Now().UTC()})
 	}
 	return out, nil
+}
+
+// scopeTargetInfo walks the checked target through pinned directories. A
+// single Lstat on the whole path would still follow intermediate symlinks.
+func scopeTargetInfo(root *os.Root, target string) (os.FileInfo, error) {
+	name, rest, nested := strings.Cut(target, string(filepath.Separator))
+	info, err := root.Lstat(name)
+	if err != nil || !nested {
+		return info, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, os.ErrNotExist
+	}
+	child, err := root.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = child.Close() }()
+	opened, err := child.Stat(".")
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, opened) {
+		return nil, os.ErrNotExist
+	}
+	return scopeTargetInfo(child, rest)
 }
 
 // readSource stops one byte past limit so an oversized file is detected.
