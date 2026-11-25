@@ -622,15 +622,14 @@ func (c *Controller) settleGoneHostDelivery(ctx context.Context, a domain.ChatDe
 	if !ok {
 		return false, ports.ErrChatDeliveryUnverified
 	}
-	current, err := c.deliveryOwner(ctx, journal)
-	if err != nil {
+	if _, err := c.deliveryOwner(ctx, journal); err != nil {
 		return false, err
 	}
-	a, err = journal.ChatDeliveryAttempt(ctx, c.sessionID, a.ID)
+	a, err := journal.ChatDeliveryAttempt(ctx, c.sessionID, a.ID)
 	if err != nil || a.ExecutionSettled || a.Disposition != domain.ChatDeliveryUnknown && a.Disposition != domain.ChatDeliveryReserved || !c.goneHostEpoch(a) {
 		return false, err
 	}
-	if err := journal.SettleInterruptedUnknownDelivery(ctx, a, ownerForSettings(current), laterChatTime(c.now(), a.UpdatedAt)); err != nil {
+	if err := journal.SettleInterruptedUnknownDelivery(ctx, a, laterChatTime(c.now(), a.UpdatedAt)); err != nil {
 		return false, err
 	}
 	c.releaseInterruptedDeliveryHold(ctx, a)
