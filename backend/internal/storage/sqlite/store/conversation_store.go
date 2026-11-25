@@ -2913,6 +2913,7 @@ func (s *Store) CompleteQueuedBatch(ctx context.Context, conversationID string, 
 				BatchDeliveryKind:    batchDeliveryKind(steerActivityID),
 				BatchDeliverySteerID: steerActivityID,
 				ID:                   id, ConversationID: conversationID,
+				ExpectedState: domain.TurnStateQueued,
 			})
 			if checkErr := expectBatchRow("complete queued batch turn", id, changed, err); checkErr != nil {
 				return checkErr
@@ -5702,6 +5703,7 @@ func (s *Store) CompleteSteerBatchDelivery(
 					BatchDeliveryKind:    batchDeliveryKind(activity.ID),
 					BatchDeliverySteerID: activity.ID,
 					ID:                   id, ConversationID: conversationID,
+					ExpectedState: domain.TurnStateQueued,
 				})
 				if checkErr := expectBatchRow("complete steered batch turn", id, changed, err); checkErr != nil {
 					return checkErr

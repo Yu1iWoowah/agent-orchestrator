@@ -150,15 +150,15 @@ func (s *Store) BlockChatDeliveryWithAttention(ctx context.Context, next domain.
 	return next, err
 }
 
-// SettleDetachedDeliveryWithAttention lets the final settlement and question
+// SettleInterruptedDeliveryWithAttention lets the final settlement and question
 // closure commit together. Conversation-scoped questions can only be closed
 // by the current generation.
-func (s *Store) SettleDetachedDeliveryWithAttention(ctx context.Context, a domain.ChatDeliveryAttempt, settle func(ctx context.Context, closeAttention bool) error) error {
+func (s *Store) SettleInterruptedDeliveryWithAttention(ctx context.Context, a domain.ChatDeliveryAttempt, settle func(ctx context.Context, closeAttention bool) error) error {
 	if err := s.writeMu.LockContext(ctx); err != nil {
 		return err
 	}
 	defer s.writeMu.Unlock()
-	return s.inTxDB(ctx, "settle detached delivery with attention", func(q *gen.Queries, db gen.DBTX) error {
+	return s.inTxDB(ctx, "settle interrupted delivery with attention", func(q *gen.Queries, db gen.DBTX) error {
 		current, err := q.GetSessionAgentSettings(ctx, a.SessionID)
 		if err != nil {
 			return err
@@ -228,12 +228,13 @@ func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domai
 				if turn.State == domain.TurnStateRunning || turn.ProviderTurnID != "" {
 					return ports.ErrAgentSettingsConflict
 				}
-				if turn.State == domain.TurnStateQueued {
+				orphaned := turn.State == domain.TurnStateFailed && turn.CompletedAt.Valid && turn.ErrorMessage == orphanedTurnFailure
+				if turn.State == domain.TurnStateQueued || orphaned {
 					// The receipt covers the entire reserved batch. Link members
 					// whose acceptance had not yet been projected before the reboot.
 					n, err := q.CompleteQueuedConversationBatchMember(ctx, gen.CompleteQueuedConversationBatchMemberParams{
 						CompletedAt: sql.NullTime{Time: at, Valid: true}, PromotedToTurnID: sql.NullString{String: original.TurnIDs[0], Valid: true},
-						BatchDeliveryKind: batchDeliveryKind(""), ID: turn.ID, ConversationID: turn.ConversationID,
+						BatchDeliveryKind: batchDeliveryKind(""), ID: turn.ID, ConversationID: turn.ConversationID, ExpectedState: turn.State,
 					})
 					if err != nil {
 						return err

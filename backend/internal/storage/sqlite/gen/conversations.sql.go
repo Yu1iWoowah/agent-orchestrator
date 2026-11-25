@@ -548,6 +548,7 @@ func (q *Queries) CancelQueuedConversationTurns(ctx context.Context, arg CancelQ
 const completeQueuedConversationBatchMember = `-- name: CompleteQueuedConversationBatchMember :execrows
 UPDATE conversation_turns
 SET state = 'completed',
+    error_message = CASE WHEN state = 'failed' THEN '' ELSE error_message END,
     completed_at = ?1,
     promotion_started_at = NULL,
     promoted_to_turn_id = ?2,
@@ -556,7 +557,7 @@ SET state = 'completed',
     batch_delivery_steer_id = ?4
 WHERE id = ?5
   AND conversation_id = ?6
-  AND state = 'queued'
+  AND state = ?7
   AND promotion_started_at IS NOT NULL
 `
 
@@ -567,6 +568,7 @@ type CompleteQueuedConversationBatchMemberParams struct {
 	BatchDeliverySteerID string
 	ID                   string
 	ConversationID       string
+	ExpectedState        domain.TurnState
 }
 
 // A batched source joins one provider input but remains its own visible message.
@@ -578,6 +580,7 @@ func (q *Queries) CompleteQueuedConversationBatchMember(ctx context.Context, arg
 		arg.BatchDeliverySteerID,
 		arg.ID,
 		arg.ConversationID,
+		arg.ExpectedState,
 	)
 	if err != nil {
 		return 0, err
