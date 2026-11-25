@@ -12,17 +12,26 @@ import (
 // existing start/branch boundary. Initialize before publication/private prompts,
 // outside Service.mu. Failure publishes a fenced controller, never an unowned
 // provider or a usable controller carrying unverified sticky settings.
-func (c *Controller) initializeAgentSettings(ctx context.Context) {
+func (c *Controller) initializeAgentSettings(ctx context.Context) bool {
+	if _, ok := c.store.(agentSettingsJournal); !ok || c.reviewID != "" {
+		return false
+	}
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	_, c.settingsInitializationError = c.runSettingsAttemptLocked(ctx, true, func(ctx context.Context, journal agentSettingsJournal, op *domain.AgentSettingsOperation) (bool, error) {
-		blocked, err := c.initializeAgentSettingsLocked(ctx, journal, op)
-		c.scheduleSettingsRecheckLocked(blocked, err)
-		return err != nil, err
-	})
+	// Begin fenced. Loading or verifying the effective settings releases dispatch.
+	c.settingsInitializationError = ports.ErrAgentSettingsConflict
+	blocked, err := c.runSettingsAttemptLocked(ctx, true, c.initializeAgentSettingsLocked)
+	if !blocked && err == nil && c.settingsInitializationError != nil {
+		_, err = c.runSettingsAttemptLocked(ctx, true, c.initializeAgentSettingsLocked)
+	}
+	if err != nil {
+		c.settingsInitializationError = err
+	}
 	if c.settingsInitializationError != nil {
 		c.log.Warn("Chat settings initialization keeps dispatch fenced", "session", c.sessionID, "reason", "agent_settings_unavailable")
+		return true
 	}
+	return false
 }
 
 func (c *Controller) initializeAgentSettingsLocked(ctx context.Context, journal agentSettingsJournal, op *domain.AgentSettingsOperation) (bool, error) {

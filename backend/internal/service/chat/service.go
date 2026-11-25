@@ -1581,18 +1581,17 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		cfg.ExpectedControllerOwner.ControllerGeneration = controller.Generation()
 	}
 	controller.settingsObservationOwner = controller.observationOwner(executionAccount)
-	if liveReconnect {
-		controller.restoreACPDeliveryHold(ctx, liveRows.Turns)
-	}
+	resumeSettledQueue := liveReconnect && controller.restoreACPDeliveryHold(ctx, liveRows.Turns)
 	s.configureAgentSettingsController(controller)
 	tentativeAccount := owner.Kind == domain.ConversationOwnerSession && executionAccount != settingsAccount
 	controller.settingsAwaitingAccountCommit = tentativeAccount || committedAccountMove
+	recheckSettings := false
 	if tentativeAccount {
 		// A tentative target owns its actual provider account, but must not
 		// touch preferences or inputs until the durable binding matches it.
 		controller.settingsInitializationError = ports.ErrAgentSettingsConflict
 	} else {
-		controller.initializeAgentSettings(ctx)
+		recheckSettings = controller.initializeAgentSettings(ctx)
 	}
 	if replacementReplay {
 		current, err := s.requireChatSession(ctx, cfg.SessionID)
@@ -1621,6 +1620,9 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	controller.start()
 	controller.startDeliveryMonitor()
 	s.mu.Unlock()
+	if resumeSettledQueue || recheckSettings {
+		controller.queueSettingsRecheck()
+	}
 
 	// Drop the registry entry when the provider stream ends, so a later command
 	// reports ErrNoController instead of writing into a dead controller.

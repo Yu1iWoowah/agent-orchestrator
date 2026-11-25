@@ -344,11 +344,12 @@ func (c *Controller) acpDeliveryEpoch() string {
 }
 
 // Reconnect can deduplicate an already projected completion. Recover its hold
-// using the last AO dispatch, including when its first host receipt is unsaved.
-func (c *Controller) restoreACPDeliveryHold(ctx context.Context, turns []domain.ConversationTurn) {
+// using the last AO dispatch, or report that its settled receipt can wake the queue.
+func (c *Controller) restoreACPDeliveryHold(ctx context.Context, turns []domain.ConversationTurn) bool {
 	journal, ok := c.store.(chatDeliveryJournal)
-	if !ok || c.reviewID != "" || c.acpDeliveryEpoch() == "" {
-		return
+	epoch := c.acpDeliveryEpoch()
+	if !ok || c.reviewID != "" || epoch == "" {
+		return false
 	}
 	var last *domain.ConversationTurn
 	for i := range turns {
@@ -362,13 +363,18 @@ func (c *Controller) restoreACPDeliveryHold(ctx context.Context, turns []domain.
 		}
 	}
 	if last == nil {
-		return
+		return false
 	}
 	stalls, _ := c.conv.(interface{ IsArchivedPromptStall(string) bool })
 	if last.State == domain.TurnStateCompleted ||
 		last.State == domain.TurnStateFailed && stalls != nil && stalls.IsArchivedPromptStall(last.ErrorMessage) {
-		_, _ = c.installDeliveryHold(ctx, journal, last.ProviderTurnID)
+		if held, _ := c.installDeliveryHold(ctx, journal, last.ProviderTurnID); !held {
+			a, err := journal.ChatDeliveryAttemptForTurn(ctx, c.sessionID, last.ID)
+			return err == nil && a.PreparedTurnID == last.ProviderTurnID && a.Receipt != nil &&
+				a.Receipt.ExecutionSettled && a.Receipt.ProviderEpoch == epoch
+		}
 	}
+	return false
 }
 
 // releasePendingDelivery resumes queued work held behind a now-settled original.

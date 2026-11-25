@@ -344,7 +344,11 @@ func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, er
 	blocked, err := c.runSettingsAttemptLocked(ctx, false, func(ctx context.Context, journal agentSettingsJournal, op *domain.AgentSettingsOperation) (bool, error) {
 		if c.settingsInitializationError != nil {
 			// Retry initialization under the same gate when another event arrives.
-			return c.initializeAgentSettingsLocked(ctx, journal, op)
+			blocked, err := c.initializeAgentSettingsLocked(ctx, journal, op)
+			if !blocked && err == nil && c.settingsInitializationError != nil {
+				c.queueSettingsRecheck()
+			}
+			return blocked, err
 		}
 		if op == nil {
 			return false, nil
