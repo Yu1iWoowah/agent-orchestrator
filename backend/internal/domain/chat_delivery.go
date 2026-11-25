@@ -1,6 +1,18 @@
 package domain
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
+
+// CodexProviderScopePrefix identifies a projection scope without relying on
+// delimiters in opaque provider IDs.
+func CodexProviderScopePrefix(scope string) string {
+	if scope == "" {
+		return ""
+	}
+	return "codex:" + strconv.Itoa(len(scope)) + ":" + scope
+}
 
 // ChatDeliveryDisposition records delivery evidence independently of turn outcome.
 type ChatDeliveryDisposition string

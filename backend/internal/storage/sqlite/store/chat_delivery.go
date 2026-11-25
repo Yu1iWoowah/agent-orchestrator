@@ -150,17 +150,30 @@ func (s *Store) BlockChatDeliveryWithAttention(ctx context.Context, next domain.
 	return next, err
 }
 
+// SettleInterruptedDeliveryWithAttention lets the final settlement and question
+// closure commit together. Conversation-scoped questions can only be closed
+// by the current generation.
+func (s *Store) SettleInterruptedDeliveryWithAttention(ctx context.Context, a domain.ChatDeliveryAttempt, settle func(ctx context.Context, closeAttention bool) error) error {
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return s.inTxDB(ctx, "settle interrupted delivery with attention", func(q *gen.Queries, db gen.DBTX) error {
+		current, err := q.GetSessionAgentSettings(ctx, a.SessionID)
+		if err != nil {
+			return err
+		}
+		return settle(projectionContext(ctx, q, db), current.ControllerGeneration == a.Owner.ControllerGeneration)
+	})
+}
+
 // SettleInterruptedUnknownDelivery closes the original inputs without making
 // them replayable. The caller has proved that their execution scope ended.
 func (s *Store) SettleInterruptedUnknownDelivery(ctx context.Context, original domain.ChatDeliveryAttempt, at time.Time) error {
 	if original.ExecutionSettled || original.Disposition != domain.ChatDeliveryUnknown && original.Disposition != domain.ChatDeliveryReserved {
 		return ports.ErrAgentSettingsInvalid
 	}
-	if err := s.writeMu.LockContext(ctx); err != nil {
-		return err
-	}
-	defer s.writeMu.Unlock()
-	return s.inTx(ctx, "settle interrupted unknown delivery", func(q *gen.Queries) error {
+	return s.inProjectionAwareTx(ctx, "settle interrupted unknown delivery", func(q *gen.Queries) error {
 		code := "CHAT_DELIVERY_HOST_GONE_SETTLED"
 		for _, id := range original.TurnIDs {
 			turn, err := q.SelectConversationTurnByID(ctx, id)
@@ -201,11 +214,7 @@ func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domai
 		len(original.InputRefs) != len(original.TurnIDs) || len(original.InputRefs) == 0 {
 		return ports.ErrAgentSettingsInvalid
 	}
-	if err := s.writeMu.LockContext(ctx); err != nil {
-		return err
-	}
-	defer s.writeMu.Unlock()
-	return s.inTx(ctx, "settle previous boot acceptance", func(q *gen.Queries) error {
+	return s.inProjectionAwareTx(ctx, "settle previous boot acceptance", func(q *gen.Queries) error {
 		code := "CHAT_DELIVERY_HOST_GONE_SETTLED"
 		for i, ref := range original.InputRefs {
 			turn, err := q.SelectConversationTurnByID(ctx, ref.TurnID)
@@ -219,12 +228,13 @@ func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domai
 				if turn.State == domain.TurnStateRunning || turn.ProviderTurnID != "" {
 					return ports.ErrAgentSettingsConflict
 				}
-				if turn.State == domain.TurnStateQueued {
+				orphaned := turn.State == domain.TurnStateFailed && turn.CompletedAt.Valid && turn.ErrorMessage == orphanedTurnFailure
+				if turn.State == domain.TurnStateQueued || orphaned {
 					// The receipt covers the entire reserved batch. Link members
 					// whose acceptance had not yet been projected before the reboot.
 					n, err := q.CompleteQueuedConversationBatchMember(ctx, gen.CompleteQueuedConversationBatchMemberParams{
 						CompletedAt: sql.NullTime{Time: at, Valid: true}, PromotedToTurnID: sql.NullString{String: original.TurnIDs[0], Valid: true},
-						BatchDeliveryKind: batchDeliveryKind(""), ID: turn.ID, ConversationID: turn.ConversationID,
+						BatchDeliveryKind: batchDeliveryKind(""), ID: turn.ID, ConversationID: turn.ConversationID, ExpectedState: turn.State,
 					})
 					if err != nil {
 						return err
@@ -236,10 +246,26 @@ func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domai
 				continue
 			}
 			providerTurn := original.Receipt.ProviderTurnID
+			// A persisted binding can already match the receipt exactly. Otherwise
+			// project the native ID in the scope that executed this attempt.
+			if turn.ProviderTurnID != providerTurn && original.PreparedTurnID != providerTurn {
+				branch, err := q.SelectConversationBranch(ctx, gen.SelectConversationBranchParams{
+					ConversationID: original.ConversationID, BranchID: original.Owner.BranchID,
+				})
+				if err != nil {
+					return err
+				}
+				if branch.ProviderIdsScoped != 0 {
+					providerTurn = domain.CodexProviderScopePrefix(branch.EffectiveProviderScopeID) + providerTurn
+				}
+			}
 			running := turn.State == domain.TurnStateRunning
-			reconnectFailed := turn.State == domain.TurnStateFailed && turn.CompletedAt.Valid && turn.ErrorMessage == reconnectUnconfirmedDelivery
+			// Cold Resume cleanup, like live reconnect cleanup, keeps the original
+			// ownership and binding fields on the failed turn.
+			cleanupFailed := turn.State == domain.TurnStateFailed && turn.CompletedAt.Valid &&
+				(turn.ErrorMessage == reconnectUnconfirmedDelivery || turn.ErrorMessage == orphanedTurnFailure)
 			interrupted := turn.State == domain.TurnStateInterrupted
-			needsBinding := turn.ProviderTurnID == "" && (running || reconnectFailed || interrupted)
+			needsBinding := turn.ProviderTurnID == "" && (running || cleanupFailed || interrupted)
 			if turn.ProviderTurnID != providerTurn && !needsBinding {
 				return ports.ErrAgentSettingsConflict
 			}

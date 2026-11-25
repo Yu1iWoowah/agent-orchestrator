@@ -2005,6 +2005,9 @@ func (s *Store) SettleOrphanedTurnsBefore(ctx context.Context, session domain.Se
 
 const reconnectUnconfirmedDelivery = "provider delivery unconfirmed after reconnect"
 
+// Written by SettleOrphanedConversationTurns and its queued-before variant.
+const orphanedTurnFailure = "controller ended before the turn completed"
+
 // SettleUnboundRunningTurn closes an ambiguous dispatch after live reconnect.
 // Recheck under the writer lock so a bound or queued turn is never settled.
 func (s *Store) SettleUnboundRunningTurn(ctx context.Context, conversationID string, session domain.SessionID, turnID string, now time.Time) error {
@@ -2910,6 +2913,7 @@ func (s *Store) CompleteQueuedBatch(ctx context.Context, conversationID string, 
 				BatchDeliveryKind:    batchDeliveryKind(steerActivityID),
 				BatchDeliverySteerID: steerActivityID,
 				ID:                   id, ConversationID: conversationID,
+				ExpectedState: domain.TurnStateQueued,
 			})
 			if checkErr := expectBatchRow("complete queued batch turn", id, changed, err); checkErr != nil {
 				return checkErr
@@ -5699,6 +5703,7 @@ func (s *Store) CompleteSteerBatchDelivery(
 					BatchDeliveryKind:    batchDeliveryKind(activity.ID),
 					BatchDeliverySteerID: activity.ID,
 					ID:                   id, ConversationID: conversationID,
+					ExpectedState: domain.TurnStateQueued,
 				})
 				if checkErr := expectBatchRow("complete steered batch turn", id, changed, err); checkErr != nil {
 					return checkErr

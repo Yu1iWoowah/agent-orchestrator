@@ -1,19 +1,16 @@
 package codexappserver
 
 import (
-	"strconv"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // Native IDs stay on the wire; AO projection IDs belong to an ownership scope.
 // Length-prefixing the scope keeps opaque delimiters from creating collisions.
 func (c *conversation) scopePrefix() string {
-	if c.providerScopeID == "" {
-		return ""
-	}
-	return "codex:" + strconv.Itoa(len(c.providerScopeID)) + ":" + c.providerScopeID
+	return domain.CodexProviderScopePrefix(c.providerScopeID)
 }
 
 func (c *conversation) scopedID(id string) string {

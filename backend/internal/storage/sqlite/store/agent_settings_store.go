@@ -38,7 +38,7 @@ func requestForSettings(op domain.AgentSettingsOperation) settingsRequest {
 
 // SessionAgentSettings reads preferences and owner context from one snapshot.
 func (s *Store) SessionAgentSettings(ctx context.Context, id domain.SessionID) (domain.SessionAgentSettings, error) {
-	row, err := s.qr.GetSessionAgentSettings(ctx, id)
+	row, err := s.conversationReader(ctx).GetSessionAgentSettings(ctx, id)
 	if err != nil {
 		return domain.SessionAgentSettings{}, settingsStoreError(err)
 	}

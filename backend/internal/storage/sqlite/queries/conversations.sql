@@ -1375,6 +1375,7 @@ WHERE id = sqlc.arg(id)
 -- name: CompleteQueuedConversationBatchMember :execrows
 UPDATE conversation_turns
 SET state = 'completed',
+    error_message = CASE WHEN state = 'failed' THEN '' ELSE error_message END,
     completed_at = sqlc.arg(completed_at),
     promotion_started_at = NULL,
     promoted_to_turn_id = sqlc.arg(promoted_to_turn_id),
@@ -1383,7 +1384,7 @@ SET state = 'completed',
     batch_delivery_steer_id = sqlc.arg(batch_delivery_steer_id)
 WHERE id = sqlc.arg(id)
   AND conversation_id = sqlc.arg(conversation_id)
-  AND state = 'queued'
+  AND state = sqlc.arg(expected_state)
   AND promotion_started_at IS NOT NULL;
 
 -- Remember the exact combined input so native history replay can identify it

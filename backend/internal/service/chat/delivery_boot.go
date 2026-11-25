@@ -21,6 +21,11 @@ type interruptedDeliveryStore interface {
 	SettleInterruptedUnknownDelivery(context.Context, domain.ChatDeliveryAttempt, time.Time) error
 }
 
+type interruptedDeliveryAttentionStore interface {
+	interruptedDeliveryStore
+	SettleInterruptedDeliveryWithAttention(context.Context, domain.ChatDeliveryAttempt, func(ctx context.Context, closeAttention bool) error) error
+}
+
 func (c *Controller) reconcileBeforeHibernate(ctx context.Context) error {
 	journal, ok := c.store.(previousBootDeliveryStore)
 	if !ok || !c.sendMu.TryLock() {
@@ -109,7 +114,7 @@ func (c *Controller) releaseInterruptedDeliveryHold(ctx context.Context, a domai
 // A previous boot is proved by the saved receipt itself, not by starting a
 // provider or treating an empty controller registry as successful settlement.
 func (s *Service) ReconcilePreviousBootDeliveries(ctx context.Context) error {
-	journal, ok := s.store.(interruptedDeliveryStore)
+	journal, ok := s.store.(interruptedDeliveryAttentionStore)
 	sessions, canList := s.sessions.(interface {
 		ListAllSessions(context.Context) ([]domain.SessionRecord, error)
 	})
@@ -132,7 +137,7 @@ func (s *Service) ReconcilePreviousBootDeliveries(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-func (s *Service) reconcileDetachedDeliveries(ctx context.Context, journal interruptedDeliveryStore, id domain.SessionID) error {
+func (s *Service) reconcileDetachedDeliveries(ctx context.Context, journal interruptedDeliveryAttentionStore, id domain.SessionID) error {
 	gate := s.controllerGate(domain.SessionConversationOwner(id))
 	if !gate.tryLock() {
 		return nil
@@ -141,31 +146,48 @@ func (s *Service) reconcileDetachedDeliveries(ctx context.Context, journal inter
 	if s.HasLiveChatController(id) {
 		return nil
 	}
-	attempts, err := journal.PendingChatDeliveries(ctx, id)
-	if err != nil {
-		logDeliveryJournalFailure(s.log, id, "", err)
+	blocked := func(attempt string, err error) error {
+		logDeliveryJournalFailure(s.log, id, attempt, err)
 		return &ports.ChatShutdownBlockedError{SessionID: string(id), Reason: "delivery_journal_unavailable", Cause: err}
 	}
-	settled := make(map[string]bool)
+	attempts, err := journal.PendingChatDeliveries(ctx, id)
+	if err != nil {
+		return blocked("", err)
+	}
+	if len(attempts) == 0 {
+		return nil
+	}
+	current, err := journal.SessionAgentSettings(ctx, id)
+	if err != nil {
+		return blocked("", err)
+	}
+	// Keep the final same-generation attempt pending until the question can
+	// close with it. A conversation with any unverified attempt stays open.
+	closeWith := make(map[string]string)
+	eligible := attempts[:0]
 	for _, a := range attempts {
 		if a.Receipt == nil || !s.previousBootEpoch(a.Receipt.ProviderEpoch) {
-			settled[a.ConversationID] = false
+			closeWith[a.ConversationID] = ""
 			continue
 		}
-		actor, err := s.settleInterruptedDelivery(ctx, journal, a)
-		if err != nil {
-			logDeliveryJournalFailure(s.log, id, a.ID, err)
-			return &ports.ChatShutdownBlockedError{SessionID: string(id), Reason: "delivery_journal_unavailable", Cause: err}
-		}
-		if _, seen := settled[a.ConversationID]; !seen && actor.ControllerGeneration == a.Owner.ControllerGeneration {
-			settled[a.ConversationID] = true
+		eligible = append(eligible, a)
+		if candidate, seen := closeWith[a.ConversationID]; (!seen || candidate != "") && current.OwnerGeneration == a.Owner.ControllerGeneration {
+			closeWith[a.ConversationID] = a.ID
 		}
 	}
-	for conversation, closed := range settled {
-		if closed {
-			if err := outboundAttention(ctx, s.store, id, "conversation:"+conversation, true, s.now()); err != nil {
-				return err
-			}
+	var final []domain.ChatDeliveryAttempt
+	for _, a := range eligible {
+		if closeWith[a.ConversationID] == a.ID {
+			final = append(final, a)
+			continue
+		}
+		if err := s.settleInterruptedDelivery(ctx, journal, a); err != nil {
+			return blocked(a.ID, err)
+		}
+	}
+	for _, a := range final {
+		if err := s.settleInterruptedDeliveryWithAttention(ctx, journal, a); err != nil {
+			return blocked(a.ID, err)
 		}
 	}
 	return nil
@@ -175,7 +197,7 @@ func (s *Service) reconcileDetachedDeliveries(ctx context.Context, journal inter
 // delivery: the adapter may exit before its provider process group ends.
 func (s *Service) ReconcileExitedAdapter(ctx context.Context, id domain.SessionID, conversation, branch, generation string, ended bool) (bool, error) {
 	store, ok := s.store.(interface {
-		interruptedDeliveryStore
+		interruptedDeliveryAttentionStore
 		SettleExitedChatAdapter(context.Context, domain.SessionID, string, string, string, time.Time) error
 	})
 	if !ok {
@@ -212,6 +234,7 @@ func (s *Service) ReconcileExitedAdapter(ctx context.Context, id domain.SessionI
 		return false, err
 	}
 	unsettled := false
+	matching := attempts[:0]
 	for _, a := range attempts {
 		if a.ConversationID != conversation {
 			continue
@@ -220,7 +243,14 @@ func (s *Service) ReconcileExitedAdapter(ctx context.Context, id domain.SessionI
 			unsettled = true
 			continue
 		}
-		if _, err := s.settleInterruptedDelivery(ctx, store, a); err != nil {
+		matching = append(matching, a)
+	}
+	for i, a := range matching {
+		settle := s.settleInterruptedDelivery
+		if !unsettled && i == len(matching)-1 {
+			settle = s.settleInterruptedDeliveryWithAttention
+		}
+		if err := settle(ctx, store, a); err != nil {
 			return false, err
 		}
 		if controller != nil {
@@ -235,21 +265,30 @@ func (s *Service) ReconcileExitedAdapter(ctx context.Context, id domain.SessionI
 	if session.ControllerOwner().ControllerGeneration != generation {
 		return true, nil
 	}
-	if unsettled {
-		return false, nil
+	if !unsettled && len(matching) == 0 {
+		err = outboundAttention(ctx, s.store, id, "conversation:"+conversation, true, s.now())
+		return err == nil, err
 	}
-	err = outboundAttention(ctx, s.store, id, "conversation:"+conversation, true, s.now())
-	return err == nil, err
+	return !unsettled, nil
 }
 
-func (s *Service) settleInterruptedDelivery(ctx context.Context, journal interruptedDeliveryStore, a domain.ChatDeliveryAttempt) (domain.AgentSettingsOwner, error) {
+func (s *Service) settleInterruptedDeliveryWithAttention(ctx context.Context, journal interruptedDeliveryAttentionStore, a domain.ChatDeliveryAttempt) error {
+	return journal.SettleInterruptedDeliveryWithAttention(ctx, a, func(txCtx context.Context, closeAttention bool) error {
+		if err := s.settleInterruptedDelivery(txCtx, journal, a); err != nil || !closeAttention {
+			return err
+		}
+		return outboundAttention(txCtx, s.store, a.SessionID, "conversation:"+a.ConversationID, true, s.now())
+	})
+}
+
+func (s *Service) settleInterruptedDelivery(ctx context.Context, journal interruptedDeliveryAttentionStore, a domain.ChatDeliveryAttempt) error {
 	current, err := journal.SessionAgentSettings(ctx, a.SessionID)
 	if err != nil {
-		return domain.AgentSettingsOwner{}, err
+		return err
 	}
 	owner, at := ownerForSettings(current), laterChatTime(s.now(), a.UpdatedAt)
 	if unsettledAcceptance(a) {
-		return owner, journal.SettlePreviousBootAcceptance(ctx, a, owner, at)
+		return journal.SettlePreviousBootAcceptance(ctx, a, owner, at)
 	}
-	return owner, journal.SettleInterruptedUnknownDelivery(ctx, a, at)
+	return journal.SettleInterruptedUnknownDelivery(ctx, a, at)
 }
