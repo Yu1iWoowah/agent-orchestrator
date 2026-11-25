@@ -196,11 +196,14 @@ func TestKilledHostEpochIsNotProofWhileItsProviderRuns(t *testing.T) {
 	}
 	oldEpoch := deliveryEpoch(old)
 	killPID(old.PID) // SIGKILL, as the OOM killer would
-	for deadline := time.Now().Add(5 * time.Second); processalive.Alive(old.PID) && time.Now().Before(deadline); {
-		time.Sleep(10 * time.Millisecond)
+	// Wait for the detached host's parent to reap it before attempting takeover.
+	for deadline := time.Now().Add(5 * time.Second); !processalive.Exited(old.PID); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("killed host PID was not reaped")
+		}
 	}
-	if processalive.Alive(old.PID) || !processalive.Alive(provider) {
-		t.Fatalf("host alive=%v provider alive=%v; want the host gone and its provider still running", processalive.Alive(old.PID), processalive.Alive(provider))
+	if !processalive.Alive(provider) {
+		t.Fatal("the killed host's provider stopped")
 	}
 	next, err := ConnectOrStart(context.Background(), cfg)
 	if err != nil {

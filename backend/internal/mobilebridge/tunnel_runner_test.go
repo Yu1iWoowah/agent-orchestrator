@@ -611,10 +611,13 @@ func TestTunnelRunnerWaitsForARelinkAfterANewPassword(t *testing.T) {
 		bin, _ := fakeCloudflared(t, registeredLine)
 		r := namedRunner(t, bin, src)
 		r.recheckEvery, r.relinkWait = time.Hour, 300*time.Millisecond
+		if relinked {
+			r.relinkWait = 5 * time.Second
+		}
 		nudge := make(chan struct{}, 1)
 		r.nudge = nudge
 
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 		done := make(chan error, 1)
 		go func() { done <- r.runOnce(ctx) }()
 		for deadline := time.Now().Add(10 * time.Second); r.Runtime.UnsettledHostname() == ""; time.Sleep(20 * time.Millisecond) {
@@ -624,8 +627,16 @@ func TestTunnelRunnerWaitsForARelinkAfterANewPassword(t *testing.T) {
 		}
 		link(t, src, "") // the new password
 		nudge <- struct{}{}
-		time.Sleep(100 * time.Millisecond)
 		if relinked {
+			// The watcher clears the cached tunnel when it reads the revoked link.
+			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+				if _, err := os.Stat(src.CachePath); errors.Is(err, os.ErrNotExist) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("revoked link did not clear the cached tunnel")
+				}
+			}
 			link(t, src, "new-account-digest")
 		}
 		select {
@@ -633,7 +644,7 @@ func TestTunnelRunnerWaitsForARelinkAfterANewPassword(t *testing.T) {
 			if relinked || !errors.Is(err, errFixedTunnelChanged) {
 				t.Fatalf("relinked %v: runOnce = %v", relinked, err)
 			}
-		case <-time.After(time.Second):
+		case <-time.After(2 * time.Second):
 			if !relinked {
 				t.Fatal("kept the fixed address with no link")
 			}
