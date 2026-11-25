@@ -258,14 +258,15 @@ const deliveryHoldUnverified = "\x00unverified"
 // the journal has not settled, as if it were the original of the next send.
 // Settlement releases it through releasePendingDelivery. An unreadable journal
 // holds too: unknown execution is never evidence that sending again is safe.
-func (c *Controller) holdForUnsettledDelivery(ctx context.Context) bool {
+func (c *Controller) holdForUnsettledDelivery(ctx context.Context, preparedTurn string) bool {
 	journal, ok := c.store.(chatDeliveryJournal)
 	if _, supported := c.conv.(ports.ChatDeliveryObserver); !ok || !supported || c.reviewID != "" {
 		return false
 	}
-	held, _ := c.installDeliveryHold(ctx, journal)
+	held, _ := c.installDeliveryHold(ctx, journal, preparedTurn)
 	if held {
 		c.startDeliveryMonitor()
+		c.wakeDeliveryMonitor(true)
 	}
 	return held
 }
@@ -275,20 +276,38 @@ func (c *Controller) holdForUnsettledDelivery(ctx context.Context) bool {
 // ID: a settlement either lands before the read and drops out of it, or after
 // the install and finds the ID it must release. A failed read still holds, and
 // is returned so the caller can schedule another read.
-func (c *Controller) installDeliveryHold(ctx context.Context, journal chatDeliveryJournal) (bool, error) {
+func (c *Controller) installDeliveryHold(ctx context.Context, journal chatDeliveryJournal, preparedTurn string) (bool, error) {
 	c.deliveryReceiptMu.Lock()
 	defer c.deliveryReceiptMu.Unlock()
 	attempts, err := journal.PendingChatDeliveries(ctx, c.sessionID)
-	if err == nil && len(attempts) == 0 {
-		return false, nil
-	}
 	id := deliveryHoldUnverified
 	if err == nil {
-		id = attempts[0].ID
+		id = ""
+		epoch := c.acpDeliveryEpoch()
+		for _, a := range attempts {
+			if a.ConversationID != c.conversation.ID || a.Owner.BranchID != c.conversation.ActiveBranchID {
+				continue
+			}
+			savedEpoch := deliveryLookup(a).ProviderEpoch
+			if preparedTurn != "" && a.PreparedTurnID != preparedTurn ||
+				epoch != "" && savedEpoch != "" && savedEpoch != epoch {
+				continue
+			}
+			id = a.ID
+			break
+		}
+		if id == "" {
+			return false, nil
+		}
 	}
 	c.mu.Lock()
 	if c.pendingDeliveryID == "" || c.pendingDeliveryID == deliveryHoldUnverified {
 		c.pendingDeliveryID = id
+		if id == deliveryHoldUnverified {
+			c.pendingDeliveryPreparedTurn = preparedTurn
+		} else {
+			c.pendingDeliveryPreparedTurn = ""
+		}
 	}
 	c.mu.Unlock()
 	return true, err
@@ -300,11 +319,12 @@ func (c *Controller) installDeliveryHold(ctx context.Context, journal chatDelive
 func (c *Controller) resolveUnverifiedDeliveryHold(ctx context.Context, journal chatDeliveryJournal) bool {
 	c.mu.Lock()
 	unverified := c.pendingDeliveryID == deliveryHoldUnverified
+	preparedTurn := c.pendingDeliveryPreparedTurn
 	c.mu.Unlock()
 	if !unverified {
 		return true
 	}
-	held, err := c.installDeliveryHold(ctx, journal)
+	held, err := c.installDeliveryHold(ctx, journal, preparedTurn)
 	if err != nil {
 		return false
 	}
@@ -314,12 +334,50 @@ func (c *Controller) resolveUnverifiedDeliveryHold(ctx context.Context, journal 
 	return true
 }
 
+func (c *Controller) acpDeliveryEpoch() string {
+	_, deferred := c.conv.(ports.ChatDeferredTurnStarter)
+	reporter, ok := c.conv.(ports.ChatDeliveryEpochReporter)
+	if !deferred || !ok {
+		return ""
+	}
+	return reporter.OutboundProviderEpoch()
+}
+
+// Reconnect can deduplicate an already projected completion. Recover its hold
+// using the last AO dispatch, including when its first host receipt is unsaved.
+func (c *Controller) restoreACPDeliveryHold(ctx context.Context, turns []domain.ConversationTurn) {
+	journal, ok := c.store.(chatDeliveryJournal)
+	if !ok || c.reviewID != "" || c.acpDeliveryEpoch() == "" {
+		return
+	}
+	var last *domain.ConversationTurn
+	for i := range turns {
+		turn := &turns[i]
+		if turn.HandledBySessionID != c.sessionID || turn.BranchID != c.conversation.ActiveBranchID ||
+			turn.AgentSettings == nil || turn.ProviderTurnID == "" || turn.StartedAt == nil || turn.RolledBackAt != nil {
+			continue
+		}
+		if last == nil || !turn.StartedAt.Before(*last.StartedAt) {
+			last = turn
+		}
+	}
+	if last == nil {
+		return
+	}
+	stalls, _ := c.conv.(interface{ IsArchivedPromptStall(string) bool })
+	if last.State == domain.TurnStateCompleted ||
+		last.State == domain.TurnStateFailed && stalls != nil && stalls.IsArchivedPromptStall(last.ErrorMessage) {
+		_, _ = c.installDeliveryHold(ctx, journal, last.ProviderTurnID)
+	}
+}
+
 // releasePendingDelivery resumes queued work held behind a now-settled original.
 func (c *Controller) releasePendingDelivery(id string) {
 	c.mu.Lock()
 	resumed := c.pendingDeliveryID == id
 	if resumed {
 		c.pendingDeliveryID = ""
+		c.pendingDeliveryPreparedTurn = ""
 	}
 	c.mu.Unlock()
 	if resumed && !c.outboundQuiescing() {
@@ -418,6 +476,9 @@ func (c *Controller) queryDelivery(ctx context.Context, a domain.ChatDeliveryAtt
 	queryCtx, cancel := c.deadlineContext(ctx, 10*time.Second)
 	defer cancel()
 	key := deliveryLookup(a)
+	if key.ProviderEpoch == "" {
+		key.ProviderEpoch = c.acpDeliveryEpoch()
+	}
 	if c.deliveryMonitorStopping() {
 		return a, context.Canceled
 	}
@@ -752,8 +813,20 @@ func (c *Controller) monitorDeliveries() {
 							continue
 						}
 					}
-					if a.BlockedSince != nil && !force && !firstSweep && a.AttentionID != "" {
-						continue
+					c.mu.Lock()
+					recheckHeld := c.pendingDeliveryID == a.ID
+					c.mu.Unlock()
+					epoch, savedEpoch := c.acpDeliveryEpoch(), deliveryLookup(a).ProviderEpoch
+					recheckHeld = recheckHeld && epoch != "" && (savedEpoch == "" || savedEpoch == epoch)
+					if a.BlockedSince != nil && a.AttentionID != "" {
+						if !recheckHeld && !force && !firstSweep {
+							continue
+						}
+						// A late native reply only updates the host journal.
+						// The blocking question does not stop polling this hold.
+						if recheckHeld {
+							due = a.UpdatedAt.Add(30 * time.Second)
+						}
 					}
 					if force || firstSweep && a.BlockedSince != nil || !due.After(c.now()) {
 						queryCtx, queryCancel := c.deadlineContext(context.Background(), 10*time.Second)
@@ -783,10 +856,14 @@ func (c *Controller) monitorDeliveries() {
 							blockErr := c.blockDelivery(blockCtx, a, queryErr)
 							blockCancel()
 							if blockErr == nil {
-								continue
+								if !recheckHeld {
+									continue
+								}
+								due = c.now().Add(30 * time.Second)
+							} else {
+								c.log.Warn("delivery visibility checkpoint unavailable", "session", c.sessionID, "attempt", a.ID, "code", "CHAT_DELIVERY_DIAGNOSIS_UNAVAILABLE")
+								due = c.now().Add(5 * time.Second)
 							}
-							c.log.Warn("delivery visibility checkpoint unavailable", "session", c.sessionID, "attempt", a.ID, "code", "CHAT_DELIVERY_DIAGNOSIS_UNAVAILABLE")
-							due = c.now().Add(5 * time.Second)
 						}
 					}
 					if earliest.IsZero() || due.Before(earliest) {

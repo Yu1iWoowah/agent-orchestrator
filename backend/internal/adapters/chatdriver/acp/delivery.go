@@ -2,11 +2,25 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
+
+	acpsdk "github.com/coder/acp-go-sdk"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+const promptOperation = "ACP session/prompt"
+
+// IsArchivedPromptStall reads the original JSON-RPC error already saved on the
+// turn. Reuse the live marker so an ordinary provider error cannot restore a hold.
+func (*conversation) IsArchivedPromptStall(message string) bool {
+	payload, ok := strings.CutPrefix(message, promptOperation+": ")
+	var native acpsdk.RequestError
+	return ok && json.Unmarshal([]byte(payload), &native) == nil && isACPPromptStalled(&native)
+}
 
 func (c *conversation) QueryDeliveryAttempt(ctx context.Context, key ports.ChatDeliveryLookup) (domain.ChatDeliveryReceipt, error) {
 	if c.proc.delivery == nil {

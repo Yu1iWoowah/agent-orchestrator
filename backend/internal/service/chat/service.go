@@ -1581,6 +1581,9 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		cfg.ExpectedControllerOwner.ControllerGeneration = controller.Generation()
 	}
 	controller.settingsObservationOwner = controller.observationOwner(executionAccount)
+	if liveReconnect {
+		controller.restoreACPDeliveryHold(ctx, liveRows.Turns)
+	}
 	s.configureAgentSettingsController(controller)
 	tentativeAccount := owner.Kind == domain.ConversationOwnerSession && executionAccount != settingsAccount
 	controller.settingsAwaitingAccountCommit = tentativeAccount || committedAccountMove

@@ -123,8 +123,7 @@ type acpRelay struct {
 	stallCancelledAt time.Time
 	// abandonedPrompts holds provider ids of prompts the watchdog failed. The
 	// adapter's own late answer to one is dropped, not forwarded.
-	abandonedPrompts map[string]acpAbandonedPrompt
-	mainPromptError  *acpDeferredPromptError
+	abandonedPrompts map[string]struct{}
 	// heldResult is the answer that settles the turn, kept back while a steer
 	// command (keepsTurn) is still running. See providerFrame.
 	heldResult *acpHeldResult
@@ -136,19 +135,6 @@ type acpHeldResult struct {
 	request  acpClientRequest
 	envelope map[string]json.RawMessage
 	frame    []byte
-}
-
-type acpDeferredPromptError struct {
-	id, params        json.RawMessage
-	through           int64
-	remaining         int
-	mainErrorObserved bool
-	terminalObserved  bool
-}
-
-type acpAbandonedPrompt struct {
-	settlement *acpDeferredPromptError
-	keepsTurn  bool
 }
 
 func newACPRelay(ctx context.Context, journalPath string) (*acpRelay, error) {
@@ -169,7 +155,7 @@ func newACPRelay(ctx context.Context, journalPath string) (*acpRelay, error) {
 		identity: identity,
 		pending:  make(map[string]acpClientRequest), serverRequests: make(map[string]acpServerRequest),
 		commands:          make(map[string]acpInteractionCommand),
-		abandonedPrompts:  make(map[string]acpAbandonedPrompt),
+		abandonedPrompts:  make(map[string]struct{}),
 		promptJournal:     journal,
 		unpromptedJournal: unprompted,
 	}, nil
@@ -562,24 +548,8 @@ func (r *acpRelay) providerFrame(
 	if len(id) == 0 {
 		return frame, false, nil
 	}
-	rpcError := envelope["error"]
-	isError := len(rpcError) > 0 && rpcError[0] == '{'
-	if abandoned, ok := r.abandonedPrompts[string(id)]; ok {
+	if _, ok := r.abandonedPrompts[string(id)]; ok {
 		delete(r.abandonedPrompts, string(id))
-		if main := abandoned.settlement; main != nil {
-			main.remaining--
-			if bytes.Equal(id, main.id) {
-				main.mainErrorObserved = isError
-			} else if !abandoned.keepsTurn && len(rpcError) == 0 && hasACPStopReason(envelope["result"]) {
-				main.terminalObserved = true
-			}
-			// A refusal can clear a steer gap without proving the turn ended.
-			if main.remaining == 0 && main.mainErrorObserved && main.terminalObserved {
-				if err := r.delivery.settleStalledPromptError(main.id, main.params, main.through); err != nil {
-					_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
-				}
-			}
-		}
 		return nil, false, nil
 	}
 
@@ -607,9 +577,6 @@ func (r *acpRelay) providerFrame(
 		result, retained, err := r.settleTurn(held.id, held.request, held.envelope, held.frame, generation, attached)
 		return append(answer, result...), retained, err
 	}
-	if request.method == "session/prompt" && r.delivery != nil && isError && !isSteerPrompt(request.params) {
-		r.mainPromptError = &acpDeferredPromptError{id: id, params: request.params, mainErrorObserved: true}
-	}
 	if request.method == "session/prompt" && r.newestPendingPrompt() != "" {
 		// Another prompt of the turn still runs, so this answer is a handoff or a
 		// refused steer prompt: the turn goes on, and its result is the answer of
@@ -633,11 +600,6 @@ func (r *acpRelay) providerFrame(
 		return nil, false, nil
 	}
 	if request.method == "session/prompt" {
-		if !r.stallCancelledAt.IsZero() && r.delivery != nil && isError {
-			if err := r.delivery.settleStalledPromptError(id, request.params, 0); err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
-			}
-		}
 		return r.settleTurn(id, request, envelope, frame, generation, attached)
 	}
 	if request.generation != generation || !attached {
@@ -657,12 +619,15 @@ func (r *acpRelay) settleTurn(
 	generation uint64,
 	attached bool,
 ) ([]byte, bool, error) {
-	r.mainPromptError = nil
+	if r.delivery != nil {
+		if err := r.delivery.sealACPTurn(); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "chat delivery evidence unavailable; provider forwarding continues")
+		}
+	}
 	if !r.stallCancelledAt.IsZero() {
-		// The adapter has answered the last prompt of the turn the watchdog
-		// cancelled. Whatever it says, the turn ended because the adapter went
-		// silent. An earlier prompt's answer passed through providerFrame
-		// unchanged: the marker says the adapter is quiet, which holds only now.
+		// The watchdog ended this turn because the adapter went silent.
+		// For managed turns the marker identifies the stall; the delivery
+		// journal separately decides when it is safe to release the queue.
 		r.stallCancelledAt = time.Time{}
 		failure := map[string]json.RawMessage{}
 		_ = json.Unmarshal(stalledPromptFailure(id), &failure)
@@ -710,9 +675,9 @@ func (r *acpRelay) pendingSteerCommand() bool {
 // next. When the adapter answers the turn's last prompt, providerFrame turns
 // that answer into the stall failure, which marks the adapter quiet and lets
 // the controller release its queue. If it has not answered every prompt after
-// promptStallCancelGrace it is wedged, and the second step settles each prompt
-// still waiting without it and without the marker, so the queue stays held: the
-// adapter may still emit from the old turn. Its late answers are dropped.
+// promptStallCancelGrace it is wedged, and the second step fails each waiting
+// prompt. Managed turns keep the delivery hold; unmanaged turns omit the stall
+// marker so their queue also stays held. Late answers are not forwarded.
 //
 // The prompt may belong to an earlier controller generation: providerFrame then
 // turns the failure into the private prompt result, which the reattached
@@ -741,30 +706,20 @@ func (r *acpRelay) failStalledPrompt(
 	}
 	if !cancelling {
 		r.stallCancelledAt = now
+		if r.delivery != nil {
+			r.delivery.cancelACPTurn()
+		}
 		cancel := marshalFrame(map[string]json.RawMessage{
 			"jsonrpc": json.RawMessage(`"2.0"`), "method": json.RawMessage(`"session/cancel"`), "params": sessionParams,
 		}, nil)
 		return acpClientFrames{provider: cancel}, nil
 	}
-	// The adapter ignored the cancel. Settle without the stall marker: the
-	// adapter may still emit from the old turn, so the controller must hold its
-	// queue like any other failure rather than start a prompt on it. A steered
-	// turn has several prompts in flight; every one still waiting fails, oldest
-	// first, so the newest failure is the turn's result and no prompt the
-	// controller is waiting on is left unanswered.
-	r.stallCancelledAt = time.Time{}
-	// If the main prompt is still waiting, it is the oldest. Retain its
-	// identity so a real late error can be used after the watchdog's failures.
-	main := r.mainPromptError
-	if main == nil && r.delivery != nil {
-		id := stalled[0]
-		if request := r.pending[id]; !isSteerPrompt(request.params) {
-			main = &acpDeferredPromptError{id: json.RawMessage(id), params: request.params}
-		}
-	}
-	if main != nil {
-		main.through = r.nextRequestID
-		main.remaining = len(stalled)
+	// The adapter ignored the cancel. Fail every outstanding prompt, oldest
+	// first, so the controller gets one turn result and no unanswered RPC.
+	// Managed prompts use the same stall result on either path. The daemon
+	// keeps the delivery hold until the journal proves that execution ended.
+	if r.delivery == nil || !r.delivery.hasACPTurn() {
+		r.stallCancelledAt = time.Time{}
 	}
 	if held := r.heldResult; held != nil {
 		// The turn's own prompt answered, but a steer command ignored the
@@ -778,7 +733,6 @@ func (r *acpRelay) failStalledPrompt(
 	}
 	var client []byte
 	for _, providerID := range stalled {
-		abandoned := acpAbandonedPrompt{settlement: main, keepsTurn: keepsTurn(r.pending[providerID].params)}
 		failure := rpcErrorFrame(json.RawMessage(providerID), -32603, fmt.Sprintf(
 			"provider stopped responding: no ACP output for %s and no answer to the cancel; failing the stalled prompt",
 			promptStallTimeout), nil)
@@ -786,7 +740,7 @@ func (r *acpRelay) failStalledPrompt(
 		if err != nil {
 			return acpClientFrames{}, err
 		}
-		r.abandonedPrompts[providerID] = abandoned
+		r.abandonedPrompts[providerID] = struct{}{}
 		client = append(client, completion...)
 	}
 	return acpClientFrames{client: client}, nil
