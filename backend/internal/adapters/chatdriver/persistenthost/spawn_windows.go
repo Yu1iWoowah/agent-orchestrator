@@ -4,7 +4,6 @@ package persistenthost
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 
@@ -27,13 +26,9 @@ func spawnDetached(ctx context.Context, cfg Config) error {
 	cmd.Dir = cfg.Workdir
 	cmd.Env = cfg.Env
 	cmd.SysProcAttr = &windows.SysProcAttr{CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP, HideWindow: true}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("spawn detached chat host: %w", err)
-	}
-	if err := recordSpawn(cfg.DataDir, cfg.SessionID, cmd.Process.Pid); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Process.Release()
-		return fmt.Errorf("record detached chat host: %w", err)
-	}
+	return startDetachedHost(cmd, cfg)
+}
+
+func releaseDetachedHost(cmd *exec.Cmd) error {
 	return cmd.Process.Release()
 }
