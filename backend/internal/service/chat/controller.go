@@ -3844,7 +3844,7 @@ func (c *Controller) projectEventWithGuardian(ctx context.Context, event ports.C
 		*queued = false
 	}
 	captured := false
-	projected, err := c.archive(ctx, event, func(txCtx context.Context) error {
+	projected, err := c.archive(ctx, event, historical, func(txCtx context.Context) error {
 		captured = c.captureGuardianReview(txCtx, event)
 		return c.apply(txCtx, event, historical)
 	})
@@ -3877,7 +3877,7 @@ func (c *Controller) captureGuardianReview(ctx context.Context, event ports.Chat
 // archive records event in the provider archive and runs project in the same
 // transaction. It reports false without projecting when the controller
 // generation is stale or the event's native identity is already archived.
-func (c *Controller) archive(ctx context.Context, event ports.ChatEvent, project func(context.Context) error) (bool, error) {
+func (c *Controller) archive(ctx context.Context, event ports.ChatEvent, historical bool, project func(context.Context) error) (bool, error) {
 	record := map[string]any{
 		"kind":                   event.Kind,
 		"providerEventId":        event.ProviderEventID,
@@ -3908,6 +3908,9 @@ func (c *Controller) archive(ctx context.Context, event ports.ChatEvent, project
 	}
 	if event.ProviderInitiated {
 		record["providerInitiated"] = true
+	}
+	if historical && event.Kind == ports.ChatEventTurnCompleted {
+		record["historical"] = true
 	}
 	if c.harness == domain.HarnessCodex {
 		// Codex account identity and subscription capacity are daemon-memory
