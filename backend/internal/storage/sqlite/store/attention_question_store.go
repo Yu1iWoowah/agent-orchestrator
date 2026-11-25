@@ -288,6 +288,12 @@ func (s *Store) ListAttentionQuestions(ctx context.Context, session domain.Sessi
 	if query.BeforeSequence <= 0 {
 		query.BeforeSequence = math.MaxInt64
 	}
+	if q, ok := ctx.Value(conversationProjectionTxKey{}).(*gen.Queries); ok {
+		if _, err := q.ExpireAttentionQuestions(ctx, gen.ExpireAttentionQuestionsParams{OriginSessionID: string(session), At: sql.NullTime{Time: at.UTC(), Valid: true}}); err != nil {
+			return result, err
+		}
+		return listAttentionQuestions(ctx, q, session, query, result)
+	}
 	if err := s.ExpireAttentionQuestions(ctx, session, at); err != nil {
 		return result, err
 	}
@@ -296,7 +302,14 @@ func (s *Store) ListAttentionQuestions(ctx context.Context, session domain.Sessi
 		return result, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	q := s.txQueries(tx)
+	result, err = listAttentionQuestions(ctx, s.txQueries(tx), session, query, result)
+	if err != nil {
+		return result, err
+	}
+	return result, tx.Commit()
+}
+
+func listAttentionQuestions(ctx context.Context, q *gen.Queries, session domain.SessionID, query domain.AttentionQuestionQuery, result domain.AttentionQuestionPage) (domain.AttentionQuestionPage, error) {
 	counts, err := q.CountAttentionQuestions(ctx, string(session))
 	if err != nil {
 		return result, err
@@ -318,7 +331,7 @@ func (s *Store) ListAttentionQuestions(ctx context.Context, session domain.Sessi
 		}
 		result.Items = append(result.Items, record)
 	}
-	return result, tx.Commit()
+	return result, nil
 }
 
 func openQuestion(row gen.AttentionQuestion, version int64, at time.Time) error {
@@ -476,12 +489,8 @@ func (s *Store) CancelAttentionQuestion(ctx context.Context, session domain.Sess
 	if strings.TrimSpace(reason) == "" || utf8.RuneCountInString(reason) > 4000 {
 		return domain.AttentionQuestionRecord{}, &domain.AttentionValidationError{Field: "reason", Message: "must contain 1–4000 Unicode code points"}
 	}
-	if err := s.writeMu.LockContext(ctx); err != nil {
-		return domain.AttentionQuestionRecord{}, err
-	}
-	defer s.writeMu.Unlock()
 	var result domain.AttentionQuestionRecord
-	err := s.inTx(ctx, "cancel attention question", func(q *gen.Queries) error {
+	err := s.inProjectionAwareTx(ctx, "cancel attention question", func(q *gen.Queries) error {
 		row, err := questionRow(ctx, q, session, id)
 		if err != nil {
 			return err

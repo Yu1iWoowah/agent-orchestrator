@@ -286,6 +286,16 @@ func (s *Store) inTx(ctx context.Context, what string, fn func(*gen.Queries) err
 	return s.inTxDB(ctx, what, func(q *gen.Queries, _ gen.DBTX) error { return fn(q) })
 }
 
+func (s *Store) inProjectionAwareTx(ctx context.Context, what string, fn func(*gen.Queries) error) error {
+	if ctx.Value(conversationProjectionTxKey{}) == nil {
+		if err := s.writeMu.LockContext(ctx); err != nil {
+			return err
+		}
+		defer s.writeMu.Unlock()
+	}
+	return s.inTx(ctx, what, fn)
+}
+
 // inTxDB is the raw-database variant used by handwritten transactional stores
 // while their sqlc artifacts are intentionally regenerated in a later slice.
 func (s *Store) inTxDB(ctx context.Context, what string, fn func(*gen.Queries, gen.DBTX) error) error {

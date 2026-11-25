@@ -2005,6 +2005,9 @@ func (s *Store) SettleOrphanedTurnsBefore(ctx context.Context, session domain.Se
 
 const reconnectUnconfirmedDelivery = "provider delivery unconfirmed after reconnect"
 
+// Written by SettleOrphanedConversationTurns and its queued-before variant.
+const orphanedTurnFailure = "controller ended before the turn completed"
+
 // SettleUnboundRunningTurn closes an ambiguous dispatch after live reconnect.
 // Recheck under the writer lock so a bound or queued turn is never settled.
 func (s *Store) SettleUnboundRunningTurn(ctx context.Context, conversationID string, session domain.SessionID, turnID string, now time.Time) error {
