@@ -30,7 +30,7 @@ AO=(env -u AO_SESSION_ID -u AO_PROJECT_ID ao)
 PROMPT=$(cat <<EOF
 你是接手 $OLD 的新主控（手動換主控）。依序做下面四步；任何一步失敗就停下，回報失敗的步驟與錯誤，不做後面的步驟。
 1. 複製舊主控 artifact：cp -a "$DATA/artifacts/$OLD/." "$DATA/artifacts/\$AO_SESSION_ID/"。
-2. 用 ao project documents read handoff/orchestrator-handoff.md --project $PROJECT --json 讀交接文件，向使用者回報已接手與現況；以回應的 .file.content 擬草稿，把 §A 更新為由你接手，再用 ao project documents write handoff/orchestrator-handoff.md --file <草稿> --project $PROJECT --expected-hash <.file.hash> 寫回。寫入成功即持有共用資料夾 lease；被拒就回報使用者。
+2. 用 ao project documents read handoff/orchestrator-handoff.md --project $PROJECT --json 讀交接文件，以回應的 .file.content 擬草稿，把 §A 更新為由你接手，再用 ao project documents write handoff/orchestrator-handoff.md --file <草稿> --project $PROJECT --expected-hash <.file.hash> 寫回。寫入成功即取得共用資料夾 lease，此時才向使用者回報已接手與現況，再繼續第 3、4 步。寫入被拒時，向使用者回報失敗並停下。
 3. 依交接文件，以你自己的身分向存活 worker 送 FYI，告知你已接手；因本次換手而暫停的 worker，一併告知恢復原工作。
 4. 同一回合依交接文件 §A 執行使用者已核准的新主控待辦，不等與其無關的題目。
 EOF
