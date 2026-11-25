@@ -754,7 +754,7 @@ func (e *Engine) TriggerWithOptions(ctx stdctx.Context, workerID domain.SessionI
 		reviews = replaceReviewLatestRun(reviews, reviewState.PRURL, reviewState.TargetSHA, run)
 	}
 	if len(created) == 0 && len(restarted) == 0 {
-		if modeChanging && mode == "" {
+		if rebindTarget.AccountID == "" && modeChanging && mode == "" {
 			if err := e.stopReviewChatWork(ctx, reviewRow); err != nil {
 				return TriggerResult{}, err
 			}
