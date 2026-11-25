@@ -344,7 +344,11 @@ func (c *Controller) reconcileAgentSettingsLocked(ctx context.Context) (bool, er
 	blocked, err := c.runSettingsAttemptLocked(ctx, false, func(ctx context.Context, journal agentSettingsJournal, op *domain.AgentSettingsOperation) (bool, error) {
 		if c.settingsInitializationError != nil {
 			// Retry initialization under the same gate when another event arrives.
-			return c.initializeAgentSettingsLocked(ctx, journal, op)
+			blocked, err := c.initializeAgentSettingsLocked(ctx, journal, op)
+			if !blocked && err == nil && c.settingsInitializationError != nil {
+				c.queueSettingsRecheck()
+			}
+			return blocked, err
 		}
 		if op == nil {
 			return false, nil
@@ -463,10 +467,6 @@ func (c *Controller) failAgentSettingsLocked(ctx context.Context, journal agentS
 			}
 		}
 		_, err := journal.FinishAgentSettingsOperationWithCode(ctx, c.sessionID, latest.ID, latest.Version, domain.AgentSettingsFailed, category, code, c.now())
-		if err == nil && c.settingsInitializationError != nil {
-			// The rejected intent no longer takes precedence over cold replay.
-			c.queueSettingsRecheck()
-		}
 		return err != nil, err
 	}
 	if latest.Phase == domain.AgentSettingsPending {
