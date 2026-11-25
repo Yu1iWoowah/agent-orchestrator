@@ -212,7 +212,7 @@ func (r *CompositionReader) Composition(ctx context.Context, id domain.SessionID
 			}
 		}
 	}
-	var reqs []CompositionRequest
+	var rows []domain.UsageCompositionRequest
 	for _, f := range files {
 		out.Source = string(f.kind)
 		got, ok := f.read(ctx, r.readCodex)
@@ -223,21 +223,21 @@ func (r *CompositionReader) Composition(ctx context.Context, id domain.SessionID
 			out.Reason = "source_read_failed"
 			return out, nil
 		}
-		reqs = append(reqs, got...)
+		unknownMCP := f.kind == domain.UsageSourceCodexRollout
+		for _, req := range got {
+			if err := ctx.Err(); err != nil {
+				return out, err
+			}
+			rows = append(rows, CompositionRow(len(rows)+1, req, unknownMCP))
+		}
 	}
-	if out.Source != "" && len(reqs) == 0 {
-		out.Reason = "no_request_records"
-	}
-	if len(reqs) == 0 {
+	if len(rows) == 0 {
+		if out.Source != "" {
+			out.Reason = "no_request_records"
+		}
 		return out, nil
 	}
-	out.Status, out.Reason = "ok", ""
-	for i, req := range reqs {
-		if err := ctx.Err(); err != nil {
-			return out, err
-		}
-		out.Requests = append(out.Requests, CompositionRow(i+1, req, out.Source == string(domain.UsageSourceCodexRollout)))
-	}
+	out.Status, out.Reason, out.Requests = "ok", "", rows
 	return out, nil
 }
 
