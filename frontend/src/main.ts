@@ -322,10 +322,8 @@ const APP_DISPLAY_NAME = "Orchestrator.inc";
 // panel never impersonate the installed app (#3642).
 app.setName(app.isPackaged ? APP_DISPLAY_NAME : `${APP_DISPLAY_NAME} (dev)`);
 
-if (process.platform === "linux" && app.isPackaged) {
-	const desktopNameArg = "--ao-desktop-name=";
-	const desktopName = process.argv.find((arg) => arg.startsWith(desktopNameArg))?.slice(desktopNameArg.length);
-	if (desktopName) app.setDesktopName(desktopName);
+if (process.platform === "linux" && app.isPackaged && !process.env.APPIMAGE) {
+	app.setDesktopName("agent-orchestrator.desktop");
 }
 
 // An unsigned dev Electron is a new app to macOS whenever its binary changes, so Chromium's

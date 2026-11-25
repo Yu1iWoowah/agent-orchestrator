@@ -443,7 +443,6 @@ const config: ForgeConfig = {
 					// looks for the package name and fails with "could not find
 					// the Electron app binary". (Both are "agent-orchestrator".)
 					bin: EXECUTABLE_NAME,
-					desktopTemplate: path.resolve("assets/debian.desktop.ejs"),
 					icon: "assets/icon.png",
 					maintainer: appPackage.author,
 					homepage: "https://github.com/aoagents/agent-orchestrator",
