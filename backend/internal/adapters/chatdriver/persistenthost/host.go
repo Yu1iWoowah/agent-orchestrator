@@ -295,10 +295,14 @@ func recordSpawn(dataDir, sessionID string, pid int) error {
 	return os.WriteFile(path, nil, 0o600)
 }
 
-// clearSpawnRecord removes the spawn record of the host with pid.
+// The exiting host still owns its PID. Use the recorded paths because process
+// identity may have been available only when writing or only at exit.
 func clearSpawnRecord(dataDir, sessionID string, pid int) {
-	if path, err := spawnPath(dataDir, sessionID, pid); err == nil {
-		_ = os.Remove(path)
+	records, _ := spawnRecords(dataDir, sessionID)
+	for _, record := range records {
+		if record.pid == pid {
+			_ = os.Remove(record.path)
+		}
 	}
 }
 
