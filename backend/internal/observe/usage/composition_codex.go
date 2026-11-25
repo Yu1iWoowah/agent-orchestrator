@@ -2,6 +2,7 @@ package usage
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 
@@ -34,13 +35,13 @@ type codexCompositionPayload struct {
 // parser records as a model usage event, so repeated quota updates and local
 // context estimates are not requests. A request's input is the context as of
 // its first model output item, so its own reply is not counted as input.
-func ReadCodexComposition(r io.Reader) ([]usagesvc.CompositionRequest, error) {
+func ReadCodexComposition(ctx context.Context, r io.Reader) ([]usagesvc.CompositionRequest, error) {
 	var state usagesvc.CompositionCounts
 	var atOutput *usagesvc.CompositionCounts
 	var out []usagesvc.CompositionRequest
 	var parser codexParserStateV1
 	var parsed parseResult
-	err := usagesvc.EachLine(r, func(raw []byte) {
+	err := usagesvc.EachLine(ctx, r, func(raw []byte) {
 		var line codexCompositionLine
 		if json.Unmarshal(raw, &line) != nil {
 			return

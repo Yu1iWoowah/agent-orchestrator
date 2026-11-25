@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../api/schema";
 import { apiClient } from "../lib/api-client";
@@ -62,7 +63,7 @@ export const SessionCompositionPanel = memo(function SessionCompositionPanel({ s
 												{req.unresolved ? <div>{t("composition.unresolved", { value: req.unresolved })}</div> : null}
 											</TableCell>
 											{req.categories.map((cat) => (
-												<CategoryCell cat={cat} key={cat.category} />
+												<CategoryCell cat={cat} t={t} key={cat.category} />
 											))}
 										</TableRow>
 									))}
@@ -85,8 +86,7 @@ export const SessionCompositionPanel = memo(function SessionCompositionPanel({ s
 	);
 });
 
-function CategoryCell({ cat }: { cat: Category }) {
-	const { t } = useTranslation();
+function CategoryCell({ cat, t }: { cat: Category; t: TFunction }) {
 	return (
 		<TableCell className="text-right tabular-nums">
 			<div className="text-foreground">{number(cat.tokens)}</div>

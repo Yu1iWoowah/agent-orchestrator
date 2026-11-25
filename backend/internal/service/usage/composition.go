@@ -110,21 +110,20 @@ func CompositionRow(ordinal int, req CompositionRequest, unknownMCP bool) domain
 	return row
 }
 
-// EachLine streams JSONL without retaining earlier lines.
-func EachLine(r io.Reader, fn func([]byte)) error {
-	br := bufio.NewReaderSize(r, 1<<20)
-	for {
-		line, err := br.ReadBytes('\n')
-		if len(line) > 0 {
-			fn(line)
-		}
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
+const maxCompositionLineBytes = 8 << 20
+
+// EachLine streams JSONL with a bounded buffer. The callback uses the line
+// only until it returns.
+func EachLine(ctx context.Context, r io.Reader, fn func([]byte)) error {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(nil, maxCompositionLineBytes)
+	for ctx.Err() == nil && scanner.Scan() {
+		fn(scanner.Bytes())
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return scanner.Err()
 }
 
 type compositionStore interface {
@@ -138,13 +137,13 @@ type compositionStore interface {
 type CompositionReader struct {
 	store     compositionStore
 	locate    func(context.Context, domain.AgentHarness, string) (string, error)
-	readCodex func(io.Reader) ([]CompositionRequest, error)
+	readCodex func(context.Context, io.Reader) ([]CompositionRequest, error)
 }
 
 // NewCompositionReader returns a reader over registered usage sources;
 // locate finds a reviewer's unregistered file by native id, and readCodex
 // reads a rollout with the usage parser's request boundaries.
-func NewCompositionReader(store compositionStore, locate func(context.Context, domain.AgentHarness, string) (string, error), readCodex func(io.Reader) ([]CompositionRequest, error)) *CompositionReader {
+func NewCompositionReader(store compositionStore, locate func(context.Context, domain.AgentHarness, string) (string, error), readCodex func(context.Context, io.Reader) ([]CompositionRequest, error)) *CompositionReader {
 	return &CompositionReader{store: store, locate: locate, readCodex: readCodex}
 }
 
@@ -216,7 +215,10 @@ func (r *CompositionReader) Composition(ctx context.Context, id domain.SessionID
 	var reqs []CompositionRequest
 	for _, f := range files {
 		out.Source = string(f.kind)
-		got, ok := f.read(r.readCodex)
+		got, ok := f.read(ctx, r.readCodex)
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
 		if !ok {
 			out.Reason = "source_read_failed"
 			return out, nil
@@ -231,6 +233,9 @@ func (r *CompositionReader) Composition(ctx context.Context, id domain.SessionID
 	}
 	out.Status, out.Reason = "ok", ""
 	for i, req := range reqs {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
 		out.Requests = append(out.Requests, CompositionRow(i+1, req, out.Source == string(domain.UsageSourceCodexRollout)))
 	}
 	return out, nil
@@ -243,7 +248,7 @@ type compositionFile struct {
 
 // read reports a missing or unreadable file as not ok; the response says
 // source_read_failed instead of failing the request.
-func (f compositionFile) read(readCodex func(io.Reader) ([]CompositionRequest, error)) ([]CompositionRequest, bool) {
+func (f compositionFile) read(ctx context.Context, readCodex func(context.Context, io.Reader) ([]CompositionRequest, error)) ([]CompositionRequest, bool) {
 	read := readCodex
 	if f.kind == domain.UsageSourceClaudeMain {
 		read = readClaudeComposition
@@ -256,6 +261,6 @@ func (f compositionFile) read(readCodex func(io.Reader) ([]CompositionRequest, e
 		return nil, false
 	}
 	defer func() { _ = file.Close() }()
-	reqs, err := read(file)
+	reqs, err := read(ctx, file)
 	return reqs, err == nil
 }

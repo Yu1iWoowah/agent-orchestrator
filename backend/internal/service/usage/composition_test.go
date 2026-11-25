@@ -44,7 +44,7 @@ const claudeCompositionFixture = `{"type":"user","message":{"role":"user","conte
 `
 
 func TestClaudeCompositionRebuildsChainAndAllocatesInput(t *testing.T) {
-	reqs, err := readClaudeComposition(strings.NewReader(claudeCompositionFixture))
+	reqs, err := readClaudeComposition(t.Context(), strings.NewReader(claudeCompositionFixture))
 	if err != nil || len(reqs) != 2 {
 		t.Fatalf("requests = %d, err = %v", len(reqs), err)
 	}
