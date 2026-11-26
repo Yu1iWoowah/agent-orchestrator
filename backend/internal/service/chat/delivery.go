@@ -103,10 +103,17 @@ func (c *Controller) waitForOriginalDelivery(ctx context.Context, journal chatDe
 	return nil
 }
 
-func (c *Controller) bindDeliveryPrepared(ctx context.Context, a domain.ChatDeliveryAttempt, prepared string) (domain.ChatDeliveryAttempt, error) {
+func (c *Controller) bindDeliveryPrepared(ctx context.Context, attemptID, prepared string) (domain.ChatDeliveryAttempt, error) {
+	c.deliveryReceiptMu.Lock()
+	defer c.deliveryReceiptMu.Unlock()
+
 	journal, ok := c.store.(chatDeliveryJournal)
 	if !ok {
-		return a, ports.ErrChatDeliveryUnverified
+		return domain.ChatDeliveryAttempt{}, ports.ErrChatDeliveryUnverified
+	}
+	a, err := journal.ChatDeliveryAttempt(ctx, c.sessionID, attemptID)
+	if err != nil {
+		return a, err
 	}
 	current, err := c.deliveryOwner(ctx, journal)
 	if err != nil {
