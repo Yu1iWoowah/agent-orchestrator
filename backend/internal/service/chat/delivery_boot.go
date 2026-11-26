@@ -114,6 +114,10 @@ func (c *Controller) releaseInterruptedDeliveryHold(ctx context.Context, a domai
 // A previous boot is proved by the saved receipt itself, not by starting a
 // provider or treating an empty controller registry as successful settlement.
 func (s *Service) ReconcilePreviousBootDeliveries(ctx context.Context) error {
+	return s.reconcilePreviousBootDeliveries(ctx, true)
+}
+
+func (s *Service) reconcilePreviousBootDeliveries(ctx context.Context, reportBusy bool) error {
 	journal, ok := s.store.(interruptedDeliveryAttentionStore)
 	sessions, canList := s.sessions.(interface {
 		ListAllSessions(context.Context) ([]domain.SessionRecord, error)
@@ -130,16 +134,19 @@ func (s *Service) ReconcilePreviousBootDeliveries(ctx context.Context) error {
 		if rec.IsTerminated || rec.Mode != domain.SessionModeChat {
 			continue
 		}
-		if err := s.reconcileDetachedDeliveries(ctx, journal, rec.ID); err != nil {
+		if err := s.reconcileDetachedDeliveries(ctx, journal, rec.ID, reportBusy); err != nil {
 			failures = append(failures, err)
 		}
 	}
 	return errors.Join(failures...)
 }
 
-func (s *Service) reconcileDetachedDeliveries(ctx context.Context, journal interruptedDeliveryAttentionStore, id domain.SessionID) error {
+func (s *Service) reconcileDetachedDeliveries(ctx context.Context, journal interruptedDeliveryAttentionStore, id domain.SessionID, reportBusy bool) error {
 	gate := s.controllerGate(domain.SessionConversationOwner(id))
 	if !gate.tryLock() {
+		if reportBusy {
+			return &ports.ChatShutdownBlockedError{SessionID: string(id), Reason: "controller_busy"}
+		}
 		return nil
 	}
 	defer gate.unlock()
@@ -164,14 +171,15 @@ func (s *Service) reconcileDetachedDeliveries(ctx context.Context, journal inter
 	// Keep the final same-generation attempt pending until the question can
 	// close with it. A conversation with any unverified attempt stays open.
 	closeWith := make(map[string]string)
+	unverified := make(map[string]bool)
 	eligible := attempts[:0]
 	for _, a := range attempts {
 		if a.Receipt == nil || !s.previousBootEpoch(a.Receipt.ProviderEpoch) {
-			closeWith[a.ConversationID] = ""
+			unverified[a.ConversationID] = true
 			continue
 		}
 		eligible = append(eligible, a)
-		if candidate, seen := closeWith[a.ConversationID]; (!seen || candidate != "") && current.OwnerGeneration == a.Owner.ControllerGeneration {
+		if current.OwnerGeneration == a.Owner.ControllerGeneration {
 			closeWith[a.ConversationID] = a.ID
 		}
 	}
@@ -185,10 +193,18 @@ func (s *Service) reconcileDetachedDeliveries(ctx context.Context, journal inter
 			return blocked(a.ID, err)
 		}
 	}
+	var waiting bool
 	for _, a := range final {
+		if unverified[a.ConversationID] {
+			waiting = true
+			continue
+		}
 		if err := s.settleInterruptedDeliveryWithAttention(ctx, journal, a); err != nil {
 			return blocked(a.ID, err)
 		}
+	}
+	if waiting {
+		return &ports.ChatShutdownBlockedError{SessionID: string(id), Reason: "delivery_unverified"}
 	}
 	return nil
 }
@@ -245,9 +261,13 @@ func (s *Service) ReconcileExitedAdapter(ctx context.Context, id domain.SessionI
 		}
 		matching = append(matching, a)
 	}
+	current := session.ControllerOwner().ControllerGeneration == generation
 	for i, a := range matching {
 		settle := s.settleInterruptedDelivery
-		if !unsettled && i == len(matching)-1 {
+		if current && i == len(matching)-1 {
+			if unsettled {
+				break
+			}
 			settle = s.settleInterruptedDeliveryWithAttention
 		}
 		if err := settle(ctx, store, a); err != nil {
@@ -262,7 +282,7 @@ func (s *Service) ReconcileExitedAdapter(ctx context.Context, id domain.SessionI
 	}
 	// Outbound questions identify the conversation, so an older launch
 	// cannot close a question that may belong to its successor.
-	if session.ControllerOwner().ControllerGeneration != generation {
+	if !current {
 		return true, nil
 	}
 	if !unsettled && len(matching) == 0 {

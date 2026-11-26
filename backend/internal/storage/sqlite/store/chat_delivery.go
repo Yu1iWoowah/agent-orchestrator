@@ -228,8 +228,9 @@ func (s *Store) SettlePreviousBootAcceptance(ctx context.Context, original domai
 				if turn.State == domain.TurnStateRunning || turn.ProviderTurnID != "" {
 					return ports.ErrAgentSettingsConflict
 				}
-				orphaned := turn.State == domain.TurnStateFailed && turn.CompletedAt.Valid && turn.ErrorMessage == orphanedTurnFailure
-				if turn.State == domain.TurnStateQueued || orphaned {
+				cleanupFailed := turn.State == domain.TurnStateFailed && turn.CompletedAt.Valid &&
+					(turn.ErrorMessage == orphanedTurnFailure || turn.ErrorMessage == reconnectUnconfirmedBatchDelivery)
+				if turn.State == domain.TurnStateQueued || cleanupFailed {
 					// The receipt covers the entire reserved batch. Link members
 					// whose acceptance had not yet been projected before the reboot.
 					n, err := q.CompleteQueuedConversationBatchMember(ctx, gen.CompleteQueuedConversationBatchMemberParams{

@@ -919,14 +919,15 @@ func (q *Queries) FailPendingReviewRequests(ctx context.Context, arg FailPending
 const failReservedQueuedConversationTurns = `-- name: FailReservedQueuedConversationTurns :exec
 UPDATE conversation_turns
 SET state = 'failed',
-    error_message = 'queued delivery outcome is uncertain after controller reconnect',
-    completed_at = ?
-WHERE conversation_id = ?
+    error_message = ?1,
+    completed_at = ?2
+WHERE conversation_id = ?3
   AND state = 'queued'
   AND promotion_started_at IS NOT NULL
 `
 
 type FailReservedQueuedConversationTurnsParams struct {
+	ErrorMessage   string
 	CompletedAt    sql.NullTime
 	ConversationID string
 }
@@ -934,7 +935,7 @@ type FailReservedQueuedConversationTurnsParams struct {
 // A detached controller may have crossed the provider boundary before its
 // batch receipt was recorded. Keep the source visible and fail closed on resume.
 func (q *Queries) FailReservedQueuedConversationTurns(ctx context.Context, arg FailReservedQueuedConversationTurnsParams) error {
-	_, err := q.db.ExecContext(ctx, failReservedQueuedConversationTurns, arg.CompletedAt, arg.ConversationID)
+	_, err := q.db.ExecContext(ctx, failReservedQueuedConversationTurns, arg.ErrorMessage, arg.CompletedAt, arg.ConversationID)
 	return err
 }
 
