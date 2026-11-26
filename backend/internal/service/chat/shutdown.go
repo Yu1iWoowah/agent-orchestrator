@@ -340,7 +340,7 @@ func (s *Service) PreflightShutdown(ctx context.Context) error {
 			}
 		}
 	}()
-	if err := s.ReconcilePreviousBootDeliveries(ctx); err != nil {
+	if err := s.reconcilePreviousBootDeliveries(ctx, false); err != nil {
 		var journal *ports.ChatDeliveryJournalError
 		if errors.As(err, &journal) && journal.Stage == listSessionsJournalStage {
 			logDeliveryJournalFailure(s.log, "", "", journal)

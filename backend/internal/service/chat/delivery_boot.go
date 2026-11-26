@@ -114,6 +114,10 @@ func (c *Controller) releaseInterruptedDeliveryHold(ctx context.Context, a domai
 // A previous boot is proved by the saved receipt itself, not by starting a
 // provider or treating an empty controller registry as successful settlement.
 func (s *Service) ReconcilePreviousBootDeliveries(ctx context.Context) error {
+	return s.reconcilePreviousBootDeliveries(ctx, true)
+}
+
+func (s *Service) reconcilePreviousBootDeliveries(ctx context.Context, reportBusy bool) error {
 	journal, ok := s.store.(interruptedDeliveryAttentionStore)
 	sessions, canList := s.sessions.(interface {
 		ListAllSessions(context.Context) ([]domain.SessionRecord, error)
@@ -130,16 +134,19 @@ func (s *Service) ReconcilePreviousBootDeliveries(ctx context.Context) error {
 		if rec.IsTerminated || rec.Mode != domain.SessionModeChat {
 			continue
 		}
-		if err := s.reconcileDetachedDeliveries(ctx, journal, rec.ID); err != nil {
+		if err := s.reconcileDetachedDeliveries(ctx, journal, rec.ID, reportBusy); err != nil {
 			failures = append(failures, err)
 		}
 	}
 	return errors.Join(failures...)
 }
 
-func (s *Service) reconcileDetachedDeliveries(ctx context.Context, journal interruptedDeliveryAttentionStore, id domain.SessionID) error {
+func (s *Service) reconcileDetachedDeliveries(ctx context.Context, journal interruptedDeliveryAttentionStore, id domain.SessionID, reportBusy bool) error {
 	gate := s.controllerGate(domain.SessionConversationOwner(id))
 	if !gate.tryLock() {
+		if reportBusy {
+			return &ports.ChatShutdownBlockedError{SessionID: string(id), Reason: "controller_busy"}
+		}
 		return nil
 	}
 	defer gate.unlock()
