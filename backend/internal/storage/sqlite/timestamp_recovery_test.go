@@ -330,30 +330,35 @@ INSERT INTO conversations(id,scope,session_id,current_session_id,created_at,upda
 
 func TestOpenCanonicalizesSessionTimestampVariants(t *testing.T) {
 	const good = "2026-10-21 16:15:40.123456789 +0000 UTC"
+	dir := t.TempDir()
+	db := openMigratedTestDBIn(t, dir)
+	wantUpdates := make(map[string]string)
 	for name, legacy := range sessionTimestampRepairCases() {
+		updated, wantUpdated := legacy, good
+		if name == "later lifecycle" {
+			updated = "2026-10-21 13:45:40.123456789 -0400 EDT"
+			wantUpdated = "2026-10-21 17:45:40.123456789 +0000 UTC"
+		}
+		if _, err := db.Exec(`INSERT INTO sessions(id,num,harness,activity_state,activity_last_at,is_terminated,created_at,updated_at,latest_user_prompt_at)
+VALUES(?,?,'aider','idle',?,0,?,?,?)`, name, len(wantUpdates)+1, good, good, updated, legacy); err != nil {
+			t.Fatalf("insert %s fixture: %v", name, err)
+		}
+		var before string
+		if err := db.QueryRow(`SELECT CAST(latest_user_prompt_at AS TEXT) FROM sessions WHERE id=?`, name).Scan(&before); err != nil || before != legacy {
+			t.Fatalf("%s legacy fixture = %q, want %q: %v", name, before, legacy, err)
+		}
+		wantUpdates[name] = wantUpdated
+	}
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	for name, wantUpdated := range wantUpdates {
 		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			db := openMigratedTestDBIn(t, dir)
-			updated, wantUpdated := legacy, good
-			if name == "later lifecycle" {
-				updated = "2026-10-21 13:45:40.123456789 -0400 EDT"
-				wantUpdated = "2026-10-21 17:45:40.123456789 +0000 UTC"
-			}
-			if _, err := db.Exec(`INSERT INTO sessions(id,num,harness,activity_state,activity_last_at,is_terminated,created_at,updated_at,latest_user_prompt_at)
-VALUES('canonical',1,'aider','idle',?,0,?,?,?)`, good, good, updated, legacy); err != nil {
-				t.Fatal(err)
-			}
-			var before string
-			if err := db.QueryRow(`SELECT CAST(latest_user_prompt_at AS TEXT) FROM sessions WHERE id='canonical'`).Scan(&before); err != nil || before != legacy {
-				t.Fatalf("legacy fixture = %q: %v", before, err)
-			}
-			s, err := Open(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer s.Close()
 			var prompt, lifecycle string
-			if err := db.QueryRow(`SELECT CAST(latest_user_prompt_at AS TEXT),CAST(updated_at AS TEXT) FROM sessions WHERE id='canonical'`).Scan(&prompt, &lifecycle); err != nil {
+			if err := db.QueryRow(`SELECT CAST(latest_user_prompt_at AS TEXT),CAST(updated_at AS TEXT) FROM sessions WHERE id=?`, name).Scan(&prompt, &lifecycle); err != nil {
 				t.Fatal(err)
 			}
 			if prompt != good || lifecycle != wantUpdated {
