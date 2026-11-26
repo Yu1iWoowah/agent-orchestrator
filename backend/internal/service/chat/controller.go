@@ -248,7 +248,7 @@ type Controller struct {
 	settingsExecutorID            string                              // guarded by sendMu
 	after                         func(time.Duration) <-chan time.Time
 	deliveryCheckMu               sync.Mutex
-	deliveryReceiptMu             sync.Mutex    // serializes attention creation with terminal receipts
+	deliveryReceiptMu             sync.Mutex    // serializes delivery journal updates and hold installation
 	deliveryWake                  chan struct{} // guarded by mu
 	deliveryMonitorStarted        bool          // guarded by mu; set at shutdown to prevent a late start
 	deliveryMonitorStop           chan struct{}
@@ -2346,11 +2346,7 @@ func (c *Controller) dispatch(
 	if delivery != nil {
 		// Reload after a possible eager acknowledgement, then record the local
 		// correlation before a deferred driver is permitted to forward anything.
-		journal, _ := c.store.(chatDeliveryJournal) // reserveDeliveryLocked proved support.
-		latest, loadErr := journal.ChatDeliveryAttempt(context.WithoutCancel(ctx), c.sessionID, delivery.ID)
-		if loadErr == nil {
-			latest, loadErr = c.bindDeliveryPrepared(context.WithoutCancel(ctx), latest, ref.ProviderTurnID)
-		}
+		latest, loadErr := c.bindDeliveryPrepared(context.WithoutCancel(ctx), delivery.ID, ref.ProviderTurnID)
 		if loadErr != nil {
 			if hasDeferredStart {
 				deferred.DiscardDeferredTurn(ref.ProviderTurnID)
