@@ -164,14 +164,15 @@ func (s *Service) reconcileDetachedDeliveries(ctx context.Context, journal inter
 	// Keep the final same-generation attempt pending until the question can
 	// close with it. A conversation with any unverified attempt stays open.
 	closeWith := make(map[string]string)
+	unverified := make(map[string]bool)
 	eligible := attempts[:0]
 	for _, a := range attempts {
 		if a.Receipt == nil || !s.previousBootEpoch(a.Receipt.ProviderEpoch) {
-			closeWith[a.ConversationID] = ""
+			unverified[a.ConversationID] = true
 			continue
 		}
 		eligible = append(eligible, a)
-		if candidate, seen := closeWith[a.ConversationID]; (!seen || candidate != "") && current.OwnerGeneration == a.Owner.ControllerGeneration {
+		if current.OwnerGeneration == a.Owner.ControllerGeneration {
 			closeWith[a.ConversationID] = a.ID
 		}
 	}
@@ -185,10 +186,18 @@ func (s *Service) reconcileDetachedDeliveries(ctx context.Context, journal inter
 			return blocked(a.ID, err)
 		}
 	}
+	var waiting bool
 	for _, a := range final {
+		if unverified[a.ConversationID] {
+			waiting = true
+			continue
+		}
 		if err := s.settleInterruptedDeliveryWithAttention(ctx, journal, a); err != nil {
 			return blocked(a.ID, err)
 		}
+	}
+	if waiting {
+		return &ports.ChatShutdownBlockedError{SessionID: string(id), Reason: "delivery_unverified"}
 	}
 	return nil
 }
@@ -245,9 +254,13 @@ func (s *Service) ReconcileExitedAdapter(ctx context.Context, id domain.SessionI
 		}
 		matching = append(matching, a)
 	}
+	current := session.ControllerOwner().ControllerGeneration == generation
 	for i, a := range matching {
 		settle := s.settleInterruptedDelivery
-		if !unsettled && i == len(matching)-1 {
+		if current && i == len(matching)-1 {
+			if unsettled {
+				break
+			}
 			settle = s.settleInterruptedDeliveryWithAttention
 		}
 		if err := settle(ctx, store, a); err != nil {
@@ -262,7 +275,7 @@ func (s *Service) ReconcileExitedAdapter(ctx context.Context, id domain.SessionI
 	}
 	// Outbound questions identify the conversation, so an older launch
 	// cannot close a question that may belong to its successor.
-	if session.ControllerOwner().ControllerGeneration != generation {
+	if !current {
 		return true, nil
 	}
 	if !unsettled && len(matching) == 0 {

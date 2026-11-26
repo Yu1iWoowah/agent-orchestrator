@@ -1351,9 +1351,9 @@ WHERE id = sqlc.arg(id)
 -- name: FailReservedQueuedConversationTurns :exec
 UPDATE conversation_turns
 SET state = 'failed',
-    error_message = 'queued delivery outcome is uncertain after controller reconnect',
-    completed_at = ?
-WHERE conversation_id = ?
+    error_message = sqlc.arg(error_message),
+    completed_at = sqlc.arg(completed_at)
+WHERE conversation_id = sqlc.arg(conversation_id)
   AND state = 'queued'
   AND promotion_started_at IS NOT NULL;
 

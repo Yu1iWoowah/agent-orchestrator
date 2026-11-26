@@ -2956,12 +2956,15 @@ func (s *Store) FailQueuedBatch(ctx context.Context, conversationID string, turn
 	})
 }
 
+const reconnectUnconfirmedBatchDelivery = "queued delivery outcome is uncertain after controller reconnect"
+
 // FailReservedQueuedBatch closes stranded reservations during live reconnect.
 func (s *Store) FailReservedQueuedBatch(ctx context.Context, conversationID string, now time.Time) error {
 	q, unlock := s.conversationWriter(ctx)
 	defer unlock()
 	return q.FailReservedQueuedConversationTurns(ctx, gen.FailReservedQueuedConversationTurnsParams{
-		CompletedAt: sql.NullTime{Time: now, Valid: true}, ConversationID: conversationID,
+		ErrorMessage: reconnectUnconfirmedBatchDelivery,
+		CompletedAt:  sql.NullTime{Time: now, Valid: true}, ConversationID: conversationID,
 	})
 }
 
