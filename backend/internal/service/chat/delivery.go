@@ -77,7 +77,7 @@ func (c *Controller) reserveDeliveryLocked(ctx context.Context, members []string
 		return nil, false, err
 	}
 	if created {
-		c.startDeliveryMonitor()
+		c.startDeliveryMonitor(nil)
 	}
 	return &saved, created, err
 }
@@ -93,7 +93,7 @@ func (c *Controller) waitForOriginalDelivery(ctx context.Context, journal chatDe
 				c.mu.Lock()
 				c.pendingDeliveryID = original.ID
 				c.mu.Unlock()
-				c.startDeliveryMonitor()
+				c.startDeliveryMonitor(nil)
 			}
 			// Acceptance never authorizes another execution of the same input,
 			// even if its terminal transcript projection has not caught up yet.
@@ -265,7 +265,7 @@ func (c *Controller) holdForUnsettledDelivery(ctx context.Context, preparedTurn 
 	}
 	held, _ := c.installDeliveryHold(ctx, journal, preparedTurn)
 	if held {
-		c.startDeliveryMonitor()
+		c.startDeliveryMonitor(nil)
 		c.wakeDeliveryMonitor(true)
 	}
 	return held
@@ -345,11 +345,12 @@ func (c *Controller) acpDeliveryEpoch() string {
 
 // Reconnect can deduplicate an already projected completion. Recover its hold
 // using the last AO dispatch, or report that its settled receipt can wake the queue.
-func (c *Controller) restoreACPDeliveryHold(ctx context.Context, turns []domain.ConversationTurn) bool {
+// Hand an unreadable receipt lookup to the monitor with the same turn identity.
+func (c *Controller) restoreACPDeliveryHold(ctx context.Context, turns []domain.ConversationTurn) (bool, *domain.ConversationTurn) {
 	journal, ok := c.store.(chatDeliveryJournal)
 	epoch := c.acpDeliveryEpoch()
 	if !ok || c.reviewID != "" || epoch == "" {
-		return false
+		return false, nil
 	}
 	var last *domain.ConversationTurn
 	for i := range turns {
@@ -363,18 +364,30 @@ func (c *Controller) restoreACPDeliveryHold(ctx context.Context, turns []domain.
 		}
 	}
 	if last == nil {
-		return false
+		return false, nil
 	}
 	stalls, _ := c.conv.(interface{ IsArchivedPromptStall(string) bool })
 	if last.State == domain.TurnStateCompleted ||
 		last.State == domain.TurnStateFailed && stalls != nil && stalls.IsArchivedPromptStall(last.ErrorMessage) {
 		if held, _ := c.installDeliveryHold(ctx, journal, last.ProviderTurnID); !held {
-			a, err := journal.ChatDeliveryAttemptForTurn(ctx, c.sessionID, last.ID)
-			return err == nil && a.PreparedTurnID == last.ProviderTurnID && a.Receipt != nil &&
-				a.Receipt.ExecutionSettled && a.Receipt.ProviderEpoch == epoch
+			settled, err := c.hasSettledACPDelivery(ctx, journal, last)
+			if err != nil {
+				retryTurn := *last
+				return false, &retryTurn
+			}
+			return settled, nil
 		}
 	}
-	return false
+	return false, nil
+}
+
+func (c *Controller) hasSettledACPDelivery(ctx context.Context, journal chatDeliveryJournal, turn *domain.ConversationTurn) (bool, error) {
+	a, err := journal.ChatDeliveryAttemptForTurn(ctx, c.sessionID, turn.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && a.PreparedTurnID == turn.ProviderTurnID && a.Receipt != nil &&
+		a.Receipt.ExecutionSettled && a.Receipt.ProviderEpoch == c.acpDeliveryEpoch(), err
 }
 
 // releasePendingDelivery resumes queued work held behind a now-settled original.
@@ -409,7 +422,7 @@ func (c *Controller) queueDeliveryAck(a domain.ChatDeliveryAttempt) {
 		c.deliveryAckRetryAt = c.now().Add(5 * time.Second)
 	}
 	c.mu.Unlock()
-	c.startDeliveryMonitor()
+	c.startDeliveryMonitor(nil)
 }
 
 func (c *Controller) retryDeliveryAcks() time.Time {
@@ -703,7 +716,7 @@ func (c *Controller) settleGoneHostDelivery(ctx context.Context, a domain.ChatDe
 	return true, nil
 }
 
-func (c *Controller) startDeliveryMonitor() {
+func (c *Controller) startDeliveryMonitor(retryTurn *domain.ConversationTurn) {
 	if _, ok := c.conv.(ports.ChatDeliveryObserver); !ok || c.reviewID != "" {
 		return
 	}
@@ -723,7 +736,7 @@ func (c *Controller) startDeliveryMonitor() {
 	c.deliveryMonitorStarted = true
 	c.deliveryImmediate = false
 	c.deliveryWake = make(chan struct{}, 1)
-	c.deliveryMonitor.Go(c.monitorDeliveries)
+	c.deliveryMonitor.Go(func() { c.monitorDeliveries(retryTurn) })
 	c.mu.Unlock()
 }
 
@@ -749,7 +762,7 @@ func (c *Controller) wakeDeliveryMonitor(immediate bool) {
 	}
 }
 
-func (c *Controller) monitorDeliveries() {
+func (c *Controller) monitorDeliveries(retryTurn *domain.ConversationTurn) {
 	journal, ok := c.store.(chatDeliveryJournal)
 	if !ok {
 		return
@@ -788,7 +801,17 @@ func (c *Controller) monitorDeliveries() {
 				earliest = c.now().Add(30 * time.Second)
 			} else {
 				resolveCtx, resolveCancel := c.deadlineContext(context.Background(), 10*time.Second)
-				if !c.resolveUnverifiedDeliveryHold(resolveCtx, journal) {
+				holdResolved := c.resolveUnverifiedDeliveryHold(resolveCtx, journal)
+				if retryTurn != nil {
+					settled, err := c.hasSettledACPDelivery(resolveCtx, journal, retryTurn)
+					if err == nil {
+						retryTurn = nil
+						if settled && !c.deliveryMonitorStopping() && !c.outboundQuiescing() {
+							c.queueSettingsRecheck()
+						}
+					}
+				}
+				if !holdResolved || retryTurn != nil {
 					// Nothing else may be due to wake the monitor; retry the read.
 					earliest = c.now().Add(30 * time.Second)
 				}

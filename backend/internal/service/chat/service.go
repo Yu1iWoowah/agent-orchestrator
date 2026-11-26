@@ -1581,7 +1581,11 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		cfg.ExpectedControllerOwner.ControllerGeneration = controller.Generation()
 	}
 	controller.settingsObservationOwner = controller.observationOwner(executionAccount)
-	resumeSettledQueue := liveReconnect && controller.restoreACPDeliveryHold(ctx, liveRows.Turns)
+	var resumeSettledQueue bool
+	var retrySettledTurn *domain.ConversationTurn
+	if liveReconnect {
+		resumeSettledQueue, retrySettledTurn = controller.restoreACPDeliveryHold(ctx, liveRows.Turns)
+	}
 	s.configureAgentSettingsController(controller)
 	tentativeAccount := owner.Kind == domain.ConversationOwnerSession && executionAccount != settingsAccount
 	controller.settingsAwaitingAccountCommit = tentativeAccount || committedAccountMove
@@ -1617,8 +1621,9 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	cfg.DisableFreshProviderFallback = false
 	s.startConfigs[owner] = cloneStartConfig(cfg)
 	delete(s.awakeInterrupted, owner)
+	// A replayed event could start the monitor before it receives the retry turn.
+	controller.startDeliveryMonitor(retrySettledTurn)
 	controller.start()
-	controller.startDeliveryMonitor()
 	s.mu.Unlock()
 	if resumeSettledQueue || recheckSettings {
 		controller.queueSettingsRecheck()
